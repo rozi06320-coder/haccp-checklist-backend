@@ -1,0 +1,12 @@
+begin;
+select plan(6);
+select has_table('public','daily_audit_item_results','Daily Audit result table exists');
+select ok((select relrowsecurity from pg_class where oid='public.daily_audit_item_results'::regclass),'result table has RLS enabled');
+select has_function('public','get_supervisor_daily_audit_current_state',array['uuid','uuid','date'],'current-state RPC exists');
+set local role authenticated;
+select throws_ok($$insert into public.daily_audit_item_results(submission_id,organization_id,branch_id,item_id,item_number,answer) values(gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),'daily-audit-1',1,'not_checked')$$,'42501',null,'authenticated direct writes are denied');
+reset role;
+select is((select count(*)::integer from public.daily_audit_item_definitions where active),13,'current state uses 13 canonical definitions');
+select is((select array_agg(item_number order by item_number)::integer[] from public.daily_audit_item_definitions where active),array[1,2,3,4,5,6,7,8,9,10,11,12,13]::integer[],'current state definition order is contiguous');
+select * from finish();
+rollback;

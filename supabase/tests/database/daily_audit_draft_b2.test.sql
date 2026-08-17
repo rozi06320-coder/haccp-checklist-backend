@@ -1,0 +1,10 @@
+begin;
+select plan(4);
+select has_function('public','save_supervisor_daily_audit_draft',array['uuid','uuid','date','bigint','text','uuid','text','uuid','jsonb'],'draft RPC exists');
+select ok((select prosecdef from pg_proc where oid='public.save_supervisor_daily_audit_draft(uuid,uuid,date,bigint,text,uuid,text,uuid,jsonb)'::regprocedure),'draft RPC is security definer');
+set local role authenticated;
+select throws_ok($$select public.save_supervisor_daily_audit_draft(gen_random_uuid(),gen_random_uuid(),'2026-08-11',0,'manual_access_user',gen_random_uuid(),'Runner',gen_random_uuid(),'[]'::jsonb)$$,'42501',null,'authenticated cannot execute draft RPC');
+select throws_ok($$insert into public.daily_audit_item_results(submission_id,organization_id,branch_id,item_id,item_number,answer) values(gen_random_uuid(),gen_random_uuid(),gen_random_uuid(),'daily-audit-1',1,'not_checked')$$,'42501',null,'authenticated cannot write results');
+reset role;
+select * from finish();
+rollback;

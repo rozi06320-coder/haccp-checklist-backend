@@ -1,0 +1,5 @@
+alter table public.inventory_items_reports
+  drop constraint if exists inventory_items_reports_branch_id_supervisor_user_id_business_date_key;
+
+alter table public.inventory_items_reports
+  drop constraint if exists inventory_items_reports_branch_id_supervisor_user_id_busine_key;

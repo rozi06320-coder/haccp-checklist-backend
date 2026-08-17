@@ -1,0 +1,26 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "allowJs": false,
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "noEmit": false,
+    "noEmitOnError": true,
+    "outDir": "dist-api",
+    "rootDir": "src",
+    "incremental": false,
+    "isolatedModules": false,
+    "plugins": []
+  },
+  "include": [
+    "src/server.ts",
+    "src/backend/**/*.ts",
+    "src/lib/contracts/management-overview.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "src/backend/**/*.test.ts"
+  ]
+}
