@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, it } from "node:test";
-import { AdminConflictError, AdminDuplicatePersonCodeError, AdminDuplicateStaffCodeError, AdminInputError, AdminNotFoundError, ProvisioningStageError, type FinalizeProvisionedOrganizationManagerInput, type FinalizeProvisionedUserInput } from "./admin";
+import { AdminAccessError, AdminConflictError, AdminDuplicatePersonCodeError, AdminDuplicateStaffCodeError, AdminInputError, AdminNotFoundError, ProvisioningStageError, type FinalizeProvisionedOrganizationManagerInput, type FinalizeProvisionedUserInput } from "./admin";
 import { createApp } from "./app";
 import { loadBackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
@@ -287,8 +287,8 @@ function deps(options: {
   };
 }
 
-async function post(dependencies: BackendDependencies, body: unknown, organization = ids.orgA, token = "valid") {
-  const server = createServer(createApp(config, dependencies));
+async function post(dependencies: BackendDependencies, body: unknown, organization = ids.orgA, token = "valid", appConfig = config) {
+  const server = createServer(createApp(appConfig, dependencies));
   servers.push(server);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   return fetch(`${origin(server)}/api/v1/internal-admin/organizations/${organization}/supervisors`, {
@@ -1287,6 +1287,16 @@ describe("internal-admin supervisor provisioning", () => {
     }
   });
 
+  it("preserves supervisor provisioning duplicate and access response semantics", async () => {
+    assert.equal((await post(deps({ createError: new AdminConflictError() }), valid)).status, 409);
+    assert.equal((await post(deps({ internalAdmin: false }), valid)).status, 403);
+
+    const calls: Record<string, unknown> = {};
+    const response = await post(deps({ finalizeError: new AdminAccessError(), calls }), valid);
+    assert.equal(response.status, 403);
+    assert.equal(calls.deleted, ids.created);
+  });
+
   it("compensates supervisor team assignment conflicts without leaking DB details", async () => {
     const calls: Record<string, unknown> = {};
     const response = await post(deps({ finalizeError: new AdminConflictError(), calls }), valid);
@@ -1297,11 +1307,64 @@ describe("internal-admin supervisor provisioning", () => {
     assert.doesNotMatch(text, /postgres|duplicate key|service_role|stack|password/i);
   });
 
-  it("uses fixed sanitized provisioning diagnostics", () => {
-    const failure = new ProvisioningStageError("database_finalize", "rpc_failed", 400);
+  it("logs sanitized supervisor provisioning diagnostics for generic 503 stages", async () => {
+    const appConfig = { ...config, nodeEnv: "production" as const };
+    const original = console.error;
+    const records: unknown[][] = [];
+    console.error = (...args) => records.push(args);
+    try {
+      assert.equal(
+        (await post(
+          deps({ createError: new ProvisioningStageError("auth_create", "operation_failed", 500) }),
+          valid,
+          ids.orgA,
+          "valid",
+          appConfig,
+        )).status,
+        503,
+      );
+      assert.equal(
+        (await post(
+          deps({ finalizeError: new ProvisioningStageError("database_finalize", "rpc_failed", null, "23503") }),
+          valid,
+          ids.orgA,
+          "valid",
+          appConfig,
+        )).status,
+        503,
+      );
+    } finally {
+      console.error = original;
+    }
+
+    assert.deepEqual(records.map((record) => record[0]), [
+      "[supervisor-provisioning] failed",
+      "[supervisor-provisioning] failed",
+    ]);
     assert.deepEqual(
-      { stage: failure.stage, category: failure.category, status: failure.status },
-      { stage: "database_finalize", category: "rpc_failed", status: 400 },
+      records.map((record) => {
+        const details = record[1] as Record<string, unknown>;
+        return {
+          stage: details.stage,
+          reason: details.reason,
+          upstreamStatus: details.upstreamStatus,
+          databaseCode: details.databaseCode,
+          hasRequestId: typeof details.requestId === "string" && /^[0-9a-f-]{36}$/.test(details.requestId),
+        };
+      }),
+      [
+        { stage: "auth_create", reason: "operation_failed", upstreamStatus: 500, databaseCode: undefined, hasRequestId: true },
+        { stage: "database_finalize", reason: "rpc_failed", upstreamStatus: undefined, databaseCode: "23503", hasRequestId: true },
+      ],
+    );
+    assert.doesNotMatch(JSON.stringify(records), /new\.person|example\.invalid|temporary_password|password|Bearer|cookie|token|secret|10000000|20000000|30000000/i);
+  });
+
+  it("uses fixed sanitized provisioning diagnostics", () => {
+    const failure = new ProvisioningStageError("database_finalize", "rpc_failed", 400, "23503");
+    assert.deepEqual(
+      { stage: failure.stage, category: failure.category, status: failure.status, databaseCode: failure.databaseCode },
+      { stage: "database_finalize", category: "rpc_failed", status: 400, databaseCode: "23503" },
     );
     assert.doesNotMatch(failure.message, /email|password|token|secret|postgres|supabase/i);
   });

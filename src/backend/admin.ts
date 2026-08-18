@@ -523,6 +523,7 @@ export class ProvisioningStageError extends AdminOperationError {
     readonly stage: "auth_create" | "database_finalize" | "auth_compensation",
     readonly category: "operation_failed" | "invalid_response" | "rpc_failed",
     readonly status: number | null = null,
+    readonly databaseCode: string | null = null,
   ) {
     super("Provisioning operation failed.");
     this.name = "ProvisioningStageError";
@@ -1759,7 +1760,7 @@ export function createProvisioningAdmin(url: string, secretKey: string): Provisi
         if (error.code === "42501") throw new AdminAccessError();
         if (error.code === "23505" && /profiles_person_code/i.test(error.message)) throw new AdminDuplicatePersonCodeError();
         if (error.code === "23505" || error.code === "23514" || error.code === "22023") throw new AdminConflictError();
-        throw new ProvisioningStageError("database_finalize", "rpc_failed");
+        throw new ProvisioningStageError("database_finalize", "rpc_failed", null, error.code ?? null);
       }
     },
     async finalizeMaintenance(input) {

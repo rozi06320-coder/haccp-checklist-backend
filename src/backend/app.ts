@@ -8,7 +8,7 @@ import { managementOperationsSummarySchema } from "../lib/contracts/management-o
 import { managementSalesTrackingMonthlySummarySchema } from "../lib/contracts/management-sales-tracking-monthly";
 import { annualEvaluationDetailSchema, annualEvaluationScoreSchema, annualEvaluationSubjectTypeSchema, annualEvaluationWorkspaceSchema } from "../lib/contracts/annual-evaluation";
 import { requireAuthentication } from "./auth";
-import { AdminAccessError, AdminConflictError, AdminDuplicatePersonCodeError, AdminDuplicateStaffCodeError, AdminInputError, AdminNotFoundError, type DailyAuditAccessUserCredential, type ManagerPinCredential } from "./admin";
+import { AdminAccessError, AdminConflictError, AdminDuplicatePersonCodeError, AdminDuplicateStaffCodeError, AdminInputError, AdminNotFoundError, ProvisioningStageError, type DailyAuditAccessUserCredential, type ManagerPinCredential } from "./admin";
 import type { BackendConfig } from "./config";
 import {
   createDefaultDependencies,
@@ -1194,6 +1194,36 @@ function maintenancePushError(error: unknown) {
   if (error instanceof MaintenancePushAccessError) return new HttpError(403, "forbidden", "Access is denied.");
   if (error instanceof MaintenancePushUnavailableError) return new HttpError(503, "service_unavailable", "Maintenance notifications are temporarily unavailable.");
   return new HttpError(503, "service_unavailable", "Maintenance notifications are temporarily unavailable.");
+}
+
+function logSupervisorProvisioningFailure(
+  request: Request,
+  error: unknown,
+  fallbackStage: "auth_create" | "database_finalize",
+) {
+  request.safeFailureLogged = true;
+  if (request.app.get("env") === "test") return;
+
+  const details: {
+    requestId: string;
+    stage: "auth_create" | "database_finalize";
+    reason: string;
+    upstreamStatus?: number;
+    databaseCode?: string;
+  } = {
+    requestId: request.id,
+    stage: fallbackStage,
+    reason: "unexpected_error",
+  };
+
+  if (error instanceof ProvisioningStageError) {
+    details.stage = error.stage === "auth_create" ? "auth_create" : "database_finalize";
+    details.reason = error.category;
+    if (typeof error.status === "number") details.upstreamStatus = error.status;
+    if (error.stage === "database_finalize" && error.databaseCode) details.databaseCode = error.databaseCode;
+  }
+
+  console.error("[supervisor-provisioning] failed", details);
 }
 
 function evidenceLengthGuard(request:Request,_response:Response,next:NextFunction){
@@ -2724,6 +2754,7 @@ export function createApp(
           if (error instanceof AdminConflictError) {
             throw new HttpError(409, "conflict", "An account with that email already exists.");
           }
+          logSupervisorProvisioningFailure(request, error, "auth_create");
           throw new HttpError(503, "service_unavailable", "The service is unavailable.");
         }
 
@@ -2763,6 +2794,7 @@ export function createApp(
           if (error instanceof AdminDuplicatePersonCodeError) {
             throw new HttpError(409, "duplicate_person_code", "Supervisor code already exists.");
           }
+          logSupervisorProvisioningFailure(request, error, "database_finalize");
           throw new HttpError(503, "service_unavailable", "The service is unavailable.");
         }
 
