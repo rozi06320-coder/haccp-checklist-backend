@@ -30,6 +30,15 @@ export type AuthVerifier = {
   verify(token: string): Promise<{ userId: string; email: string } | null>;
 };
 
+type ClaimsAuthClient = {
+  auth: {
+    getClaims(token: string): Promise<{
+      data: { claims: Record<string, unknown> } | null;
+      error: unknown;
+    }>;
+  };
+};
+
 export type UserContextRepositoryFactory = (
   token: string,
 ) => UserContextRepository;
@@ -58,6 +67,37 @@ const clientAuthOptions = {
   detectSessionInUrl: false,
   persistSession: false,
 } as const;
+
+export function createSupabaseClaimsAuthVerifier(
+  authClient: ClaimsAuthClient,
+): AuthVerifier {
+  return {
+    async verify(token) {
+      try {
+        const { data, error } = await authClient.auth.getClaims(token);
+        if (error || !data?.claims) {
+          return null;
+        }
+
+        const { sub, email, role, is_anonymous } = data.claims;
+        if (
+          typeof sub !== "string" ||
+          !sub.trim() ||
+          typeof email !== "string" ||
+          !email.trim() ||
+          (role !== undefined && role !== "authenticated") ||
+          is_anonymous === true
+        ) {
+          return null;
+        }
+
+        return { userId: sub, email };
+      } catch {
+        return null;
+      }
+    },
+  };
+}
 
 export function createDefaultDependencies(
   config: BackendConfig,
@@ -95,14 +135,7 @@ export function createDefaultDependencies(
     brandingService: createBrandingService(config.supabase.url, config.supabase.secretKey),
     maintenancePush: createMaintenancePushService(config),
     now: () => new Date(),
-    authVerifier: {
-      async verify(token) {
-        const { data, error } = await authClient.auth.getUser(token);
-        return error || !data.user?.id || !data.user.email
-          ? null
-          : { userId: data.user.id, email: data.user.email };
-      },
-    },
+    authVerifier: createSupabaseClaimsAuthVerifier(authClient),
     async checkReadiness() {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 3_000);
