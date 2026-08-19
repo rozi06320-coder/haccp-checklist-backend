@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import helmet from "helmet";
@@ -1261,6 +1262,37 @@ function requireAuthContext(request: Request) {
   return request.auth;
 }
 
+function normalizedRequestRoute(request: Request): string {
+  const routePath = request.route?.path;
+  if (typeof routePath === "string") return routePath;
+
+  const path = request.path;
+  if (path.startsWith("/api/")) return "/api/*";
+  if (path.startsWith("/health/")) return "/health/*";
+  if (/\/[^/]+\.[A-Za-z0-9]{1,8}$/u.test(path)) return "/static/*";
+  return "/non-api/*";
+}
+
+function requestRateDiagnostic(request: Request, response: Response, next: NextFunction) {
+  if (request.app.get("env") === "test") {
+    next();
+    return;
+  }
+
+  const startedAt = performance.now();
+  response.once("finish", () => {
+    console.info("[request-rate]", {
+      timestamp: new Date().toISOString(),
+      requestId: request.id,
+      method: request.method,
+      route: normalizedRequestRoute(request),
+      status: response.statusCode,
+      durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+    });
+  });
+  next();
+}
+
 async function loadActiveUser(request: Request): Promise<UserContext> {
   const auth = requireAuthContext(request);
 
@@ -1307,6 +1339,7 @@ export function createApp(
     response.setHeader("X-Request-Id", request.id);
     next();
   });
+  app.use(requestRateDiagnostic);
   app.use(helmet());
 
   // Liveness deliberately precedes body parsing and all dependency/rate limits.

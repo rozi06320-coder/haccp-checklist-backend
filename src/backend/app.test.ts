@@ -4,7 +4,7 @@ import type { AddressInfo } from "node:net";
 import { after, before, describe, it } from "node:test";
 import { createApp } from "./app";
 import { MAX_BEARER_TOKEN_LENGTH } from "./auth";
-import { loadBackendConfig } from "./config";
+import { loadBackendConfig, type BackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
 import type {
   UserContext,
@@ -209,8 +209,9 @@ const config = loadBackendConfig({
 
 async function listen(
   injectedDependencies: BackendDependencies = dependencies(),
+  appConfig: BackendConfig = config,
 ): Promise<{ baseUrl: string; server: Server }> {
-  const server = createServer(createApp(config, injectedDependencies));
+  const server = createServer(createApp(appConfig, injectedDependencies));
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => resolve());
@@ -324,6 +325,89 @@ describe("Express Phase 2D API", () => {
       assert.match(requestId, /^[0-9a-f]{8}-[0-9a-f-]{27}$/);
       assert.equal(requestId.length, 36);
       assert.doesNotMatch(requestId, /attacker/);
+    });
+
+    it("logs temporary request-rate diagnostics without sensitive request data", async () => {
+      const productionConfig: BackendConfig = { ...config, nodeEnv: "production" };
+      const isolated = await listen(dependencies(), productionConfig);
+      const originalInfo = console.info;
+      const records: unknown[][] = [];
+      console.info = (...args: unknown[]) => {
+        records.push(args);
+      };
+
+      try {
+        const success = await fetch(`${isolated.baseUrl}/health/live`, {
+          headers: {
+            Authorization: "Bearer successful-sensitive-token",
+            Cookie: "sb-project-auth-token=sensitive-cookie",
+          },
+        });
+        assert.equal(success.status, 200);
+        await success.text();
+
+        const failed = await fetch(
+          `${isolated.baseUrl}/api/v1/not-found?access_token=query-sensitive-token`,
+          {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer failed-sensitive-token",
+              Cookie: "session=sensitive-cookie",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              email: "private@example.invalid",
+              password: "secret-password",
+              token: "body-sensitive-token",
+              supabaseKey: "body-sensitive-supabase-key",
+            }),
+          },
+        );
+        assert.equal(failed.status, 404);
+        await failed.text();
+      } finally {
+        console.info = originalInfo;
+        await close(isolated.server);
+      }
+
+      const requestRateRecords = records.filter(
+        (record) => record[0] === "[request-rate]",
+      );
+      assert.equal(requestRateRecords.length, 2);
+
+      const [successMessage, successDetails] = requestRateRecords[0] ?? [];
+      assert.equal(successMessage, "[request-rate]");
+      assert.deepEqual(
+        Object.keys(successDetails as Record<string, unknown>).sort(),
+        ["durationMs", "method", "requestId", "route", "status", "timestamp"],
+      );
+      assert.equal((successDetails as { method: string }).method, "GET");
+      assert.equal((successDetails as { route: string }).route, "/health/live");
+      assert.equal((successDetails as { status: number }).status, 200);
+      assert.match(
+        (successDetails as { requestId: string }).requestId,
+        /^[0-9a-f]{8}-[0-9a-f-]{27}$/,
+      );
+      assert.equal(
+        Number.isNaN(Date.parse((successDetails as { timestamp: string }).timestamp)),
+        false,
+      );
+      assert.equal(
+        typeof (successDetails as { durationMs: unknown }).durationMs,
+        "number",
+      );
+
+      const [, failedDetails] = requestRateRecords[1] ?? [];
+      assert.equal((failedDetails as { method: string }).method, "POST");
+      assert.equal((failedDetails as { route: string }).route, "/api/*");
+      assert.equal((failedDetails as { status: number }).status, 404);
+
+      const serialized = JSON.stringify(requestRateRecords);
+      assert.doesNotMatch(
+        serialized,
+        /successful-sensitive-token|failed-sensitive-token|sensitive-cookie|query-sensitive-token|private@example\.invalid|secret-password|body-sensitive-token|body-sensitive-supabase-key/i,
+      );
+      assert.doesNotMatch(serialized, /Authorization|Cookie|password|email|token|supabaseKey/i);
     });
 
     it("does not trust spoofed forwarded IPs and keeps liveness live", async () => {
