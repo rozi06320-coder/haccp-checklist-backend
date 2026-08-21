@@ -330,6 +330,7 @@ export type OperationalAdmin = {
   listMaintenancePurchases(actorUserId: string, issueId: string): Promise<unknown>;
   createMaintenancePurchase(input: { actorUserId:string; issueId:string; payload:{item_name:string;quantity:string|number;unit:"pcs"|"meter"|"kg"|"box"|"bag"|"roll"|"set"|"liter"|"other";amount:string|number;vendor_name?:string|null;purchase_date:string;notes?:string|null}; receipts?:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>|null }): Promise<unknown>;
   reimburseMaintenancePurchase(input:{actorUserId:string;purchaseId:string;reimbursementNote?:string|null}):Promise<unknown>;
+  listMaintenancePurchaseHistory?(input:{actorUserId:string}):Promise<unknown>;
   listManagedMaintenancePurchases?(input:{actorUserId:string;organizationId:string;branchId?:string;issueStatus?:z.infer<typeof maintenanceIssueStatus>;paymentStatus?:z.infer<typeof purchaseLogPaymentStatus>;vendor?:string;dateFrom?:string;dateTo?:string}):Promise<unknown>;
   getManagedOperationsSummary?(input:{actorUserId:string;organizationId:string;branchId?:string;month:string}):Promise<unknown>;
   listManagedStaff(input: {
@@ -959,6 +960,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       }
     },
     async reimburseMaintenancePurchase(input){const rows=await normalizeMaintenancePurchaseMutations(await rpc("reimburse_maintenance_purchase_log",{actor_user_id:input.actorUserId,target_purchase_id:input.purchaseId,new_note:input.reimbursementNote??null}));return{maintenance_purchase:rows[0]};},
+    async listMaintenancePurchaseHistory(input){return{maintenance_purchases:await normalizeManagedMaintenancePurchases(await rpc("list_maintenance_purchase_history",{actor_user_id:input.actorUserId}))};},
     async getSupervisorDailyAuditCurrentState(input){return dailyAuditCurrent.parse(await rpcObject("get_supervisor_daily_audit_current_state",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate}));},
     async saveSupervisorDailyAuditDraft(input){return dailyAuditCurrent.parse(await rpcObject("save_supervisor_daily_audit_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,auditor_kind:input.auditorKind,auditor_id:input.auditorId,auditor_name_snapshot:input.auditorDisplayName,access_credential_version:input.accessCredentialVersion,items:input.items}));},
     async submitSupervisorDailyAudit(input){return dailyAuditCurrent.parse(await rpcObject("submit_supervisor_daily_audit",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,auditor_kind:input.auditorKind,auditor_id:input.auditorId,auditor_name_snapshot:input.auditorDisplayName,access_credential_version:input.accessCredentialVersion,items:input.items,idempotency_key:input.idempotencyKey??null}));},
