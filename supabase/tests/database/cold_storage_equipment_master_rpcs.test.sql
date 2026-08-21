@@ -1,5 +1,5 @@
 begin;
-select plan(19);
+select plan(31);
 
 insert into auth.users(
   instance_id, id, aud, role, email, raw_app_meta_data, raw_user_meta_data, created_at, updated_at
@@ -17,13 +17,15 @@ select
 from unnest(array[
   'cf100000-0000-4000-8000-000000000001'::uuid,
   'cf100000-0000-4000-8000-000000000002'::uuid,
-  'cf100000-0000-4000-8000-000000000003'::uuid
+  'cf100000-0000-4000-8000-000000000003'::uuid,
+  'cf100000-0000-4000-8000-000000000004'::uuid
 ]) user_id;
 
 update public.profiles
 set full_name = case id
   when 'cf100000-0000-4000-8000-000000000001' then 'Equipment Supervisor'
   when 'cf100000-0000-4000-8000-000000000002' then 'Other Supervisor'
+  when 'cf100000-0000-4000-8000-000000000004' then 'Same Branch Supervisor'
   else 'Organization Manager'
 end,
 must_change_password = false
@@ -40,6 +42,7 @@ insert into public.branches(id, organization_id, name, code, timezone) values
 
 insert into public.branch_memberships(branch_id, user_id, role) values
   ('cf300000-0000-4000-8000-000000000001', 'cf100000-0000-4000-8000-000000000001', 'branch_manager'),
+  ('cf300000-0000-4000-8000-000000000001', 'cf100000-0000-4000-8000-000000000004', 'branch_manager'),
   ('cf300000-0000-4000-8000-000000000002', 'cf100000-0000-4000-8000-000000000002', 'branch_manager');
 
 insert into public.organization_memberships(organization_id, user_id, role) values
@@ -49,6 +52,7 @@ insert into public.branch_supervisor_teams(
   id, organization_id, branch_id, supervisor_user_id
 ) values
   ('cf400000-0000-4000-8000-000000000001', 'cf200000-0000-4000-8000-000000000001', 'cf300000-0000-4000-8000-000000000001', 'cf100000-0000-4000-8000-000000000001'),
+  ('cf400000-0000-4000-8000-000000000004', 'cf200000-0000-4000-8000-000000000001', 'cf300000-0000-4000-8000-000000000001', 'cf100000-0000-4000-8000-000000000004'),
   ('cf400000-0000-4000-8000-000000000002', 'cf200000-0000-4000-8000-000000000001', 'cf300000-0000-4000-8000-000000000002', 'cf100000-0000-4000-8000-000000000002');
 
 select ok(
@@ -66,8 +70,18 @@ select ok(
     'service_role',
     'public.rename_supervisor_cold_storage_equipment(uuid,uuid,uuid,text)',
     'execute'
+  )
+  and has_function_privilege(
+    'service_role',
+    'public.update_supervisor_cold_storage_equipment(uuid,uuid,uuid,text,text)',
+    'execute'
+  )
+  and has_function_privilege(
+    'service_role',
+    'public.archive_supervisor_cold_storage_equipment(uuid,uuid,uuid)',
+    'execute'
   ),
-  'service role can execute the three master equipment RPCs'
+  'service role can execute master equipment RPCs'
 );
 
 select ok(
@@ -84,6 +98,16 @@ select ok(
   and not has_function_privilege(
     'authenticated',
     'public.rename_supervisor_cold_storage_equipment(uuid,uuid,uuid,text)',
+    'execute'
+  )
+  and not has_function_privilege(
+    'authenticated',
+    'public.update_supervisor_cold_storage_equipment(uuid,uuid,uuid,text,text)',
+    'execute'
+  )
+  and not has_function_privilege(
+    'authenticated',
+    'public.archive_supervisor_cold_storage_equipment(uuid,uuid,uuid)',
     'execute'
   ),
   'authenticated cannot execute master equipment RPCs directly'
@@ -229,6 +253,20 @@ from public.branch_cold_storage_equipment master
 where master.branch_id = 'cf300000-0000-4000-8000-000000000001'
   and master.name = 'Walk-in Freezer';
 
+insert into public.cold_storage_readings(
+  id, submission_id, equipment_id, slot, temperature_c, status,
+  corrective_action, submitted_at
+) values (
+  'cf700000-0000-4000-8000-000000000001',
+  'cf500000-0000-4000-8000-000000000001',
+  'historical-freezer',
+  '12:00',
+  4,
+  'pass',
+  '',
+  now()
+);
+
 select is(
   (select name
    from public.rename_supervisor_cold_storage_equipment(
@@ -272,6 +310,150 @@ select throws_ok($$
     'main walk-in freezer'
   )
 $$, '23505', null, 'rename rejects duplicate normalized active name');
+
+select throws_ok($$
+  select *
+  from public.rename_supervisor_cold_storage_equipment(
+    'cf100000-0000-4000-8000-000000000001',
+    'cf300000-0000-4000-8000-000000000001',
+    (select id
+     from public.branch_cold_storage_equipment
+     where branch_id = 'cf300000-0000-4000-8000-000000000001'
+       and name = 'Retired Freezer'),
+    'Renamed Retired Freezer'
+  )
+$$, '42501', 'cold storage equipment access denied', 'rename rejects inactive equipment rows');
+
+select is(
+  (select name || '|' || equipment_type
+   from public.update_supervisor_cold_storage_equipment(
+     'cf100000-0000-4000-8000-000000000001',
+     'cf300000-0000-4000-8000-000000000001',
+     (select id
+      from public.branch_cold_storage_equipment
+      where branch_id = 'cf300000-0000-4000-8000-000000000001'
+        and name = 'Main Walk-in Freezer'),
+     'Prep Refrigerator',
+     'refrigerator'
+   )),
+  'Prep Refrigerator|refrigerator',
+  'assigned Supervisor updates equipment name and type'
+);
+
+select is(
+  (select name || '|' || equipment_type
+   from public.list_supervisor_cold_storage_equipment(
+     'cf100000-0000-4000-8000-000000000004',
+     'cf300000-0000-4000-8000-000000000001'
+   )
+   where name = 'Prep Refrigerator'),
+  'Prep Refrigerator|refrigerator',
+  'same-branch Supervisor sees the updated equipment master'
+);
+
+select is(
+  (select equipment_type
+   from public.cold_storage_equipment
+   where id = 'cf600000-0000-4000-8000-000000000001'),
+  'freezer',
+  'type change leaves historical submission snapshot type unchanged'
+);
+
+select throws_ok($$
+  select *
+  from public.update_supervisor_cold_storage_equipment(
+    'cf100000-0000-4000-8000-000000000001',
+    'cf300000-0000-4000-8000-000000000001',
+    (select id
+     from public.branch_cold_storage_equipment
+     where branch_id = 'cf300000-0000-4000-8000-000000000001'
+       and name = 'Reach-in Refrigerator'),
+    'prep refrigerator',
+    'freezer'
+  )
+$$, '23505', null, 'update rejects duplicate active name');
+
+select is(
+  (select active
+   from public.archive_supervisor_cold_storage_equipment(
+     'cf100000-0000-4000-8000-000000000001',
+     'cf300000-0000-4000-8000-000000000001',
+     (select id
+      from public.branch_cold_storage_equipment
+      where branch_id = 'cf300000-0000-4000-8000-000000000001'
+        and name = 'Prep Refrigerator')
+   )),
+  false,
+  'remove archives equipment with active=false'
+);
+
+select is(
+  (select count(*)
+   from public.list_supervisor_cold_storage_equipment(
+     'cf100000-0000-4000-8000-000000000004',
+     'cf300000-0000-4000-8000-000000000001'
+   )
+   where name = 'Prep Refrigerator'),
+  0::bigint,
+  'same-branch Supervisor no longer sees archived equipment in active roster'
+);
+
+select is(
+  (select count(*)
+   from public.cold_storage_readings reading
+   join public.cold_storage_equipment snapshot
+     on snapshot.submission_id = reading.submission_id
+    and snapshot.equipment_id = reading.equipment_id
+   where reading.id = 'cf700000-0000-4000-8000-000000000001'
+     and reading.submitted_at is not null
+     and snapshot.equipment_name = 'Walk-in Freezer'
+     and snapshot.equipment_type = 'freezer'),
+  1::bigint,
+  'archive leaves historical submitted readings queryable'
+);
+
+select is(
+  (select state
+   from public.cold_storage_submissions
+   where id = 'cf500000-0000-4000-8000-000000000001'),
+  'submitted',
+  'submitted slot remains submitted after equipment archive'
+);
+
+select is(
+  (select count(*)
+   from public.cold_storage_equipment snapshot
+   left join public.branch_cold_storage_equipment master
+     on master.id = snapshot.master_equipment_id
+    and master.branch_id = snapshot.branch_id
+    and master.organization_id = snapshot.organization_id
+   where snapshot.master_equipment_id is not null
+     and master.id is null),
+  0::bigint,
+  'archiving equipment creates no orphaned snapshot rows'
+);
+
+select throws_ok($$
+  select *
+  from public.archive_supervisor_cold_storage_equipment(
+    'cf100000-0000-4000-8000-000000000001',
+    'cf300000-0000-4000-8000-000000000002',
+    (select id
+     from public.branch_cold_storage_equipment
+     where branch_id = 'cf300000-0000-4000-8000-000000000001'
+     limit 1)
+  )
+$$, '42501', 'cold storage equipment access denied', 'Supervisor cannot archive another branch equipment row');
+
+select is(
+  (select count(*)
+   from public.list_supervisor_cold_storage_equipment(
+     'cf100000-0000-4000-8000-000000000002',
+     'cf300000-0000-4000-8000-000000000002'
+   )),
+  1::bigint,
+  'other branch active roster is unaffected by branch equipment archive'
+);
 
 select throws_ok($$
   select *

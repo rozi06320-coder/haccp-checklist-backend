@@ -702,7 +702,7 @@ const coldStorageEquipmentMasterBodySchema=z.object({
   name:normalizedNameSchema,
   equipment_type:coldStorageEquipmentMasterTypeSchema,
 }).strict();
-const coldStorageEquipmentMasterRenameBodySchema=z.object({name:normalizedNameSchema}).strict();
+const coldStorageEquipmentMasterRenameBodySchema=z.object({name:normalizedNameSchema,equipment_type:coldStorageEquipmentMasterTypeSchema.optional()}).strict();
 const coldStorageEquipmentMasterSchema=z.object({
   id:z.uuid(),
   branch_id:z.uuid(),
@@ -4425,8 +4425,23 @@ export function createApp(
     if(!branch.success||!equipment.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request),operational=dependencies.operationalAdmin;
     if(context.must_change_password||context.managed_organizations.length>0||!context.branches.some(item=>item.id===branch.data&&item.role==="branch_manager"))throw new HttpError(403,"forbidden","Access is denied.");
+    if(body.data.equipment_type){
+      if(!operational?.updateSupervisorColdStorageEquipment)throw new HttpError(503,"service_unavailable","Cold Storage equipment is temporarily unavailable.");
+      const result=coldStorageEquipmentMasterMutationSchema.parse(await operational.updateSupervisorColdStorageEquipment({actorUserId:auth.userId,branchId:branch.data,equipmentId:equipment.data,name:body.data.name,equipmentType:body.data.equipment_type}));
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);return;
+    }
     if(!operational?.renameSupervisorColdStorageEquipment)throw new HttpError(503,"service_unavailable","Cold Storage equipment is temporarily unavailable.");
     const result=coldStorageEquipmentMasterMutationSchema.parse(await operational.renameSupervisorColdStorageEquipment({actorUserId:auth.userId,branchId:branch.data,equipmentId:equipment.data,name:body.data.name}));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+  }catch(error){next(error instanceof HttpError?error:operationalColdStorageEquipmentError(error));}});
+
+  app.delete("/api/v1/supervisor/branches/:branchId/cold-storage/equipment/:equipmentId",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),equipment=z.uuid().safeParse(request.params.equipmentId);
+    if(!branch.success||!equipment.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request),operational=dependencies.operationalAdmin;
+    if(context.must_change_password||context.managed_organizations.length>0||!context.branches.some(item=>item.id===branch.data&&item.role==="branch_manager"))throw new HttpError(403,"forbidden","Access is denied.");
+    if(!operational?.archiveSupervisorColdStorageEquipment)throw new HttpError(503,"service_unavailable","Cold Storage equipment is temporarily unavailable.");
+    const result=coldStorageEquipmentMasterMutationSchema.parse(await operational.archiveSupervisorColdStorageEquipment({actorUserId:auth.userId,branchId:branch.data,equipmentId:equipment.data}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
   }catch(error){next(error instanceof HttpError?error:operationalColdStorageEquipmentError(error));}});
 

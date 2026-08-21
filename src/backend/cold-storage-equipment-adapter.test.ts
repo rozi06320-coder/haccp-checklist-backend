@@ -29,21 +29,23 @@ describe("Cold Storage equipment master operational adapter", () => {
 
       const isCreate = path.endsWith("/create_supervisor_cold_storage_equipment");
       const isRename = path.endsWith("/rename_supervisor_cold_storage_equipment");
+      const isUpdate = path.endsWith("/update_supervisor_cold_storage_equipment");
+      const isArchive = path.endsWith("/archive_supervisor_cold_storage_equipment");
       const name = isCreate
         ? String(body.equipment_name)
-        : isRename
+        : isRename || isUpdate
           ? String(body.equipment_name)
           : "Walk-in Freezer";
       const row = {
         id: ids.equipment,
         branch_id: ids.branch,
         name: malformed ? "" : name,
-        equipment_type: "freezer",
-        active: true,
+        equipment_type: isUpdate ? String(body.equipment_type) : "freezer",
+        active: !isArchive,
         updated_at: "2026-08-11T12:00:00.000Z",
         organization_id: ids.organization,
         created_by: ids.actor,
-        updated_by: isRename ? ids.actor : null,
+        updated_by: isRename || isUpdate || isArchive ? ids.actor : null,
         created_at: "2026-08-11T10:00:00.000Z",
       };
       response.statusCode = 200;
@@ -121,6 +123,51 @@ describe("Cold Storage equipment master operational adapter", () => {
         equipment_name: "Main Walk-in Freezer",
       },
     });
+  });
+
+  it("calls update with verified scope, equipment id, name, and type", async () => {
+    const admin = createOperationalAdmin(origin, "service-key");
+    assert.ok(admin.updateSupervisorColdStorageEquipment);
+    const result = await admin.updateSupervisorColdStorageEquipment({
+      actorUserId: ids.actor,
+      branchId: ids.branch,
+      equipmentId: ids.equipment,
+      name: "Prep Refrigerator",
+      equipmentType: "refrigerator",
+    });
+    assert.equal((result as { equipment: { name: string; equipment_type: string } }).equipment.name, "Prep Refrigerator");
+    assert.equal((result as { equipment: { equipment_type: string } }).equipment.equipment_type, "refrigerator");
+    assert.deepEqual(requests[0], {
+      path: "/rest/v1/rpc/update_supervisor_cold_storage_equipment",
+      body: {
+        actor_user_id: ids.actor,
+        target_branch_id: ids.branch,
+        target_equipment_id: ids.equipment,
+        equipment_name: "Prep Refrigerator",
+        equipment_type: "refrigerator",
+      },
+    });
+    assert.doesNotMatch(JSON.stringify(result), /organization_id|created_by|updated_by/);
+  });
+
+  it("calls archive with verified scope and equipment id only", async () => {
+    const admin = createOperationalAdmin(origin, "service-key");
+    assert.ok(admin.archiveSupervisorColdStorageEquipment);
+    const result = await admin.archiveSupervisorColdStorageEquipment({
+      actorUserId: ids.actor,
+      branchId: ids.branch,
+      equipmentId: ids.equipment,
+    });
+    assert.equal((result as { equipment: { active: boolean } }).equipment.active, false);
+    assert.deepEqual(requests[0], {
+      path: "/rest/v1/rpc/archive_supervisor_cold_storage_equipment",
+      body: {
+        actor_user_id: ids.actor,
+        target_branch_id: ids.branch,
+        target_equipment_id: ids.equipment,
+      },
+    });
+    assert.doesNotMatch(JSON.stringify(result), /organization_id|created_by|updated_by/);
   });
 
   it("rejects a malformed RPC equipment row", async () => {

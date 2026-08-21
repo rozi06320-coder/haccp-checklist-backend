@@ -40,7 +40,9 @@ const persistence={
 const operationalAdmin={
  async listSupervisorColdStorageEquipment(actorUserId:string,branchId:string){calls.push({name:"master-list",input:{actorUserId,branchId}});if(actorUserId!==supervisor||branchId!==branch)throw new OperationalAccessError();return{equipment:masterEquipment};},
  async createSupervisorColdStorageEquipment(input:{actorUserId:string;branchId:string;name:string;equipmentType:"refrigerator"|"freezer"}){calls.push({name:"master-create",input});if(input.actorUserId!==supervisor||input.branchId!==branch)throw new OperationalAccessError();if(input.name==="Unavailable Unit")throw new Error("database unavailable");if(masterEquipment.some(row=>row.active&&row.name.toLowerCase()===input.name.toLowerCase()))throw new OperationalConflictError();const row:MasterEquipment={id:secondMasterEquipmentId,branch_id:branch,name:input.name,equipment_type:input.equipmentType,active:true,updated_at:"2026-08-11T12:30:00.000Z"};masterEquipment.push(row);return{equipment:row};},
- async renameSupervisorColdStorageEquipment(input:{actorUserId:string;branchId:string;equipmentId:string;name:string}){calls.push({name:"master-rename",input});if(input.actorUserId!==supervisor||input.branchId!==branch)throw new OperationalAccessError();const row=masterEquipment.find(item=>item.id===input.equipmentId);if(!row)throw new OperationalAccessError();if(masterEquipment.some(item=>item.id!==row.id&&item.active&&item.name.toLowerCase()===input.name.toLowerCase()))throw new OperationalConflictError();row.name=input.name;row.updated_at="2026-08-11T13:00:00.000Z";return{equipment:row};},
+ async renameSupervisorColdStorageEquipment(input:{actorUserId:string;branchId:string;equipmentId:string;name:string}){calls.push({name:"master-rename",input});if(input.actorUserId!==supervisor||input.branchId!==branch)throw new OperationalAccessError();const row=masterEquipment.find(item=>item.id===input.equipmentId&&item.active);if(!row)throw new OperationalAccessError();if(masterEquipment.some(item=>item.id!==row.id&&item.active&&item.name.toLowerCase()===input.name.toLowerCase()))throw new OperationalConflictError();row.name=input.name;row.updated_at="2026-08-11T13:00:00.000Z";return{equipment:row};},
+ async updateSupervisorColdStorageEquipment(input:{actorUserId:string;branchId:string;equipmentId:string;name:string;equipmentType:"refrigerator"|"freezer"}){calls.push({name:"master-update",input});if(input.actorUserId!==supervisor||input.branchId!==branch)throw new OperationalAccessError();const row=masterEquipment.find(item=>item.id===input.equipmentId&&item.active);if(!row)throw new OperationalAccessError();if(masterEquipment.some(item=>item.id!==row.id&&item.active&&item.name.toLowerCase()===input.name.toLowerCase()))throw new OperationalConflictError();row.name=input.name;row.equipment_type=input.equipmentType;row.updated_at="2026-08-11T13:15:00.000Z";return{equipment:row};},
+ async archiveSupervisorColdStorageEquipment(input:{actorUserId:string;branchId:string;equipmentId:string}){calls.push({name:"master-archive",input});if(input.actorUserId!==supervisor||input.branchId!==branch)throw new OperationalAccessError();const row=masterEquipment.find(item=>item.id===input.equipmentId&&item.active);if(!row)throw new OperationalAccessError();row.active=false;row.updated_at="2026-08-11T13:30:00.000Z";return{equipment:row};},
 } as BackendDependencies["operationalAdmin"];
 function deps():BackendDependencies{return{checkReadiness:async()=>true,checklistPersistence:persistence,operationalAdmin,passwordChange:{verifyCurrent:async()=>true,updatePassword:async()=>{},finalize:async()=>{}},provisioningAdmin:{createUser:async()=>({id:supervisor}),deleteUser:async()=>{},finalize:async()=>{}},managementAdmin:{listUsers:async()=>({users:[],total:0})},branchManagementAdmin:{listBranches:async()=>[],listStaff:async()=>[],getPinMetadata:async()=>({configured:false,updated_at:null,updated_by_name:null}),storePin:async()=>({configured:false,updated_at:null,updated_by_name:null}),getPinCredential:async()=>null},pinCrypto:{hash:async()=>({pin_hash:"x",salt:"x",kdf_version:1,cost:1,block_size:1,parallelization:1}),verify:async()=>false,issueGrant:()=>"",verifyGrant:()=>false},authVerifier:{verify:async token=>token==="supervisor"?{userId:supervisor,email:"s@example.invalid"}:token==="manager"?{userId:manager,email:"m@example.invalid"}:token==="internal"?{userId:internalAdmin,email:"i@example.invalid"}:token==="maintenance"?{userId:maintenance,email:"x@example.invalid"}:null},createUserContext:token=>({getUserContext:async()=>token==="supervisor"?{id:supervisor,full_name:"S",must_change_password:false,disabled:false,branches:[{id:branch,name:"A",organization_id:org,role:"branch_manager"}],managed_organizations:[]}:token==="manager"?{id:manager,full_name:"M",must_change_password:false,disabled:false,branches:[],managed_organizations:[{id:org,name:"O",role:"organization_manager"}]}:{id:token==="internal"?internalAdmin:maintenance,full_name:"Other",must_change_password:false,disabled:false,branches:[],managed_organizations:[]},isInternalAdmin:async()=>token==="internal",hasOrganizationManagerAccess:async()=>token==="manager",validateActiveBranches:async()=>true,listActiveBranches:async()=>[]})};}
 const config:BackendConfig={nodeEnv:"test",host:"127.0.0.1",port:1,trustProxy:false,supabase:{url:"http://127.0.0.1",publishableKey:"test",secretKey:"test"},dailyAuditGrantSecret:"test-placeholder-long-enough-for-tests"};
@@ -60,6 +62,8 @@ describe("Cold Storage API integration",()=>{
   for(const token of ["manager","internal","maintenance"]){
    assert.equal((await request(path,token)).status,403);
    assert.equal((await request(path,token,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"Unit",equipment_type:"freezer"})})).status,403);
+   assert.equal((await request(`${path}/${masterEquipmentId}`,token,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"Unit",equipment_type:"freezer"})})).status,403);
+   assert.equal((await request(`${path}/${masterEquipmentId}`,token,{method:"DELETE"})).status,403);
   }
  });
  it("lists safe active master equipment for the assigned Supervisor",async()=>{
@@ -100,7 +104,35 @@ describe("Cold Storage API integration",()=>{
   assert.equal((await request(path,"supervisor",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"Reach-in Refrigerator"})})).status,409);
   assert.equal((await request(`/api/v1/supervisor/branches/${branch}/cold-storage/equipment/not-a-uuid`,"supervisor",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"Unit"})})).status,400);
   assert.equal((await request(path,"supervisor",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"Unit",updated_by:supervisor})})).status,400);
+  masterEquipment[0]!.active=false;
+  assert.equal((await request(path,"supervisor",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"Archived Unit"})})).status,403);
   assert.equal((await request(`/api/v1/supervisor/branches/${otherBranch}/cold-storage/equipment`,"supervisor")).status,403);
+ });
+ it("updates equipment name and type through the Supervisor API",async()=>{
+  masterEquipment.push({id:secondMasterEquipmentId,branch_id:branch,name:"Reach-in Refrigerator",equipment_type:"refrigerator",active:true,updated_at:"2026-08-11T12:30:00.000Z"});
+  const path=`/api/v1/supervisor/branches/${branch}/cold-storage/equipment/${masterEquipmentId}`;
+  const updated=await request(path,"supervisor",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"  Prep   Refrigerator  ",equipment_type:"refrigerator"})});
+  assert.equal(updated.status,200);
+  assert.deepEqual(calls.at(-1),{name:"master-update",input:{actorUserId:supervisor,branchId:branch,equipmentId:masterEquipmentId,name:"Prep Refrigerator",equipmentType:"refrigerator"}});
+  const body=await updated.json();
+  assert.equal(body.equipment.name,"Prep Refrigerator");
+  assert.equal(body.equipment.equipment_type,"refrigerator");
+  assert.doesNotMatch(JSON.stringify(body),/organization_id|created_by|updated_by/);
+  assert.equal((await request(path,"supervisor",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"Reach-in Refrigerator",equipment_type:"freezer"})})).status,409);
+  assert.equal((await request(path,"supervisor",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"Unit",equipment_type:"warmer"})})).status,400);
+  assert.equal((await request(path,"supervisor",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:"Unit",equipment_type:"freezer",branch_id:otherBranch})})).status,400);
+ });
+ it("archives equipment without hard delete authority or cross-branch access",async()=>{
+  const path=`/api/v1/supervisor/branches/${branch}/cold-storage/equipment/${masterEquipmentId}`;
+  const removed=await request(path,"supervisor",{method:"DELETE"});
+  assert.equal(removed.status,200);
+  assert.deepEqual(calls.at(-1),{name:"master-archive",input:{actorUserId:supervisor,branchId:branch,equipmentId:masterEquipmentId}});
+  const body=await removed.json();
+  assert.equal(body.equipment.active,false);
+  assert.doesNotMatch(JSON.stringify(body),/organization_id|created_by|updated_by/);
+  assert.equal((await request(path,"supervisor",{method:"DELETE"})).status,403);
+  assert.equal((await request(`/api/v1/supervisor/branches/${otherBranch}/cold-storage/equipment/${masterEquipmentId}`,"supervisor",{method:"DELETE"})).status,403);
+  assert.equal((await request(`/api/v1/supervisor/branches/${branch}/cold-storage/equipment/not-a-uuid`,"supervisor",{method:"DELETE"})).status,400);
  });
 
  it("requires authentication and forbids Manager authority",async()=>{

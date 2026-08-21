@@ -233,6 +233,18 @@ export type OperationalAdmin = {
     name: string;
     equipmentType: "refrigerator" | "freezer";
   }): Promise<unknown>;
+  updateSupervisorColdStorageEquipment?(input: {
+    actorUserId: string;
+    branchId: string;
+    equipmentId: string;
+    name: string;
+    equipmentType: "refrigerator" | "freezer";
+  }): Promise<unknown>;
+  archiveSupervisorColdStorageEquipment?(input: {
+    actorUserId: string;
+    branchId: string;
+    equipmentId: string;
+  }): Promise<unknown>;
   renameSupervisorColdStorageEquipment?(input: {
     actorUserId: string;
     branchId: string;
@@ -593,6 +605,32 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
           target_branch_id: input.branchId,
           target_equipment_id: input.equipmentId,
           equipment_name: input.name,
+        },
+      ));
+      if (rows.length !== 1) throw new AdminOperationError();
+      return { equipment: rows[0] };
+    },
+    async updateSupervisorColdStorageEquipment(input) {
+      const rows = normalizeColdStorageEquipmentMasterRows(await rpc(
+        "update_supervisor_cold_storage_equipment",
+        {
+          actor_user_id: input.actorUserId,
+          target_branch_id: input.branchId,
+          target_equipment_id: input.equipmentId,
+          equipment_name: input.name,
+          equipment_type: input.equipmentType,
+        },
+      ));
+      if (rows.length !== 1) throw new AdminOperationError();
+      return { equipment: rows[0] };
+    },
+    async archiveSupervisorColdStorageEquipment(input) {
+      const rows = normalizeColdStorageEquipmentMasterRows(await rpc(
+        "archive_supervisor_cold_storage_equipment",
+        {
+          actor_user_id: input.actorUserId,
+          target_branch_id: input.branchId,
+          target_equipment_id: input.equipmentId,
         },
       ));
       if (rows.length !== 1) throw new AdminOperationError();
