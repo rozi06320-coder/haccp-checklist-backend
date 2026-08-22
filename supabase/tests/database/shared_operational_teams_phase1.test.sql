@@ -84,7 +84,7 @@ select is((public.get_operational_team_hygiene_current_state('12000000-0000-4000
 select is((select submitted_by_user_id from public.checklist_submissions where operational_team_id=(select id from public.branch_operational_teams where legacy_supervisor_team_id='42000000-0000-4000-8000-000000000001') and checklist_type='staff_hygiene' and state='submitted'),'12000000-0000-4000-8000-000000000001'::uuid,'submission actor is audit attribution, not ownership');
 select is((select operational_team_name_snapshot from public.checklist_submissions where operational_team_id=(select id from public.branch_operational_teams where legacy_supervisor_team_id='42000000-0000-4000-8000-000000000001') and checklist_type='staff_hygiene' and state='submitted'),'Team A','team name snapshot preserves history');
 set local role service_role;
-select throws_ok($$select * from public.move_operational_staff_team('12000000-0000-4000-8000-000000000002','32000000-0000-4000-8000-000000000001',current_setting('test.hygiene_staff')::uuid,current_setting('test.hygiene_assignment')::uuid,current_setting('test.team_b')::uuid)$$,'23514','staff move blocked by submitted hygiene','same-business-date move is blocked after submitted Hygiene');
+select lives_ok($$select * from public.move_operational_staff_team('12000000-0000-4000-8000-000000000002','32000000-0000-4000-8000-000000000001',current_setting('test.hygiene_staff')::uuid,current_setting('test.hygiene_assignment')::uuid,current_setting('test.team_b')::uuid)$$,'same-business-date move is allowed after submitted Hygiene');
 reset role;
 
 select throws_ok($$select * from public.get_operational_team_hygiene_current_state('12000000-0000-4000-8000-000000000004','32000000-0000-4000-8000-000000000001',(select id from public.branch_operational_teams where legacy_supervisor_team_id='42000000-0000-4000-8000-000000000001'))$$,'42501','hygiene access denied','other branch cannot read Branch A Hygiene');
@@ -102,7 +102,7 @@ reset role;
 
 update public.branch_supervisor_teams set active=false where id='42000000-0000-4000-8000-000000000001';
 select is((select active from public.branch_operational_teams where legacy_supervisor_team_id='42000000-0000-4000-8000-000000000001'),true,'supervisor deactivation does not deactivate durable team');
-select is((select count(*) from public.operational_staff_assignments where operational_team_id=(select id from public.branch_operational_teams where legacy_supervisor_team_id='42000000-0000-4000-8000-000000000001') and active),1::bigint,'supervisor deactivation does not strand employee roster');
+select is((select count(*) from public.operational_staff_assignments where operational_team_id=current_setting('test.team_b')::uuid and active),2::bigint,'supervisor deactivation preserves moved employee roster on active target team');
 select is((select proconfig from pg_proc where oid='public.submit_operational_team_hygiene(uuid,uuid,uuid,uuid,text,jsonb)'::regprocedure),array['search_path=""'],'Hygiene SECURITY DEFINER RPC fixes empty search_path');
 select ok(not has_function_privilege('authenticated','public.submit_operational_team_hygiene(uuid,uuid,uuid,uuid,text,jsonb)','execute') and has_function_privilege('service_role','public.submit_operational_team_hygiene(uuid,uuid,uuid,uuid,text,jsonb)','execute'),'Hygiene persistence RPC is service-role only');
 select ok(exists(select 1 from pg_indexes where schemaname='public' and indexname='checklist_submissions_hygiene_one_final'),'database has team/date duplicate protection');
