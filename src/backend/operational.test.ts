@@ -6,7 +6,7 @@ import { after, before, describe, it } from "node:test";
 import { createApp } from "./app";
 import { loadBackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
-import { branchLocalDate, createOperationalAdmin, OperationalAccessError, OperationalConflictError, OperationalDuplicateStaffCodeError } from "./operational";
+import { branchLocalDate, createOperationalAdmin, OperationalAccessError, OperationalConflictError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError } from "./operational";
 import type { UserContext } from "./user-context";
 
 const id = {
@@ -18,6 +18,8 @@ const id = {
   branch: "20000000-0000-4000-8000-000000000001",
   organization: "30000000-0000-4000-8000-000000000001",
   shift: "40000000-0000-4000-8000-000000000001",
+  destinationBranch: "20000000-0000-4000-8000-000000000004",
+  destinationTeam: "40000000-0000-4000-8000-000000000004",
   worker: "50000000-0000-4000-8000-000000000001",
   assignment: "60000000-0000-4000-8000-000000000001",
   healthCard: "80000000-0000-4000-8000-000000000001",
@@ -113,6 +115,15 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
       },
       async setDuty(input) { calls.push({ method: "duty", ...input }); return { staff_id: id.worker, duty_status: input.status, eligible: input.status === "on_duty" }; },
       async moveStaff(input) { calls.push({ method: "move", ...input }); return { staff_id: input.staffId, assignment_id: id.assignment, operational_team_id: input.operationalTeamId }; },
+      async listStaffTransferDestinations(input) {
+        calls.push({ method: "transferDestinations", ...input });
+        return { destinations: [{ branch_id: id.destinationBranch, branch_name: "Destination Branch", branch_code: "DST", operational_team_id: id.destinationTeam, team_name: "Destination Team" }] };
+      },
+      async transferStaffBranch(input) {
+        calls.push({ method: "branchTransfer", ...input });
+        if (input.destinationTeamId === id.emptyHealthBranch) throw new OperationalHygieneSubmittedError();
+        return { staff_id: input.staffId, assignment_id: id.assignment, branch_id: input.destinationBranchId, operational_team_id: input.destinationTeamId };
+      },
       async leaveStaff(input) { calls.push({ method: "leave", ...input }); return { staff_id: input.staffId, assignment_id: id.assignment, employment_status: "inactive" }; },
       async startManagedOperationalStaffSupervisorTraining(input) { calls.push({ method: "startSupervisorTraining", ...input }); return { id: id.assignment, operational_staff_id: input.staffId, status: "training" }; },
       async cancelManagedOperationalStaffSupervisorTraining(input) { calls.push({ method: "cancelSupervisorTraining", ...input }); return { id: id.assignment, operational_staff_id: input.staffId, status: "cancelled" }; },
@@ -347,6 +358,37 @@ describe("managed maintenance operational adapter", () => {
   });
 });
 
+describe("cross-branch staff transfer operational adapter", () => {
+  it("uses dedicated source-owned transfer RPCs and preserves exact arguments", async () => {
+    const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const rpc = createServer(async (request, response) => {
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      requests.push({ path: request.url ?? "", body: JSON.parse(raw) as Record<string, unknown> });
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify(request.url?.includes("list_operational_staff_transfer_destinations")
+        ? [{ branch_id: id.destinationBranch, branch_name: "Destination Branch", branch_code: "DST", operational_team_id: id.destinationTeam, team_name: "Destination Team" }]
+        : [{ staff_id: id.worker, assignment_id: id.assignment, branch_id: id.destinationBranch, operational_team_id: id.destinationTeam }]));
+    });
+    await new Promise<void>((resolve) => rpc.listen(0, "127.0.0.1", resolve));
+    try {
+      const admin = createOperationalAdmin(`http://127.0.0.1:${(rpc.address() as AddressInfo).port}`, "service-key");
+      assert.deepEqual(await admin.listStaffTransferDestinations?.({ actorUserId: id.supervisor, sourceBranchId: id.branch, staffId: id.worker, expectedAssignmentId: id.assignment }), {
+        destinations: [{ branch_id: id.destinationBranch, branch_name: "Destination Branch", branch_code: "DST", operational_team_id: id.destinationTeam, team_name: "Destination Team" }],
+      });
+      assert.deepEqual(await admin.transferStaffBranch?.({ actorUserId: id.supervisor, organizationId: id.organization, sourceBranchId: id.branch, staffId: id.worker, expectedAssignmentId: id.assignment, destinationBranchId: id.destinationBranch, destinationTeamId: id.destinationTeam }), {
+        staff_id: id.worker, assignment_id: id.assignment, branch_id: id.destinationBranch, operational_team_id: id.destinationTeam,
+      });
+      assert.deepEqual(requests, [
+        { path: "/rest/v1/rpc/list_operational_staff_transfer_destinations", body: { actor_user_id: id.supervisor, p_source_branch_id: id.branch, p_operational_staff_id: id.worker, p_expected_assignment_id: id.assignment } },
+        { path: "/rest/v1/rpc/transfer_operational_staff_branch", body: { actor_user_id: id.supervisor, p_organization_id: id.organization, p_source_branch_id: id.branch, p_operational_staff_id: id.worker, p_expected_assignment_id: id.assignment, p_destination_branch_id: id.destinationBranch, p_destination_team_id: id.destinationTeam } },
+      ]);
+    } finally {
+      await new Promise<void>((resolve, reject) => rpc.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+});
+
 describe("Daily Audit operational adapter", () => {
   it("uses service-role RPCs for grant scope and accepts the empty current-state DTO", async () => {
     const accessUserId = "e0000000-0000-4000-8000-000000000001";
@@ -576,6 +618,37 @@ describe("Phase 3A operational API", () => {
       expectedAssignmentId: id.assignment, operationalTeamId: id.shift,
     });
   });
+  it("lists only minimal cross-branch transfer destinations for the source employee", async () => {
+    const response = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/transfer-destinations?expected_assignment_id=${id.assignment}`, {
+      headers: headers("supervisor"),
+    });
+    assert.equal(response.status, 200);
+    const body = await response.text();
+    assert.deepEqual(JSON.parse(body), { destinations: [{ branch_id: id.destinationBranch, branch_name: "Destination Branch", branch_code: "DST", operational_team_id: id.destinationTeam, team_name: "Destination Team" }] });
+    assert.deepEqual(calls.at(-1), { method: "transferDestinations", actorUserId: id.supervisor, sourceBranchId: id.branch, staffId: id.worker, expectedAssignmentId: id.assignment });
+    assert.doesNotMatch(body, /staff_id|supervisor_user_id|hygiene|report/i);
+  });
+  it("transfers an employee across branches through the dedicated source-owned endpoint", async () => {
+    const response = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/branch-transfer`, {
+      method: "POST", headers: headers("supervisor"),
+      body: JSON.stringify({ expected_assignment_id: id.assignment, destination_branch_id: id.destinationBranch, destination_team_id: id.destinationTeam }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls.at(-1), {
+      method: "branchTransfer", actorUserId: id.supervisor, organizationId: id.organization, sourceBranchId: id.branch,
+      staffId: id.worker, expectedAssignmentId: id.assignment, destinationBranchId: id.destinationBranch, destinationTeamId: id.destinationTeam,
+    });
+  });
+  it("returns a sanitized Hygiene-submitted error for blocked cross-branch transfers", async () => {
+    const response = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/branch-transfer`, {
+      method: "POST", headers: headers("supervisor"),
+      body: JSON.stringify({ expected_assignment_id: id.assignment, destination_branch_id: id.destinationBranch, destination_team_id: id.emptyHealthBranch }),
+    });
+    assert.equal(response.status, 409);
+    const text = await response.text();
+    assert.match(text, /destination_hygiene_submitted/);
+    assert.doesNotMatch(text, /postgres|transfer_operational_staff_branch|service_role|stack/i);
+  });
   it("persists Leave Company through its confirmed lifecycle endpoint", async () => {
     const response = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/leave-company`, {
       method: "POST", headers: headers("supervisor"), body: JSON.stringify({ expected_assignment_id: id.assignment }),
@@ -589,6 +662,7 @@ describe("Phase 3A operational API", () => {
     const manager=await fetch(path,{method:"PUT",headers:headers("manager"),body});
     assert.equal(manager.status,404);
     assert.equal((await fetch(path,{method:"PUT",headers:headers("supervisor"),body})).status,404);
+    assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/branch-transfer`,{method:"POST",headers:headers("manager"),body:JSON.stringify({expected_assignment_id:id.assignment,destination_branch_id:id.destinationBranch,destination_team_id:id.destinationTeam})})).status,403);
   });
   it("allows only an organization Manager to start and cancel Supervisor Training", async () => {
     const base=`${baseUrl}/api/v1/management/organizations/${id.organization}/operational-staff/${id.worker}/supervisor-training`;

@@ -66,6 +66,19 @@ const supervisorOwnedTeamRow = z.object({
   assignment_role: z.literal("primary"),
   can_write: z.boolean(),
 }).strict();
+const staffTransferDestinationRow = z.object({
+  branch_id: uuid,
+  branch_name: z.string(),
+  branch_code: z.string(),
+  operational_team_id: uuid,
+  team_name: z.string(),
+}).strict();
+const branchTransferRow = z.object({
+  staff_id: uuid,
+  assignment_id: uuid,
+  branch_id: uuid,
+  operational_team_id: uuid,
+}).strict();
 
 const mutationRow = z.object({
   staff_id: uuid,
@@ -220,6 +233,7 @@ export class OperationalConflictError extends Error {}
 export class OperationalDuplicateStaffCodeError extends Error {}
 export class OperationalAccessError extends Error {}
 export class OperationalInputError extends Error {}
+export class OperationalHygieneSubmittedError extends Error {}
 export type OperationalAdmin = {
   resolveDailyAuditGrantBranchScope?(actorUserId:string,branchId:string):Promise<{branch_id:string;organization_id:string;active:boolean;organization_active:boolean}|null>;
   resolveDailyAuditManualAccessUser?(actorUserId:string,branchId:string,accessUserId:string):Promise<{id:string;organization_id:string;display_name:string;active:boolean;credential_version:string}|null>;
@@ -260,6 +274,8 @@ export type OperationalAdmin = {
   updateStaff(input: { actorUserId: string; branchId: string; staffId: string; displayName: string; companyName: string; staffCode?: string | null; countryCode?: string | null; iqamaNumber?: string | null; iqamaExpiryDate?: string | null; phoneNumber?: string | null; email?: string | null; employmentStatus: "active"; roles: OperationalRole[] }): Promise<unknown>;
   setDuty(input: { actorUserId: string; branchId: string; staffId: string; date: string; status: "on_duty" | "day_off" | "on_vacation" }): Promise<unknown>;
   moveStaff?(input: { actorUserId: string; branchId: string; staffId: string; expectedAssignmentId: string; operationalTeamId: string }): Promise<unknown>;
+  listStaffTransferDestinations?(input: { actorUserId: string; sourceBranchId: string; staffId: string; expectedAssignmentId: string }): Promise<{ destinations: Array<z.infer<typeof staffTransferDestinationRow>> }>;
+  transferStaffBranch?(input: { actorUserId: string; organizationId: string; sourceBranchId: string; staffId: string; expectedAssignmentId: string; destinationBranchId: string; destinationTeamId: string }): Promise<unknown>;
   leaveStaff?(input: { actorUserId: string; branchId: string; staffId: string; expectedAssignmentId: string }): Promise<unknown>;
   listHealthCards(actorUserId: string, branchId: string): Promise<unknown>;
   upsertHealthCard(input: {
@@ -384,6 +400,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         throw new OperationalDuplicateStaffCodeError();
       }
       if (result.error.code === "23514" && /annual evaluation incomplete/i.test(result.error.message)) throw new OperationalInputError();
+      if (result.error.code === "23514" && /destination team hygiene already submitted/i.test(result.error.message)) throw new OperationalHygieneSubmittedError();
       if (["23505", "23514", "40001", "55000"].includes(result.error.code)) {
         throw new OperationalConflictError();
       }
@@ -399,6 +416,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     if (result.error) {
       if (result.error.code === "23505" && /employee code/i.test(result.error.message)) throw new OperationalDuplicateStaffCodeError();
       if (result.error.code === "23514" && /annual evaluation incomplete/i.test(result.error.message)) throw new OperationalInputError();
+      if (result.error.code === "23514" && /destination team hygiene already submitted/i.test(result.error.message)) throw new OperationalHygieneSubmittedError();
       if (["23505", "23514", "40001", "55000"].includes(result.error.code)) throw new OperationalConflictError();
       if (result.error.code === "22023") throw new OperationalInputError();
       if (result.error.code === "42501") throw new OperationalAccessError();
@@ -778,6 +796,28 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         target_staff_id: input.staffId,
         expected_assignment_id: input.expectedAssignmentId,
         target_operational_team_id: input.operationalTeamId,
+      }));
+      return rows[0];
+    },
+    async listStaffTransferDestinations(input) {
+      return {
+        destinations: z.array(staffTransferDestinationRow).max(500).parse(await rpc("list_operational_staff_transfer_destinations", {
+          actor_user_id: input.actorUserId,
+          p_source_branch_id: input.sourceBranchId,
+          p_operational_staff_id: input.staffId,
+          p_expected_assignment_id: input.expectedAssignmentId,
+        })),
+      };
+    },
+    async transferStaffBranch(input) {
+      const rows = z.array(branchTransferRow).length(1).parse(await rpc("transfer_operational_staff_branch", {
+        actor_user_id: input.actorUserId,
+        p_organization_id: input.organizationId,
+        p_source_branch_id: input.sourceBranchId,
+        p_operational_staff_id: input.staffId,
+        p_expected_assignment_id: input.expectedAssignmentId,
+        p_destination_branch_id: input.destinationBranchId,
+        p_destination_team_id: input.destinationTeamId,
       }));
       return rows[0];
     },

@@ -16,7 +16,7 @@ import {
   type BackendDependencies,
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
-import { branchLocalDate, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalConflictError, OperationalDuplicateStaffCodeError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenancePurchaseReceiptMime } from "./operational";
+import { branchLocalDate, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalConflictError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenancePurchaseReceiptMime } from "./operational";
 import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ManagementOverviewUnavailableError } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
@@ -151,6 +151,14 @@ const dutyStatusBodySchema = z.object({
 const moveOperationalStaffBodySchema = z.object({
   expected_assignment_id: z.uuid(),
   operational_team_id: z.uuid(),
+}).strict();
+const transferDestinationsQuerySchema = z.object({
+  expected_assignment_id: z.uuid(),
+}).strict();
+const branchTransferBodySchema = z.object({
+  expected_assignment_id: z.uuid(),
+  destination_branch_id: z.uuid(),
+  destination_team_id: z.uuid(),
 }).strict();
 const leaveOperationalStaffBodySchema = z.object({ expected_assignment_id: z.uuid() }).strict();
 const promoteSupervisorTrainingBodySchema = z.object({
@@ -3798,6 +3806,65 @@ export function createApp(
         next(error instanceof HttpError ? error : error instanceof OperationalConflictError
           ? new HttpError(409, "conflict", "The requested change conflicts with current team data.")
           : new HttpError(403, "forbidden", "Access is denied."));
+      }
+    });
+
+  app.get("/api/v1/supervisor/branches/:branchId/operational-staff/:staffId/transfer-destinations", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const staffId = staffIdSchema.safeParse(request.params.staffId);
+        const query = transferDestinationsQuerySchema.safeParse(request.query);
+        if (!branchId.success || !staffId.success || !query.success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        const sourceBranch = context.branches.find((branch) => branch.id === branchId.data);
+        if (context.must_change_password || !sourceBranch || !dependencies.operationalAdmin?.listStaffTransferDestinations) throw new HttpError(403, "forbidden", "Access is denied.");
+        response.status(200).json(await dependencies.operationalAdmin.listStaffTransferDestinations({
+          actorUserId: auth.userId,
+          sourceBranchId: branchId.data,
+          staffId: staffId.data,
+          expectedAssignmentId: query.data.expected_assignment_id,
+        }));
+      } catch (error) {
+        next(error instanceof HttpError ? error : error instanceof OperationalInputError
+          ? new HttpError(400, "bad_request", "The request is invalid.")
+          : error instanceof OperationalAccessError
+            ? new HttpError(403, "forbidden", "Access is denied.")
+            : new HttpError(503, "service_unavailable", "Transfer destinations are temporarily unavailable."));
+      }
+    });
+
+  app.post("/api/v1/supervisor/branches/:branchId/operational-staff/:staffId/branch-transfer", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const staffId = staffIdSchema.safeParse(request.params.staffId);
+        const body = branchTransferBodySchema.safeParse(request.body);
+        if (!branchId.success || !staffId.success || !body.success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        const sourceBranch = context.branches.find((branch) => branch.id === branchId.data);
+        if (context.must_change_password || !sourceBranch || !dependencies.operationalAdmin?.transferStaffBranch) throw new HttpError(403, "forbidden", "Access is denied.");
+        response.status(200).json(await dependencies.operationalAdmin.transferStaffBranch({
+          actorUserId: auth.userId,
+          organizationId: sourceBranch.organization_id,
+          sourceBranchId: branchId.data,
+          staffId: staffId.data,
+          expectedAssignmentId: body.data.expected_assignment_id,
+          destinationBranchId: body.data.destination_branch_id,
+          destinationTeamId: body.data.destination_team_id,
+        }));
+      } catch (error) {
+        next(error instanceof HttpError ? error : error instanceof OperationalHygieneSubmittedError
+          ? new HttpError(409, "destination_hygiene_submitted", "Destination team hygiene is already submitted for today.")
+          : error instanceof OperationalConflictError
+            ? new HttpError(409, "conflict", "Employee assignment changed; refresh and try again.")
+            : error instanceof OperationalAccessError
+              ? new HttpError(403, "forbidden", "Access is denied.")
+              : error instanceof OperationalInputError
+                ? new HttpError(400, "bad_request", "The request is invalid.")
+                : new HttpError(503, "service_unavailable", "Unable to transfer this employee."));
       }
     });
 

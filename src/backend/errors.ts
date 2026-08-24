@@ -11,6 +11,7 @@ type ErrorCode =
   | "duplicate_branch_code"
   | "duplicate_employee_code"
   | "duplicate_person_code"
+  | "destination_hygiene_submitted"
   | "forbidden"
   | "invalid_country"
   | "invalid_iqama_expiry"
