@@ -29,6 +29,9 @@ export type ChecklistPersistence = {
   createSalesTrackingOnlineOrderProvider?(input:{actorUserId:string;branchId:string;name:string}):Promise<unknown>;
   saveSalesTrackingDraft?(input:{actorUserId:string;branchId:string;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:SalesTrackingDraftPayload}):Promise<unknown>;
   submitSalesTracking?(input:{actorUserId:string;branchId:string;expectedRevision:number;idempotencyKey:string}):Promise<unknown>;
+  getFinancialClosingCurrentState?(actorUserId:string,branchId:string):Promise<unknown>;
+  saveFinancialClosingDraft?(input:{actorUserId:string;branchId:string;expectedRevision:number;items:unknown[]}):Promise<unknown>;
+  submitFinancialClosing?(input:{actorUserId:string;branchId:string;expectedRevision:number;items:unknown[]}):Promise<unknown>;
   getInventoryItemsCurrentState?(actorUserId:string,branchId:string,inventoryMonth?:string|null):Promise<unknown>;
   saveInventoryItemsDraft?(input:{actorUserId:string;branchId:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
   submitInventoryItems?(input:{actorUserId:string;branchId:string;idempotencyKey:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
@@ -45,9 +48,11 @@ export type ChecklistPersistence = {
   listManagedOilTrackingReports?(input:Record<string,unknown>):Promise<unknown>;
   listManagedColdStorageReports?(input:Record<string,unknown>):Promise<unknown>;
   listManagedDailyAuditReports?(input:Record<string,unknown>):Promise<unknown>;
+  listManagedFinancialClosingReports?(input:Record<string,unknown>):Promise<unknown>;
   getManagedOilTrackingReport?(actorUserId:string,organizationId:string,reportId:string):Promise<unknown>;
   getManagedColdStorageReport?(actorUserId:string,organizationId:string,reportId:string):Promise<unknown>;
   getManagedDailyAuditReport?(actorUserId:string,organizationId:string,reportId:string):Promise<unknown>;
+  getManagedFinancialClosingReport?(actorUserId:string,organizationId:string,reportId:string):Promise<unknown>;
   listManagedIssues(input:Record<string,unknown>):Promise<unknown>;
   listManagedOilTrackingIssues?(input:Record<string,unknown>):Promise<unknown>;
   listManagedColdStorageIssues?(input:Record<string,unknown>):Promise<unknown>;
@@ -426,10 +431,13 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   async saveSalesTrackingDraft(input){
    return salesTrackingCurrent.parse(await rpc("save_sales_tracking_draft",salesTrackingDraftRpcArgs(input.actorUserId,input.branchId,input.expectedRevision,input.entryPeriod,input.payload)));
   },
-  async submitSalesTracking(input){
-   return salesTrackingCurrent.parse(await rpc("submit_sales_tracking",salesTrackingSubmitRpcArgs(input.actorUserId,input.branchId,input.expectedRevision,input.idempotencyKey)));
-  },
-  async getInventoryItemsCurrentState(actorUserId,branchId,inventoryMonth){
+	  async submitSalesTracking(input){
+	   return salesTrackingCurrent.parse(await rpc("submit_sales_tracking",salesTrackingSubmitRpcArgs(input.actorUserId,input.branchId,input.expectedRevision,input.idempotencyKey)));
+	  },
+	  getFinancialClosingCurrentState:(actorUserId,branchId)=>rpc("get_financial_closing_current_state",{actor_user_id:actorUserId,target_branch_id:branchId}),
+	  saveFinancialClosingDraft:(input)=>rpc("save_financial_closing_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,report_items:input.items}),
+	  submitFinancialClosing:(input)=>rpc("submit_financial_closing",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,report_items:input.items}),
+	  async getInventoryItemsCurrentState(actorUserId,branchId,inventoryMonth){
    const args=inventoryMonth?{actor_user_id:actorUserId,target_branch_id:branchId,target_inventory_month:inventoryMonth}:{actor_user_id:actorUserId,target_branch_id:branchId};
    return inventoryItemsCurrent.parse(await rpc("get_inventory_items_current_state",args));
   },
@@ -466,11 +474,13 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   getColdStorageReport:(actorUserId,reportId)=>rpc("get_cold_storage_report_detail",{actor_user_id:actorUserId,target_report_id:reportId}),
   listManagedReports:(input)=>rpc("list_phase4a_managed_reports",input),
   listManagedOilTrackingReports:(input)=>rpc("list_oil_tracking_managed_reports",input),
-  listManagedColdStorageReports:(input)=>rpc("list_cold_storage_managed_reports",input),
-  listManagedDailyAuditReports:(input)=>rpc("list_managed_daily_audit_reports",input),
-  getManagedOilTrackingReport:(actorUserId,organizationId,reportId)=>rpc("get_oil_tracking_managed_report_detail",{actor_user_id:actorUserId,target_organization_id:organizationId,target_report_id:reportId}),
-  getManagedColdStorageReport:(actorUserId,organizationId,reportId)=>rpc("get_cold_storage_managed_report_detail",{actor_user_id:actorUserId,target_organization_id:organizationId,target_report_id:reportId}),
-  getManagedDailyAuditReport:(actorUserId,organizationId,reportId)=>rpc("get_managed_daily_audit_report_detail",{actor_user_id:actorUserId,target_organization_id:organizationId,target_submission_id:reportId}),
+	  listManagedColdStorageReports:(input)=>rpc("list_cold_storage_managed_reports",input),
+	  listManagedDailyAuditReports:(input)=>rpc("list_managed_daily_audit_reports",input),
+	  listManagedFinancialClosingReports:(input)=>rpc("list_managed_financial_closing_reports",input),
+	  getManagedOilTrackingReport:(actorUserId,organizationId,reportId)=>rpc("get_oil_tracking_managed_report_detail",{actor_user_id:actorUserId,target_organization_id:organizationId,target_report_id:reportId}),
+	  getManagedColdStorageReport:(actorUserId,organizationId,reportId)=>rpc("get_cold_storage_managed_report_detail",{actor_user_id:actorUserId,target_organization_id:organizationId,target_report_id:reportId}),
+	  getManagedDailyAuditReport:(actorUserId,organizationId,reportId)=>rpc("get_managed_daily_audit_report_detail",{actor_user_id:actorUserId,target_organization_id:organizationId,target_submission_id:reportId}),
+	  getManagedFinancialClosingReport:(actorUserId,organizationId,reportId)=>rpc("get_managed_financial_closing_report_detail",{actor_user_id:actorUserId,target_organization_id:organizationId,target_report_id:reportId}),
   listManagedIssues:(input)=>rpc("list_phase4a_managed_issues",input),
   listManagedOilTrackingIssues:(input)=>rpc("list_oil_tracking_managed_issues",input),
   listManagedColdStorageIssues:(input)=>rpc("list_cold_storage_managed_issues",input),

@@ -612,9 +612,9 @@ const existingSupervisorGrantBodySchema = existingUserGrantBodySchema.extend({
 const reactivateAccessBodySchema = z.object({ active: z.literal(true) }).strict();
 
 const checklistTypeSchema=z.enum(["kitchen_opening","foh_opening","staff_hygiene"]);
-const supervisorChecklistTypeSchema=z.enum(["kitchen_opening","foh_opening","staff_hygiene","oil_tracking","cold_storage","sales_tracking","daily_audit","purchase_log","supplier_receiving"]);
+const supervisorChecklistTypeSchema=z.enum(["kitchen_opening","foh_opening","staff_hygiene","oil_tracking","cold_storage","sales_tracking","daily_audit","purchase_log","supplier_receiving","financial_closing"]);
 const managementIssueChecklistTypeSchema=z.enum(["kitchen_opening","foh_opening","staff_hygiene","oil_tracking","cold_storage","sales_tracking"]);
-const managementReportChecklistTypeSchema=z.enum(["kitchen_opening","foh_opening","staff_hygiene","oil_tracking","cold_storage","sales_tracking","daily_audit"]);
+const managementReportChecklistTypeSchema=z.enum(["kitchen_opening","foh_opening","staff_hygiene","oil_tracking","cold_storage","sales_tracking","daily_audit","financial_closing"]);
 const openingTypeSchema=z.enum(["kitchen_opening","foh_opening"]);
 const openingAnswerSchema=z.object({item_id:z.string().min(1).max(80),answer:z.enum(["not_checked","completed","issue_found"]),remark:z.string().max(2000),evidence_id:z.uuid().nullable()}).strict().superRefine((value,context)=>{
   if(value.answer==="issue_found"&&(!value.evidence_id||!value.remark.trim()))context.addIssue({code:"custom",message:"Issue evidence is required."});
@@ -725,6 +725,15 @@ const coldReadingInputSchema=z.object({
   };
 });
 const coldStorageBodySchema=z.object({expected_revision:z.number().int().nonnegative().default(0),equipment:z.array(coldEquipmentInputSchema).max(100),readings:z.array(coldReadingInputSchema).max(300)}).strict();
+const financialClosingItemKeySchema=z.enum(["sales_closing","collections","exceptions","purchases","transfers","production","waste","petty_cash","pending_documents","exception_escalation"]);
+const financialClosingStatusSchema=z.enum(["completed","not_completed","not_applicable"]);
+const financialClosingItemInputSchema=z.object({
+  item_key:financialClosingItemKeySchema,
+  status:financialClosingStatusSchema.nullable().optional(),
+  reason:z.string().max(2000).optional().nullable().transform(value=>value??""),
+  follow_up:z.string().max(2000).optional().nullable().transform(value=>value??""),
+}).strict();
+const financialClosingBodySchema=z.object({expected_revision:z.number().int().nonnegative().default(0),items:z.array(financialClosingItemInputSchema).max(10)}).strict();
 const coldStorageEquipmentMasterTypeSchema=z.enum(["refrigerator","freezer"]);
 const coldStorageEquipmentMasterBodySchema=z.object({
   equipment_code:coldStorageEquipmentCodeSchema,
@@ -865,7 +874,7 @@ const managerInventoryItemsQuerySchema=z.object({month:managerInventoryMonthSche
 const operationsSummaryQuerySchema=z.object({month:monthOnlySchema.optional(),branch_id:z.uuid().optional()}).strict();
 const managerIssueQuerySchema=z.object({page:z.coerce.number().int().min(1).default(1),page_size:z.coerce.number().int().min(1).max(50).default(20),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional(),branch_id:z.uuid().optional(),supervisor_user_id:z.uuid().optional(),staff_id:z.uuid().optional(),checklist_type:managementIssueChecklistTypeSchema.optional(),status:z.literal("new").optional(),search:z.string().trim().max(120).optional()}).strict();
 const phase4aEvidenceMetadataSchema=z.object({id:z.uuid(),status:z.enum(["pending","draft","finalized"]),mime_type:evidenceMimeSchema,byte_size:z.number().int().positive().max(MAX_EVIDENCE_BYTES),available:z.boolean()});
-const phase4aAnswerSchema=z.object({item_id:z.string().max(120),answer:z.string().max(40),remark:z.string().max(2000),evidence:phase4aEvidenceMetadataSchema.nullable().optional()});
+const phase4aAnswerSchema=z.object({item_id:z.string().max(120),item_text:z.string().optional(),answer:z.string().max(40),remark:z.string().max(2000),follow_up:z.string().max(2000).optional(),evidence:phase4aEvidenceMetadataSchema.nullable().optional()});
 const phase4aStaffSnapshotSchema=z.object({staff_id:z.uuid(),display_name:z.string().max(120),operational_roles:z.array(z.string().max(40)).max(2),uniform:z.string().max(20),fingernails:z.string().max(20),hair:z.string().max(20),facial_hair:z.string().max(20),remark:z.string().max(2000)});
 const phase4aCurrentSchema=z.object({state:z.enum(["none","draft","submitted"]),business_date:z.string(),checklist_type:checklistTypeSchema,id:z.uuid().nullable().optional(),created_at:z.string().nullable().optional(),updated_at:z.string().nullable().optional(),submitted_at:z.string().nullable().optional(),operational_team_id:z.uuid().optional(),team_name:z.string().optional(),can_write:z.boolean().optional(),revision:z.number().int().nonnegative().optional(),answers:z.array(phase4aAnswerSchema).max(50).optional(),staff:z.array(phase4aStaffSnapshotSchema).max(500).optional()});
 const overviewCountsSchema=z.object({expected_checks:z.number().int().nonnegative(),answered_checks:z.number().int().nonnegative(),compliant_checks:z.number().int().nonnegative(),issue_checks:z.number().int().nonnegative(),pending_checks:z.number().int().nonnegative(),completion_percentage:z.number().int().min(0).max(100).nullable(),compliance_percentage:z.number().int().min(0).max(100).nullable()}).strict().superRefine((value,context)=>{if(value.answered_checks!==value.compliant_checks+value.issue_checks)context.addIssue({code:"custom",message:"Invalid answered count."});if(value.pending_checks!==value.expected_checks-value.answered_checks)context.addIssue({code:"custom",message:"Invalid pending count."});if(value.completion_percentage!==(value.expected_checks===0?null:Math.round(value.answered_checks*100/value.expected_checks)))context.addIssue({code:"custom",message:"Invalid completion percentage."});if(value.compliance_percentage!==(value.answered_checks===0?null:Math.round(value.compliant_checks*100/value.answered_checks)))context.addIssue({code:"custom",message:"Invalid compliance percentage."});});
@@ -874,12 +883,12 @@ const phase4aOverviewSchema=z.object({business_date:dateOnlySchema,totals:overvi
 const phase4aMutationSchema=z.object({id:z.uuid(),business_date:z.string(),checklist_type:checklistTypeSchema,state:z.enum(["draft","submitted"]),created_at:z.string().optional(),updated_at:z.string().optional(),submitted_at:z.string().optional(),issue_count:z.number().int().nonnegative().optional(),revision:z.number().int().nonnegative().optional()});
 const coldStorageMissedMetadataSchema={missed_check_count:z.number().int().nonnegative().optional(),missed_slots:z.array(coldPersistedSlotSchema).max(3).optional()};
 const recordKindSchema=z.enum(["submission","derived_missing"]);
-const phase4aListSchema=z.object({reports:z.array(z.object({id:z.uuid(),branch_id:z.uuid(),branch_name:z.string().optional(),checklist_type:supervisorChecklistTypeSchema,business_date:z.string(),submitted_at:z.string().nullable(),submitted_by:z.string().nullable(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),completion:z.number().optional(),issue_count:z.number().int().nonnegative(),status:z.string(),record_kind:recordKindSchema.optional(),source_submission_id:z.uuid().nullable().optional(),submitted_slots:z.array(coldPersistedSlotSchema).max(3).optional(),...coldStorageMissedMetadataSchema})).max(50),page:z.number().int().positive(),page_size:z.number().int().positive().max(50),total:z.number().int().nonnegative()});
+const phase4aListSchema=z.object({reports:z.array(z.object({id:z.uuid(),branch_id:z.uuid(),branch_name:z.string().optional(),branch_code:z.string().optional(),checklist_type:supervisorChecklistTypeSchema,business_date:z.string(),submitted_at:z.string().nullable(),submitted_by:z.string().nullable(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),completion:z.number().optional(),issue_count:z.number().int().nonnegative(),status:z.string(),record_kind:recordKindSchema.optional(),source_submission_id:z.uuid().nullable().optional(),submitted_slots:z.array(coldPersistedSlotSchema).max(3).optional(),...coldStorageMissedMetadataSchema})).max(50),page:z.number().int().positive(),page_size:z.number().int().positive().max(50),total:z.number().int().nonnegative()});
 const oilReportRowSchema=z.object({fryer_id:z.string(),fryer_label:z.string(),fryer_short_label:z.string(),in_use_today:z.boolean(),oil_status:z.enum(["pending","new_oil","filtered_oil"]),opening_temperature_c:z.union([z.number(),z.string()]).nullable().optional(),opening_status:z.enum(["pending","pass","fail"]),opening_note:z.string(),closing_tpm_percent:z.union([z.number(),z.string()]).nullable().optional(),closing_note:z.string(),tpm_classification:z.enum(["good","nearing_end","filtering_required","change_discard"]).nullable().optional()}).strict();
 const oilReportIssueSchema=z.object({id:z.uuid(),section:z.enum(["opening","closing"]),fryer_id:z.string(),fryer_label:z.string(),title:z.string(),remark:z.string(),tpm_status:z.enum(["good","nearing_end","filtering_required","change_discard"]).nullable().optional()}).strict();
 const coldStorageReportRowSchema=z.object({equipment_id:z.string(),equipment_code:z.string().min(1).max(24).nullable().optional(),equipment_name:z.string(),equipment_type:z.enum(["refrigerator","freezer"]),active:z.boolean(),slot:coldPersistedSlotSchema,temperature_c:z.union([z.number(),z.string()]).nullable().optional(),status:z.enum(["pending","pass","fail"]),corrective_action:z.string(),submitted_at:z.string().nullable().optional()}).strict();
 const coldStorageReportIssueSchema=z.object({id:z.uuid(),equipment_id:z.string(),equipment_code:z.string().min(1).max(24).nullable().optional(),equipment_name:z.string(),slot:coldPersistedSlotSchema,temperature_c:z.union([z.number(),z.string()]),title:z.string(),remark:z.string()}).strict();
-const phase4aDetailSchema=z.object({id:z.uuid(),branch_id:z.uuid(),branch_name:z.string(),business_date:z.string(),checklist_type:supervisorChecklistTypeSchema,definition_id:z.string(),submitted_at:z.string().nullable(),submitted_by:z.string().nullable(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),completion:z.number(),issue_count:z.number().int().nonnegative(),status:z.string(),record_kind:recordKindSchema.optional(),source_submission_id:z.uuid().nullable().optional(),items:z.array(z.object({item_id:z.string(),item_text:z.string(),answer:z.string(),remark:z.string(),entry_period:salesTrackingPeriodSchema.nullable().optional(),entered_by:z.string().nullable().optional(),entered_at:z.string().nullable().optional(),evidence:phase4aEvidenceMetadataSchema.nullable().optional()})).max(300).optional(),staff:z.array(phase4aStaffSnapshotSchema).max(500).optional(),opening_submitted_at:z.string().nullable().optional(),closing_submitted_at:z.string().nullable().optional(),submitted_slots:z.array(coldPersistedSlotSchema).max(3).optional(),...coldStorageMissedMetadataSchema,rows:z.array(z.union([oilReportRowSchema,coldStorageReportRowSchema])).max(300).optional(),issues:z.array(z.union([oilReportIssueSchema,coldStorageReportIssueSchema])).max(300).optional()});
+const phase4aDetailSchema=z.object({id:z.uuid(),branch_id:z.uuid(),branch_name:z.string(),branch_code:z.string().optional(),business_date:z.string(),checklist_type:supervisorChecklistTypeSchema,definition_id:z.string(),submitted_at:z.string().nullable(),submitted_by:z.string().nullable(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),completion:z.number(),issue_count:z.number().int().nonnegative(),status:z.string(),record_kind:recordKindSchema.optional(),source_submission_id:z.uuid().nullable().optional(),items:z.array(z.object({item_id:z.string(),item_text:z.string(),answer:z.string(),remark:z.string(),follow_up:z.string().optional(),entry_period:salesTrackingPeriodSchema.nullable().optional(),entered_by:z.string().nullable().optional(),entered_at:z.string().nullable().optional(),evidence:phase4aEvidenceMetadataSchema.nullable().optional()})).max(300).optional(),staff:z.array(phase4aStaffSnapshotSchema).max(500).optional(),opening_submitted_at:z.string().nullable().optional(),closing_submitted_at:z.string().nullable().optional(),submitted_slots:z.array(coldPersistedSlotSchema).max(3).optional(),...coldStorageMissedMetadataSchema,rows:z.array(z.union([oilReportRowSchema,coldStorageReportRowSchema])).max(300).optional(),issues:z.array(z.union([oilReportIssueSchema,coldStorageReportIssueSchema])).max(300).optional()});
 const phase4aIssueListSchema=z.object({issues:z.array(z.object({id:uuidLikeSchema,report_id:uuidLikeSchema.nullable(),branch_id:z.uuid(),branch_name:z.string(),business_date:z.string(),submitted_by:z.string().nullable(),checklist_type:managementIssueChecklistTypeSchema,title:z.string(),description:z.string(),status:z.string(),created_at:z.string(),item_id:z.string().nullable().optional(),item_text:z.string().nullable().optional(),affected_staff_id:z.uuid().nullable().optional(),affected_staff_name:z.string().nullable().optional(),record_kind:recordKindSchema.optional(),source_submission_id:uuidLikeSchema.nullable().optional()})).max(50),page:z.number().int().positive(),page_size:z.number().int().positive().max(50),total:z.number().int().nonnegative()});
 const managedSalesTrackingOnlineProviderAmountSchema=z.object({provider_id:z.uuid().nullable().optional(),provider_key:z.string().nullable().optional(),provider_name:z.string().min(1).max(120),amount:z.union([z.number(),z.string()])}).strict();
 const managedSalesTrackingSchema=z.object({
@@ -1035,7 +1044,29 @@ const salesTrackingCurrentSchema=z.object({
     remarks:row.remarks,
     cash_total:row.cash_total,
   })),
-}));
+	}));
+const financialClosingCurrentSchema=z.object({
+  report_id:z.uuid().nullable(),
+  branch_id:z.uuid(),
+  business_date:dateOnlySchema,
+  state:z.enum(["empty","draft","submitted"]),
+  revision:z.number().int().nonnegative().default(0),
+  branch_name:z.string(),
+  branch_code:z.string(),
+  branch_city:z.string().nullable(),
+  submitted_at:z.string().nullable(),
+  submitted_by_user_id:z.uuid().nullable(),
+  submitted_by_name_snapshot:z.string().nullable(),
+  updated_at:z.string().nullable(),
+  completion:z.union([z.number(),z.string()]).transform(Number),
+  not_completed_count:z.union([z.number(),z.string()]).transform(Number),
+  items:z.array(z.object({
+    item_key:financialClosingItemKeySchema,
+    status:financialClosingStatusSchema.nullable(),
+    reason:z.string(),
+    follow_up:z.string(),
+  }).strict()).length(10),
+}).strict();
 const inventoryItemsCurrentSchema=z.object({
   report_id:z.uuid().nullable().optional(),
   business_date:dateOnlySchema,
@@ -4634,16 +4665,43 @@ export function createApp(
     response.setHeader("Cache-Control","private, no-store");response.status(201).json({current});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
-  app.post("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/submit",protectedRateLimit,authenticate,async(request,response,next)=>{try{
-    const branch=branchIdSchema.safeParse(request.params.branchId),key=idempotencySchema.safeParse(request.header("Idempotency-Key")),body=salesTrackingSubmitBodySchema.safeParse(request.body);
-    if(!branch.success||!key.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
-    const auth=requireAuthContext(request),context=await loadActiveUser(request);
-    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.submitSalesTracking)throw new HttpError(403,"forbidden","Access is denied.");
-    const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.submitSalesTracking({actorUserId:auth.userId,branchId:branch.data,expectedRevision:body.data.expected_revision,idempotencyKey:key.data}));
-    response.setHeader("Cache-Control","private, no-store");response.status(201).json({current});
-  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+	  app.post("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/submit",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+	    const branch=branchIdSchema.safeParse(request.params.branchId),key=idempotencySchema.safeParse(request.header("Idempotency-Key")),body=salesTrackingSubmitBodySchema.safeParse(request.body);
+	    if(!branch.success||!key.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
+	    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+	    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.submitSalesTracking)throw new HttpError(403,"forbidden","Access is denied.");
+	    const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.submitSalesTracking({actorUserId:auth.userId,branchId:branch.data,expectedRevision:body.data.expected_revision,idempotencyKey:key.data}));
+	    response.setHeader("Cache-Control","private, no-store");response.status(201).json({current});
+	  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
-  app.post("/api/v1/supervisor/branches/:branchId/checklists/cold_storage/slots/:slot/submit",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+	  app.get("/api/v1/supervisor/branches/:branchId/checklists/financial_closing/current-state",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+	    const branch=branchIdSchema.safeParse(request.params.branchId);
+	    if(!branch.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+	    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+	    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.getFinancialClosingCurrentState)throw new HttpError(403,"forbidden","Access is denied.");
+	    const current=financialClosingCurrentSchema.parse(await dependencies.checklistPersistence.getFinancialClosingCurrentState(auth.userId,branch.data));
+	    response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
+	  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+	  app.put("/api/v1/supervisor/branches/:branchId/checklists/financial_closing/draft",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+	    const branch=branchIdSchema.safeParse(request.params.branchId),body=financialClosingBodySchema.safeParse(request.body);
+	    if(!branch.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
+	    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+	    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.saveFinancialClosingDraft)throw new HttpError(403,"forbidden","Access is denied.");
+	    const current=financialClosingCurrentSchema.parse(await dependencies.checklistPersistence.saveFinancialClosingDraft({actorUserId:auth.userId,branchId:branch.data,expectedRevision:body.data.expected_revision,items:body.data.items}));
+	    response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
+	  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+	  app.post("/api/v1/supervisor/branches/:branchId/checklists/financial_closing/submit",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+	    const branch=branchIdSchema.safeParse(request.params.branchId),key=idempotencySchema.safeParse(request.header("Idempotency-Key")),body=financialClosingBodySchema.safeParse(request.body);
+	    if(!branch.success||!key.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
+	    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+	    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.submitFinancialClosing)throw new HttpError(403,"forbidden","Access is denied.");
+	    const current=financialClosingCurrentSchema.parse(await dependencies.checklistPersistence.submitFinancialClosing({actorUserId:auth.userId,branchId:branch.data,expectedRevision:body.data.expected_revision,items:body.data.items}));
+	    response.setHeader("Cache-Control","private, no-store");response.status(201).json({current});
+	  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+	  app.post("/api/v1/supervisor/branches/:branchId/checklists/cold_storage/slots/:slot/submit",protectedRateLimit,authenticate,async(request,response,next)=>{try{
     const branch=branchIdSchema.safeParse(request.params.branchId),slot=coldSlotSchema.safeParse(request.params.slot),key=idempotencySchema.safeParse(request.header("Idempotency-Key")),body=coldStorageBodySchema.safeParse(request.body);
     if(!branch.success||!slot.success||!key.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request);
@@ -4807,22 +4865,25 @@ export function createApp(
     const org=organizationIdSchema.safeParse(request.params.organizationId),q=managerReportQuerySchema.safeParse(request.query);if(!org.success||!q.success)throw new HttpError(400,"bad_request","The request is invalid.");const auth=requireAuthContext(request),context=await loadActiveUser(request);const allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);if(context.must_change_password||!allowed||!dependencies.checklistPersistence)throw new HttpError(403,"forbidden","Access is denied.");
     const reportArgs={actor_user_id:auth.userId,target_organization_id:org.data,requested_page:q.data.page,requested_page_size:q.data.page_size,date_from:q.data.date_from??null,date_to:q.data.date_to??null,branch_filter:q.data.branch_id??null,supervisor_filter:q.data.supervisor_user_id??null,status_filter:q.data.status??null,search_term:q.data.search??null};
     let list:SupervisorReportList;
-    if(q.data.checklist_type==="oil_tracking"){
-      if(!dependencies.checklistPersistence.listManagedOilTrackingReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
-      list=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedOilTrackingReports(reportArgs));
-    }else if(q.data.checklist_type==="cold_storage"){
-      if(!dependencies.checklistPersistence.listManagedColdStorageReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
-      list=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedColdStorageReports(reportArgs));
-    }else if(q.data.checklist_type==="daily_audit"){
-      if(!dependencies.checklistPersistence.listManagedDailyAuditReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
-      list=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedDailyAuditReports(reportArgs));
-    }else if(q.data.checklist_type){
-      list=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedReports({...reportArgs,type_filter:q.data.checklist_type}));
-    }else{
-      const fetchSize=Math.min(50,q.data.page*q.data.page_size);
-      const mergedArgs={...reportArgs,requested_page:1,requested_page_size:fetchSize};
-      const base=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedReports({...mergedArgs,type_filter:null}));
-      let oil=emptySupervisorReportList(1,fetchSize),cold=emptySupervisorReportList(1,fetchSize),dailyAudit=emptySupervisorReportList(1,fetchSize);
+	    if(q.data.checklist_type==="oil_tracking"){
+	      if(!dependencies.checklistPersistence.listManagedOilTrackingReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+	      list=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedOilTrackingReports(reportArgs));
+	    }else if(q.data.checklist_type==="cold_storage"){
+	      if(!dependencies.checklistPersistence.listManagedColdStorageReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+	      list=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedColdStorageReports(reportArgs));
+	    }else if(q.data.checklist_type==="daily_audit"){
+	      if(!dependencies.checklistPersistence.listManagedDailyAuditReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+	      list=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedDailyAuditReports(reportArgs));
+	    }else if(q.data.checklist_type==="financial_closing"){
+	      if(!dependencies.checklistPersistence.listManagedFinancialClosingReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+	      list=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedFinancialClosingReports(reportArgs));
+	    }else if(q.data.checklist_type){
+	      list=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedReports({...reportArgs,type_filter:q.data.checklist_type}));
+	    }else{
+	      const fetchSize=Math.min(50,q.data.page*q.data.page_size);
+	      const mergedArgs={...reportArgs,requested_page:1,requested_page_size:fetchSize};
+	      const base=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedReports({...mergedArgs,type_filter:null}));
+	      let oil=emptySupervisorReportList(1,fetchSize),cold=emptySupervisorReportList(1,fetchSize),dailyAudit=emptySupervisorReportList(1,fetchSize),financialClosing=emptySupervisorReportList(1,fetchSize);
       if(dependencies.checklistPersistence.listManagedOilTrackingReports){
         try{oil=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedOilTrackingReports(mergedArgs));}
         catch(error){if(error instanceof ChecklistAccessError)throw error;}
@@ -4831,12 +4892,16 @@ export function createApp(
         try{cold=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedColdStorageReports(mergedArgs));}
         catch(error){if(error instanceof ChecklistAccessError)throw error;}
       }
-      if(dependencies.checklistPersistence.listManagedDailyAuditReports){
-        try{dailyAudit=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedDailyAuditReports(mergedArgs));}
-        catch(error){throw error;}
-      }
-      list=mergeSupervisorReportLists(q.data.page,q.data.page_size,base,oil,cold,dailyAudit);
-    }
+	      if(dependencies.checklistPersistence.listManagedDailyAuditReports){
+	        try{dailyAudit=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedDailyAuditReports(mergedArgs));}
+	        catch(error){throw error;}
+	      }
+	      if(dependencies.checklistPersistence.listManagedFinancialClosingReports){
+	        try{financialClosing=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedFinancialClosingReports(mergedArgs));}
+	        catch(error){if(error instanceof ChecklistAccessError)throw error;}
+	      }
+	      list=mergeSupervisorReportLists(q.data.page,q.data.page_size,base,oil,cold,dailyAudit,financialClosing);
+	    }
     response.setHeader("Cache-Control","private, no-store");response.json(phase4aListSchema.parse(list));
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
   app.get("/api/v1/management/organizations/:organizationId/reports/:submissionId",protectedRateLimit,authenticate,async(request,response,next)=>{try{
@@ -4860,14 +4925,20 @@ export function createApp(
       }catch(oilError){
         if(!(oilError instanceof ChecklistAccessError))throw oilError;
         try{
-          if(!dependencies.checklistPersistence.getManagedColdStorageReport)throw oilError;
-          detail=coldStorageReportDetailWithItems(phase4aDetailSchema.parse(await dependencies.checklistPersistence.getManagedColdStorageReport(auth.userId,org.data,id.data)));
-        }catch(coldError){
-          if(!(coldError instanceof ChecklistAccessError)||!dependencies.checklistPersistence.getManagedDailyAuditReport)throw coldError;
-          detail=await dependencies.checklistPersistence.getManagedDailyAuditReport(auth.userId,org.data,id.data);
-        }
-      }
-    }
+	        if(!dependencies.checklistPersistence.getManagedColdStorageReport)throw oilError;
+	        detail=coldStorageReportDetailWithItems(phase4aDetailSchema.parse(await dependencies.checklistPersistence.getManagedColdStorageReport(auth.userId,org.data,id.data)));
+	      }catch(coldError){
+	          if(!(coldError instanceof ChecklistAccessError))throw coldError;
+	          try{
+	            if(!dependencies.checklistPersistence.getManagedDailyAuditReport)throw coldError;
+	            detail=await dependencies.checklistPersistence.getManagedDailyAuditReport(auth.userId,org.data,id.data);
+	          }catch(dailyAuditError){
+	            if(!(dailyAuditError instanceof ChecklistAccessError)||!dependencies.checklistPersistence.getManagedFinancialClosingReport)throw dailyAuditError;
+	            detail=await dependencies.checklistPersistence.getManagedFinancialClosingReport(auth.userId,org.data,id.data);
+	          }
+	        }
+	      }
+	    }
     response.setHeader("Cache-Control","private, no-store");response.json(phase4aDetailSchema.parse(detail));
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
   app.get("/api/v1/management/organizations/:organizationId/issues",protectedRateLimit,authenticate,async(request,response,next)=>{try{
