@@ -96,6 +96,9 @@ export type InternalAdminBranch = {
   name: string;
   name_ar?: string | null;
   code: string;
+  city?: string | null;
+  area?: string | null;
+  address?: string | null;
   timezone: string;
   active: boolean;
   logo_path?: string | null;
@@ -191,6 +194,9 @@ export type ManagedBranch = {
   name: string;
   name_ar?: string | null;
   code: string;
+  city?: string | null;
+  area?: string | null;
+  address?: string | null;
   timezone: string;
   active: boolean;
 };
@@ -263,6 +269,10 @@ export type ManagementAdmin = {
     branchId: string;
     name: string;
     nameAr?: string | null;
+    code: string;
+    city: string;
+    area?: string | null;
+    address?: string | null;
     timezone: string;
   }): Promise<InternalAdminBranch>;
   deactivateBranchForInternalAdmin?(input: {
@@ -352,6 +362,10 @@ export type ManagementAdmin = {
     organizationId: string;
     name: string;
     nameAr?: string | null;
+    code: string;
+    city: string;
+    area?: string | null;
+    address?: string | null;
     timezone: string;
     active: boolean;
   }): Promise<ManagedBranch>;
@@ -360,6 +374,10 @@ export type ManagementAdmin = {
     organizationId: string;
     name: string;
     nameAr?: string | null;
+    code: string;
+    city: string;
+    area?: string | null;
+    address?: string | null;
     timezone: string;
     active: boolean;
   }): Promise<ManagedBranch>;
@@ -512,6 +530,7 @@ export type PasswordChangeService = {
 };
 
 export class AdminConflictError extends Error {}
+export class AdminBranchCodeConflictError extends AdminConflictError {}
 export class AdminDuplicatePersonCodeError extends Error {}
 export class AdminDuplicateStaffCodeError extends Error {}
 export class AdminAccessError extends Error {}
@@ -653,6 +672,9 @@ export function createManagementAdmin(
         name: z.string(),
         name_ar: z.string().nullable().optional(),
         code: z.string(),
+        city: z.string().nullable().optional(),
+        area: z.string().nullable().optional(),
+        address: z.string().nullable().optional(),
         timezone: z.string(),
         active: z.boolean(),
         logo_path: z.string().nullable(),
@@ -1061,12 +1083,20 @@ export function createManagementAdmin(
         target_organization_id: input.organizationId,
         branch_name: input.name,
         branch_name_ar: input.nameAr ?? null,
+        branch_code: input.code,
+        branch_city: input.city,
+        branch_area: input.area ?? null,
+        branch_address: input.address ?? null,
         branch_timezone: input.timezone,
         branch_active: input.active,
       });
       if (error) {
-        if (error.code === "23505") throw new AdminConflictError();
+        if (error.code === "23505") {
+          if (error.message?.includes("branch code already exists")) throw new AdminBranchCodeConflictError();
+          throw new AdminConflictError();
+        }
         if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "22023") throw new AdminInputError();
         throw new AdminOperationError();
       }
       const rows = z.array(z.object({
@@ -1074,6 +1104,9 @@ export function createManagementAdmin(
         name: z.string(),
         name_ar: z.string().nullable().optional(),
         code: z.string(),
+        city: z.string().nullable().optional(),
+        area: z.string().nullable().optional(),
+        address: z.string().nullable().optional(),
         timezone: z.string(),
         active: z.boolean(),
       }).strict()).length(1).safeParse(data);
@@ -1086,11 +1119,18 @@ export function createManagementAdmin(
         p_organization_id: input.organizationId,
         p_branch_name: input.name,
         p_branch_name_ar: input.nameAr ?? null,
+        p_branch_code: input.code,
+        p_branch_city: input.city,
+        p_branch_area: input.area ?? null,
+        p_branch_address: input.address ?? null,
         p_branch_timezone: input.timezone,
         p_branch_active: input.active,
       });
       if (error) {
-        if (error.code === "23505") throw new AdminConflictError();
+        if (error.code === "23505") {
+          if (error.message?.includes("branch code already exists")) throw new AdminBranchCodeConflictError();
+          throw new AdminConflictError();
+        }
         if (error.code === "42501") throw new AdminAccessError();
         if (error.code === "P0002") throw new AdminNotFoundError();
         if (error.code === "22023") throw new AdminInputError();
@@ -1102,6 +1142,9 @@ export function createManagementAdmin(
         name: z.string(),
         name_ar: z.string().nullable().optional(),
         code: z.string(),
+        city: z.string().nullable().optional(),
+        area: z.string().nullable().optional(),
+        address: z.string().nullable().optional(),
         timezone: z.string(),
         active: z.boolean(),
       }).strict()).length(1).safeParse(data);
@@ -1115,10 +1158,17 @@ export function createManagementAdmin(
         p_branch_id: input.branchId,
         p_branch_name: input.name,
         p_branch_name_ar: input.nameAr ?? null,
+        p_branch_code: input.code,
+        p_branch_city: input.city,
+        p_branch_area: input.area ?? null,
+        p_branch_address: input.address ?? null,
         p_branch_timezone: input.timezone,
       });
       if (error) {
-        if (error.code === "23505") throw new AdminConflictError();
+        if (error.code === "23505") {
+          if (error.message?.includes("branch code already exists")) throw new AdminBranchCodeConflictError();
+          throw new AdminConflictError();
+        }
         if (error.code === "42501") throw new AdminAccessError();
         if (error.code === "P0002") throw new AdminNotFoundError();
         if (error.code === "22023") throw new AdminInputError();
@@ -1130,6 +1180,9 @@ export function createManagementAdmin(
         name: z.string(),
         name_ar: z.string().nullable().optional(),
         code: z.string(),
+        city: z.string().nullable().optional(),
+        area: z.string().nullable().optional(),
+        address: z.string().nullable().optional(),
         timezone: z.string(),
         active: z.boolean(),
       }).strict()).length(1).safeParse(data);

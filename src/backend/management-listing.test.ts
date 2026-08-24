@@ -39,7 +39,7 @@ function deps(tokenRole: "manager" | "staff" = "manager", rawError = false): Bac
         const { AdminConflictError } = await import("./admin");
         throw new AdminConflictError();
       }
-      const branch = { id: "34000000-0000-4000-8000-000000000002", name: input.name, code: "NEW", timezone: input.timezone, active: input.active };
+      const branch = { id: "34000000-0000-4000-8000-000000000002", name: input.name, code: input.code, city: input.city, area: input.area ?? null, address: input.address ?? null, timezone: input.timezone, active: input.active };
       branchRows.push({ id: branch.id, name: branch.name, code: branch.code });
       return branch;
     } },
@@ -94,17 +94,19 @@ describe("management listing endpoints", () => {
   });
   it("lets a manager create a branch and then list it", async () => {
     const dependencies = deps();
-    const response = await post(`/api/v1/management/organizations/${ids.orgA}/branches`, { name: "New Branch", timezone: "Asia/Riyadh", active: true }, dependencies);
+    const response = await post(`/api/v1/management/organizations/${ids.orgA}/branches`, { name: "New Branch", code: " mlt-ruh-001 ", city: " Riyadh ", area: " Olaya ", address: " Main Road ", timezone: "Asia/Riyadh", active: true }, dependencies);
     assert.equal(response.status, 201);
-    assert.deepEqual(await response.json(), { branch: { id: "34000000-0000-4000-8000-000000000002", name: "New Branch", code: "NEW", timezone: "Asia/Riyadh", active: true } });
+    assert.deepEqual(await response.json(), { branch: { id: "34000000-0000-4000-8000-000000000002", name: "New Branch", code: "MLT-RUH-001", city: "Riyadh", area: "Olaya", address: "Main Road", timezone: "Asia/Riyadh", active: true } });
     const branchResponse = await get(`/api/v1/management/organizations/${ids.orgA}/branches`, dependencies);
-    assert.deepEqual(await branchResponse.json(), { branches: [{ id: ids.branch, name: "Active A", code: "AA" }, { id: "34000000-0000-4000-8000-000000000002", name: "New Branch", code: "NEW" }] });
+    assert.deepEqual(await branchResponse.json(), { branches: [{ id: ids.branch, name: "Active A", code: "AA" }, { id: "34000000-0000-4000-8000-000000000002", name: "New Branch", code: "MLT-RUH-001" }] });
   });
   it("rejects invalid, duplicate, unauthorized, and cross-organization branch creation", async () => {
-    assert.equal((await post(`/api/v1/management/organizations/${ids.orgA}/branches`, { name: " " })).status, 400);
-    assert.equal((await post(`/api/v1/management/organizations/${ids.orgA}/branches`, { name: "Active A", timezone: "Asia/Riyadh", active: true })).status, 409);
-    assert.equal((await post(`/api/v1/management/organizations/${ids.orgA}/branches`, { name: "Staff Branch", timezone: "Asia/Riyadh", active: true }, deps("staff"))).status, 403);
-    assert.equal((await post(`/api/v1/management/organizations/${ids.orgB}/branches`, { name: "Cross Branch", timezone: "Asia/Riyadh", active: true })).status, 403);
+    assert.equal((await post(`/api/v1/management/organizations/${ids.orgA}/branches`, { name: " ", code: "MLT-RUH-002", city: "Riyadh" })).status, 400);
+    assert.equal((await post(`/api/v1/management/organizations/${ids.orgA}/branches`, { name: "Branch", code: "BAD/CODE", city: "Riyadh" })).status, 400);
+    assert.equal((await post(`/api/v1/management/organizations/${ids.orgA}/branches`, { name: "Branch", code: "MLT-RUH-002", city: " " })).status, 400);
+    assert.equal((await post(`/api/v1/management/organizations/${ids.orgA}/branches`, { name: "Active A", code: "MLT-RUH-002", city: "Riyadh", timezone: "Asia/Riyadh", active: true })).status, 409);
+    assert.equal((await post(`/api/v1/management/organizations/${ids.orgA}/branches`, { name: "Staff Branch", code: "MLT-RUH-003", city: "Riyadh", timezone: "Asia/Riyadh", active: true }, deps("staff"))).status, 403);
+    assert.equal((await post(`/api/v1/management/organizations/${ids.orgB}/branches`, { name: "Cross Branch", code: "MLT-RUH-004", city: "Riyadh", timezone: "Asia/Riyadh", active: true })).status, 403);
   });
   it("redacts raw branch and RPC errors", async () => {
     for (const suffix of ["branches", "users"]) {

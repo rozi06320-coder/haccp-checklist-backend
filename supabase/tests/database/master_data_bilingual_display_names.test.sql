@@ -47,9 +47,13 @@ select is(
     '2a400000-0000-4000-8000-000000000002',
     (select id from public.organizations where name = 'Burger Hunch'),
     '  Riyadh   Branch  ',
+    '  فرع   الرياض  ',
+    'HUN-RUH-101',
+    'Riyadh',
+    null,
+    null,
     'Asia/Riyadh',
-    true,
-    '  فرع   الرياض  '
+    true
   )),
   'فرع الرياض',
   'branch Arabic name is normalized when provided'
@@ -60,9 +64,13 @@ select is(
     '2a400000-0000-4000-8000-000000000002',
     (select id from public.organizations where name = 'Burger Hunch'),
     'English Only Branch',
+    null,
+    'HUN-RUH-102',
+    'Riyadh',
+    null,
+    null,
     'Asia/Riyadh',
-    true,
-    null
+    true
   )),
   null,
   'branch Arabic name is optional'

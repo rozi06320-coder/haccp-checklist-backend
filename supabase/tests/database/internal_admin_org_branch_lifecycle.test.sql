@@ -1,5 +1,5 @@
 begin;
-select plan(40);
+select plan(42);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated', email, '{}', '{}', now(), now()
@@ -49,6 +49,23 @@ insert into public.branch_supervisor_teams(id, organization_id, branch_id, super
   ('4f400000-0000-4000-8000-000000000001', '2f400000-0000-4000-8000-000000000001', '3f400000-0000-4000-8000-000000000001', '1f400000-0000-4000-8000-000000000003', true);
 select set_config('test.lifecycle_operational_team', (select id::text from public.branch_operational_teams where legacy_supervisor_team_id='4f400000-0000-4000-8000-000000000001'), false);
 
+insert into public.checklist_submissions(
+  id, organization_id, branch_id, supervisor_user_id, supervisor_team_id, business_date, checklist_type, definition_id, state, branch_name_snapshot, branch_code_snapshot, supervisor_name_snapshot
+) values (
+  '5f400000-0000-4000-8000-000000000001',
+  '2f400000-0000-4000-8000-000000000001',
+  '3f400000-0000-4000-8000-000000000001',
+  '1f400000-0000-4000-8000-000000000003',
+  '4f400000-0000-4000-8000-000000000001',
+  '2026-08-24',
+  'kitchen_opening',
+  'kitchen_opening_v1',
+  'draft',
+  'Lifecycle Branch',
+  'LIFE',
+  'Phase 4 Supervisor'
+);
+
 insert into public.operational_staff(id, organization_id, branch_id, display_name, employment_status, created_by, staff_code, deactivated_at, deactivated_by) values
   ('7f400000-0000-4000-8000-000000000001', '2f400000-0000-4000-8000-000000000001', '3f400000-0000-4000-8000-000000000001', 'Lifecycle Staff', 'active', '1f400000-0000-4000-8000-000000000002', 'LC-1', null, null),
   ('7f400000-0000-4000-8000-000000000002', '2f400000-0000-4000-8000-000000000001', '3f400000-0000-4000-8000-000000000001', 'Inactive Lifecycle Staff', 'inactive', '1f400000-0000-4000-8000-000000000002', 'LC-2', now(), '1f400000-0000-4000-8000-000000000002');
@@ -74,8 +91,8 @@ insert into public.operational_staff_supervisor_training(
 
 select ok(has_function_privilege('service_role','public.update_internal_admin_organization(uuid,uuid,text,text)','execute'),'service role can execute organization update RPC');
 select ok(not has_function_privilege('authenticated','public.update_internal_admin_organization(uuid,uuid,text,text)','execute'),'authenticated cannot execute organization update RPC');
-select ok(has_function_privilege('service_role','public.update_internal_admin_branch(uuid,uuid,uuid,text,text,text)','execute'),'service role can execute branch update RPC');
-select ok(not has_function_privilege('authenticated','public.update_internal_admin_branch(uuid,uuid,uuid,text,text,text)','execute'),'authenticated cannot execute branch update RPC');
+select ok(has_function_privilege('service_role','public.update_internal_admin_branch(uuid,uuid,uuid,text,text,text,text,text,text,text)','execute'),'service role can execute branch update RPC');
+select ok(not has_function_privilege('authenticated','public.update_internal_admin_branch(uuid,uuid,uuid,text,text,text,text,text,text,text)','execute'),'authenticated cannot execute branch update RPC');
 
 create temporary table updated_org on commit drop as
 select * from public.update_internal_admin_organization(
@@ -128,29 +145,40 @@ select * from public.update_internal_admin_branch(
   '3f400000-0000-4000-8000-000000000001',
   '  Renamed   Lifecycle Branch  ',
   ' فرع جديد ',
+  ' hun-ruh-001 ',
+  'Riyadh',
+  'Al Takhassusi',
+  '123 Road',
   'UTC'
 );
 select is((select name from updated_branch),'Renamed Lifecycle Branch','Internal Admin edits English branch name');
 select is((select name_ar from updated_branch),'فرع جديد','Internal Admin edits Arabic branch name');
 select is((select timezone from updated_branch),'UTC','Internal Admin edits branch timezone');
-select is((select code from updated_branch),'LIFE','branch code remains stable after rename');
+select is((select code from updated_branch),'HUN-RUH-001','Internal Admin edits and normalizes branch code');
+select is((select branch_code_snapshot from public.checklist_submissions where id='5f400000-0000-4000-8000-000000000001'),'LIFE','branch code edit does not rewrite historical checklist snapshots');
 select throws_ok(
-  $$select public.update_internal_admin_branch('1f400000-0000-4000-8000-000000000001','2f400000-0000-4000-8000-000000000001','3f400000-0000-4000-8000-000000000001','Duplicate Branch',null,'UTC')$$,
+  $$select public.update_internal_admin_branch('1f400000-0000-4000-8000-000000000001','2f400000-0000-4000-8000-000000000001','3f400000-0000-4000-8000-000000000001','Duplicate Branch',null,'HUN-RUH-001','Riyadh',null,null,'UTC')$$,
   '23505',
   'branch already exists',
   'duplicate branch name is rejected'
 );
 select throws_ok(
-  $$select public.update_internal_admin_branch('1f400000-0000-4000-8000-000000000001','2f400000-0000-4000-8000-000000000001','3f400000-0000-4000-8000-000000000001','Bad Timezone',null,'Bad/Zone')$$,
+  $$select public.update_internal_admin_branch('1f400000-0000-4000-8000-000000000001','2f400000-0000-4000-8000-000000000001','3f400000-0000-4000-8000-000000000001','Bad Timezone',null,'HUN-RUH-001','Riyadh',null,null,'Bad/Zone')$$,
   '22023',
   'invalid branch update request',
   'invalid branch timezone is rejected'
 );
 select throws_ok(
-  $$select public.update_internal_admin_branch('1f400000-0000-4000-8000-000000000001','2f400000-0000-4000-8000-000000000002','3f400000-0000-4000-8000-000000000001','Cross Org Branch',null,'UTC')$$,
+  $$select public.update_internal_admin_branch('1f400000-0000-4000-8000-000000000001','2f400000-0000-4000-8000-000000000002','3f400000-0000-4000-8000-000000000001','Cross Org Branch',null,'HUN-RUH-001','Riyadh',null,null,'UTC')$$,
   'P0002',
   'branch unavailable',
   'cross-organization branch mutation is rejected'
+);
+select throws_ok(
+  $$select public.update_internal_admin_branch('1f400000-0000-4000-8000-000000000001','2f400000-0000-4000-8000-000000000001','3f400000-0000-4000-8000-000000000001','Unique Branch Name',null,'DUPB','Riyadh',null,null,'UTC')$$,
+  '23505',
+  'branch code already exists',
+  'duplicate branch code in same organization is rejected'
 );
 
 select lives_ok(
@@ -164,7 +192,7 @@ select is((select count(*) from public.operational_staff_assignments where branc
 select ok(not private.actor_can_read_operational_branch('1f400000-0000-4000-8000-000000000003','3f400000-0000-4000-8000-000000000001'),'supervisor cannot operate inactive branch');
 select ok(not private.actor_can_write_operational_team('1f400000-0000-4000-8000-000000000003','3f400000-0000-4000-8000-000000000001',current_setting('test.lifecycle_operational_team')::uuid),'supervisor cannot write inactive branch team');
 select is(
-  (select count(*) from public.list_internal_admin_branches('1f400000-0000-4000-8000-000000000001','2f400000-0000-4000-8000-000000000001') where id='3f400000-0000-4000-8000-000000000001' and timezone='UTC' and not active),
+  (select count(*) from public.list_internal_admin_branches('1f400000-0000-4000-8000-000000000001','2f400000-0000-4000-8000-000000000001') where id='3f400000-0000-4000-8000-000000000001' and timezone='UTC' and city='Riyadh' and not active),
   1::bigint,
   'inactive branch remains visible to Internal Admin with timezone'
 );

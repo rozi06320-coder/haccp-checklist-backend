@@ -9,7 +9,7 @@ import { managementOperationsSummarySchema } from "../lib/contracts/management-o
 import { managementSalesTrackingMonthlySummarySchema } from "../lib/contracts/management-sales-tracking-monthly";
 import { annualEvaluationDetailSchema, annualEvaluationScoreSchema, annualEvaluationSubjectTypeSchema, annualEvaluationWorkspaceSchema } from "../lib/contracts/annual-evaluation";
 import { requireAuthentication } from "./auth";
-import { AdminAccessError, AdminConflictError, AdminDuplicatePersonCodeError, AdminDuplicateStaffCodeError, AdminInputError, AdminNotFoundError, ProvisioningStageError, type DailyAuditAccessUserCredential, type ManagerPinCredential } from "./admin";
+import { AdminAccessError, AdminBranchCodeConflictError, AdminConflictError, AdminDuplicatePersonCodeError, AdminDuplicateStaffCodeError, AdminInputError, AdminNotFoundError, ProvisioningStageError, type DailyAuditAccessUserCredential, type ManagerPinCredential } from "./admin";
 import type { BackendConfig } from "./config";
 import {
   createDefaultDependencies,
@@ -36,6 +36,12 @@ const dateOnlySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) =>
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 });
 const normalizedNameSchema = z.string().max(120)
+  .transform((value) => value.trim().replace(/\s+/gu, " "))
+  .pipe(z.string().min(1).max(120));
+const branchCodeSchema = z.string().max(120)
+  .transform((value) => value.trim().toUpperCase())
+  .pipe(z.string().min(1).max(120).regex(/^[A-Z0-9-]+$/));
+const branchCitySchema = z.string().max(120)
   .transform((value) => value.trim().replace(/\s+/gu, " "))
   .pipe(z.string().min(1).max(120));
 const companyNameSchema = z.string().max(160)
@@ -394,12 +400,20 @@ const managedBranchTimezoneSchema = z.enum(["Asia/Riyadh", "UTC"]);
 const createBranchBodySchema = z.object({
   name: normalizedNameSchema,
   name_ar: optionalStaffTextSchema(120),
+  code: branchCodeSchema,
+  city: branchCitySchema,
+  area: optionalDisplayNameSchema,
+  address: optionalStaffTextSchema(240),
   timezone: managedBranchTimezoneSchema.default("Asia/Riyadh"),
   active: z.boolean().default(true),
 }).strict();
 const updateBranchBodySchema = z.object({
   name: normalizedNameSchema,
   name_ar: optionalStaffTextSchema(120),
+  code: branchCodeSchema,
+  city: branchCitySchema,
+  area: optionalDisplayNameSchema,
+  address: optionalStaffTextSchema(240),
   timezone: managedBranchTimezoneSchema,
 }).strict();
 const createOrganizationBodySchema = z.object({
@@ -2327,6 +2341,9 @@ export function createApp(
           name: branch.name,
           name_ar: branch.name_ar ?? null,
           code: branch.code,
+          city: branch.city ?? null,
+          area: branch.area ?? null,
+          address: branch.address ?? null,
           timezone: branch.timezone,
           active: branch.active,
           logo_configured: Boolean(branch.logo_path),
@@ -2398,14 +2415,19 @@ export function createApp(
           branchId: branchId.data,
           name: body.data.name,
           nameAr: body.data.name_ar,
+          code: body.data.code,
+          city: body.data.city,
+          area: body.data.area,
+          address: body.data.address,
           timezone: body.data.timezone,
         });
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json({ branch: { ...branch, name_ar: branch.name_ar ?? null } });
       } catch (error) {
         if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminBranchCodeConflictError) next(new HttpError(409, "duplicate_branch_code", "Branch code already exists."));
         else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Branch already exists."));
-        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter a valid branch timezone."));
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter valid branch details."));
         else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Organization is unavailable."));
         else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
         else next(new HttpError(503, "service_unavailable", "Unable to update branch right now."));
@@ -2491,6 +2513,10 @@ export function createApp(
           organizationId: organizationId.data,
           name: body.data.name,
           nameAr: body.data.name_ar,
+          code: body.data.code,
+          city: body.data.city,
+          area: body.data.area,
+          address: body.data.address,
           timezone: body.data.timezone,
           active: body.data.active,
         });
@@ -2498,8 +2524,9 @@ export function createApp(
         response.status(201).json({ branch: { ...branch, name_ar: branch.name_ar ?? null } });
       } catch (error) {
         if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminBranchCodeConflictError) next(new HttpError(409, "duplicate_branch_code", "Branch code already exists."));
         else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Branch already exists."));
-        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter a valid branch timezone."));
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter valid branch details."));
         else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Organization is unavailable."));
         else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
         else next(new HttpError(503, "service_unavailable", "Unable to create branch right now."));
@@ -3441,6 +3468,10 @@ export function createApp(
           organizationId: organizationId.data,
           name: body.data.name,
           nameAr: body.data.name_ar,
+          code: body.data.code,
+          city: body.data.city,
+          area: body.data.area,
+          address: body.data.address,
           timezone: body.data.timezone,
           active: body.data.active,
         });
@@ -3449,6 +3480,7 @@ export function createApp(
       } catch (error) {
         if (error instanceof HttpError) next(error);
         else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "A branch with this name already exists."));
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter valid branch details."));
         else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
         else next(new HttpError(503, "service_unavailable", "The service is unavailable."));
       }

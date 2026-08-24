@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, it } from "node:test";
-import { AdminAccessError, AdminConflictError, AdminDuplicatePersonCodeError, AdminDuplicateStaffCodeError, AdminInputError, AdminNotFoundError, ProvisioningStageError, type FinalizeProvisionedOrganizationManagerInput, type FinalizeProvisionedUserInput } from "./admin";
+import { AdminAccessError, AdminBranchCodeConflictError, AdminConflictError, AdminDuplicatePersonCodeError, AdminDuplicateStaffCodeError, AdminInputError, AdminNotFoundError, ProvisioningStageError, type FinalizeProvisionedOrganizationManagerInput, type FinalizeProvisionedUserInput } from "./admin";
 import { createApp } from "./app";
 import { loadBackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
@@ -128,11 +128,11 @@ function deps(options: {
       },
       async listBranchesForInternalAdmin(_actorUserId, organizationId) {
         if (!(options.branches ?? true) || organizationId !== ids.orgA) return [];
-        return [{ id: ids.branch, name: "Branch", code: "BR", timezone: "Asia/Riyadh", active: true }];
+        return [{ id: ids.branch, name: "Branch", code: "BR", city: null, area: null, address: null, timezone: "Asia/Riyadh", active: true }];
       },
       async createBranch(input) {
         calls.createBranch = input;
-        return { id: ids.branch, name: input.name, code: "NEWB", timezone: input.timezone, active: input.active };
+        return { id: ids.branch, name: input.name, code: input.code, city: input.city, area: input.area ?? null, address: input.address ?? null, timezone: input.timezone, active: input.active };
       },
       async createBranchForInternalAdmin(input) {
         calls.createBranchForInternalAdmin = input;
@@ -142,7 +142,10 @@ function deps(options: {
           organization_id: input.organizationId,
           name: input.name,
           name_ar: input.nameAr ?? null,
-          code: "NEWB",
+          code: input.code,
+          city: input.city,
+          area: input.area ?? null,
+          address: input.address ?? null,
           timezone: input.timezone,
           active: input.active,
         };
@@ -155,7 +158,10 @@ function deps(options: {
           organization_id: input.organizationId,
           name: input.name,
           name_ar: input.nameAr ?? null,
-          code: "BR",
+          code: input.code,
+          city: input.city,
+          area: input.area ?? null,
+          address: input.address ?? null,
           timezone: input.timezone,
           active: true,
         };
@@ -654,6 +660,10 @@ describe("internal-admin supervisor provisioning", () => {
     const calls: Record<string, unknown> = {};
     const response = await postInternalAdminBranch(deps({ calls }), {
       name: "  New   Branch ",
+      code: " hun-ruh-001 ",
+      city: "  Riyadh   North ",
+      area: " Al   Takhassusi ",
+      address: " 123 King Road ",
       timezone: "Asia/Riyadh",
       active: true,
     });
@@ -664,6 +674,10 @@ describe("internal-admin supervisor provisioning", () => {
       organizationId: ids.orgA,
       name: "New Branch",
       nameAr: null,
+      code: "HUN-RUH-001",
+      city: "Riyadh North",
+      area: "Al Takhassusi",
+      address: "123 King Road",
       timezone: "Asia/Riyadh",
       active: true,
     });
@@ -673,7 +687,10 @@ describe("internal-admin supervisor provisioning", () => {
         organization_id: ids.orgA,
         name: "New Branch",
         name_ar: null,
-        code: "NEWB",
+        code: "HUN-RUH-001",
+        city: "Riyadh North",
+        area: "Al Takhassusi",
+        address: "123 King Road",
         timezone: "Asia/Riyadh",
         active: true,
       },
@@ -681,9 +698,9 @@ describe("internal-admin supervisor provisioning", () => {
     assert.doesNotMatch(text, /supervisor_team|operational_staff|password|service_role/i);
   });
 
-  it("lets Internal Admin edit and deactivate/reactivate branches while preserving branch code", async () => {
+  it("lets Internal Admin edit branch code and deactivate/reactivate branches without changing branch id", async () => {
     const calls: Record<string, unknown> = {};
-    const update = await patchInternalAdminBranch(deps({ calls }), { name: "  Renamed   Branch ", name_ar: " فرع ", timezone: "UTC" });
+    const update = await patchInternalAdminBranch(deps({ calls }), { name: "  Renamed   Branch ", name_ar: " فرع ", code: " hun-ruh-001 ", city: " Jeddah ", area: " Al   Hamra ", address: "  Sea Road  ", timezone: "UTC" });
     assert.equal(update.status, 200);
     assert.deepEqual(calls.updateBranchForInternalAdmin, {
       actorUserId: ids.actor,
@@ -691,6 +708,10 @@ describe("internal-admin supervisor provisioning", () => {
       branchId: ids.branch,
       name: "Renamed Branch",
       nameAr: "فرع",
+      code: "HUN-RUH-001",
+      city: "Jeddah",
+      area: "Al Hamra",
+      address: "Sea Road",
       timezone: "UTC",
     });
     assert.deepEqual(await update.json(), {
@@ -699,7 +720,10 @@ describe("internal-admin supervisor provisioning", () => {
         organization_id: ids.orgA,
         name: "Renamed Branch",
         name_ar: "فرع",
-        code: "BR",
+        code: "HUN-RUH-001",
+        city: "Jeddah",
+        area: "Al Hamra",
+        address: "Sea Road",
         timezone: "UTC",
         active: true,
       },
@@ -717,20 +741,31 @@ describe("internal-admin supervisor provisioning", () => {
   });
 
   it("maps Internal Admin branch lifecycle errors safely", async () => {
-    assert.equal((await patchInternalAdminBranch(deps(), { name: "Branch", timezone: "UTC" }, ids.orgA, ids.branch, "invalid")).status, 401);
-    assert.equal((await patchInternalAdminBranch(deps({ internalAdmin: false }), { name: "Branch", timezone: "UTC" })).status, 403);
-    assert.equal((await patchInternalAdminBranch(deps(), { name: " ", timezone: "UTC" })).status, 400);
-    assert.equal((await patchInternalAdminBranch(deps(), { name: "Branch", timezone: "Bad/Zone" })).status, 400);
+    const validUpdateBody = { name: "Branch", code: "HUN-RUH-001", city: "Riyadh", timezone: "UTC" };
+    assert.equal((await patchInternalAdminBranch(deps(), validUpdateBody, ids.orgA, ids.branch, "invalid")).status, 401);
+    assert.equal((await patchInternalAdminBranch(deps({ internalAdmin: false }), validUpdateBody)).status, 403);
+    assert.equal((await patchInternalAdminBranch(deps(), { name: " ", code: "HUN-RUH-001", city: "Riyadh", timezone: "UTC" })).status, 400);
+    assert.equal((await patchInternalAdminBranch(deps(), { name: "Branch", code: " ", city: "Riyadh", timezone: "UTC" })).status, 400);
+    assert.equal((await patchInternalAdminBranch(deps(), { name: "Branch", code: "BAD/CODE", city: "Riyadh", timezone: "UTC" })).status, 400);
+    assert.equal((await patchInternalAdminBranch(deps(), { name: "Branch", code: "HUN-RUH-001", city: " ", timezone: "UTC" })).status, 400);
+    assert.equal((await patchInternalAdminBranch(deps(), { name: "Branch", code: "HUN-RUH-001", city: "Riyadh", timezone: "Bad/Zone" })).status, 400);
 
-    const duplicate = await patchInternalAdminBranch(deps({ branchLifecycleError: new AdminConflictError() }), { name: "Branch", timezone: "UTC" });
+    const duplicate = await patchInternalAdminBranch(deps({ branchLifecycleError: new AdminConflictError() }), validUpdateBody);
     assert.equal(duplicate.status, 409);
     assert.match(await duplicate.text(), /Branch already exists/);
 
-    const invalidTimezone = await patchInternalAdminBranch(deps({ branchLifecycleError: new AdminInputError() }), { name: "Branch", timezone: "UTC" });
-    assert.equal(invalidTimezone.status, 422);
-    assert.match(await invalidTimezone.text(), /valid branch timezone/);
+    const duplicateCode = await patchInternalAdminBranch(deps({ branchLifecycleError: new AdminBranchCodeConflictError() }), validUpdateBody);
+    assert.equal(duplicateCode.status, 409);
+    const duplicateCodeText = await duplicateCode.text();
+    assert.match(duplicateCodeText, /duplicate_branch_code/);
+    assert.match(duplicateCodeText, /Branch code already exists/);
+    assert.doesNotMatch(duplicateCodeText, /postgres|duplicate key|service_role|stack/i);
 
-    const missing = await patchInternalAdminBranch(deps({ branchLifecycleError: new AdminNotFoundError() }), { name: "Branch", timezone: "UTC" });
+    const invalidDetails = await patchInternalAdminBranch(deps({ branchLifecycleError: new AdminInputError() }), validUpdateBody);
+    assert.equal(invalidDetails.status, 422);
+    assert.match(await invalidDetails.text(), /valid branch details/);
+
+    const missing = await patchInternalAdminBranch(deps({ branchLifecycleError: new AdminNotFoundError() }), validUpdateBody);
     assert.equal(missing.status, 404);
     assert.match(await missing.text(), /Organization is unavailable/);
     assert.doesNotMatch(await (await postInternalAdminBranchLifecycle(deps({ branchLifecycleError: new Error("raw postgres failure") }), "deactivate")).text(), /postgres|raw|stack/i);
@@ -834,21 +869,23 @@ describe("internal-admin supervisor provisioning", () => {
 
   it("denies Internal Admin branch creation to non-admins and invalid payloads", async () => {
     assert.equal((await postInternalAdminBranch(deps(), { name: "Branch" }, ids.orgA, "invalid")).status, 401);
-    assert.equal((await postInternalAdminBranch(deps({ internalAdmin: false }), { name: "Branch" })).status, 403);
-    assert.equal((await postInternalAdminBranch(deps(), { name: " ", timezone: "Asia/Riyadh" })).status, 400);
-    assert.equal((await postInternalAdminBranch(deps(), { name: "Branch", timezone: "Bad/Zone" })).status, 400);
+    assert.equal((await postInternalAdminBranch(deps({ internalAdmin: false }), { name: "Branch", code: "HUN-RUH-002", city: "Riyadh", timezone: "Asia/Riyadh" })).status, 403);
+    assert.equal((await postInternalAdminBranch(deps(), { name: " ", code: "HUN-RUH-002", city: "Riyadh", timezone: "Asia/Riyadh" })).status, 400);
+    assert.equal((await postInternalAdminBranch(deps(), { name: "Branch", code: "BAD/CODE", city: "Riyadh", timezone: "Asia/Riyadh" })).status, 400);
+    assert.equal((await postInternalAdminBranch(deps(), { name: "Branch", code: "HUN-RUH-002", city: " ", timezone: "Asia/Riyadh" })).status, 400);
+    assert.equal((await postInternalAdminBranch(deps(), { name: "Branch", code: "HUN-RUH-002", city: "Riyadh", timezone: "Bad/Zone" })).status, 400);
   });
 
   it("maps Internal Admin branch creation failures to safe responses", async () => {
-    const duplicate = await postInternalAdminBranch(deps({ branchError: new AdminConflictError() }), { name: "Branch", timezone: "Asia/Riyadh" });
+    const duplicate = await postInternalAdminBranch(deps({ branchError: new AdminConflictError() }), { name: "Branch", code: "HUN-RUH-003", city: "Riyadh", timezone: "Asia/Riyadh" });
     assert.equal(duplicate.status, 409);
     assert.match(await duplicate.text(), /Branch already exists/);
 
-    const invalidTimezone = await postInternalAdminBranch(deps({ branchError: new AdminInputError() }), { name: "Branch", timezone: "Asia/Riyadh" });
-    assert.equal(invalidTimezone.status, 422);
-    assert.match(await invalidTimezone.text(), /valid branch timezone/);
+    const invalidDetails = await postInternalAdminBranch(deps({ branchError: new AdminInputError() }), { name: "Branch", code: "HUN-RUH-003", city: "Riyadh", timezone: "Asia/Riyadh" });
+    assert.equal(invalidDetails.status, 422);
+    assert.match(await invalidDetails.text(), /valid branch details/);
 
-    const missingOrganization = await postInternalAdminBranch(deps({ branchError: new AdminNotFoundError() }), { name: "Branch", timezone: "Asia/Riyadh" });
+    const missingOrganization = await postInternalAdminBranch(deps({ branchError: new AdminNotFoundError() }), { name: "Branch", code: "HUN-RUH-003", city: "Riyadh", timezone: "Asia/Riyadh" });
     assert.equal(missingOrganization.status, 404);
     assert.match(await missingOrganization.text(), /Organization is unavailable/);
   });

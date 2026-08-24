@@ -8,6 +8,7 @@ import type {
 type ErrorCode =
   | "bad_request"
   | "conflict"
+  | "duplicate_branch_code"
   | "duplicate_employee_code"
   | "duplicate_person_code"
   | "forbidden"
