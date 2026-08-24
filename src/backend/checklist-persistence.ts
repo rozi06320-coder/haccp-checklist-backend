@@ -32,6 +32,8 @@ export type ChecklistPersistence = {
   getFinancialClosingCurrentState?(actorUserId:string,branchId:string):Promise<unknown>;
   saveFinancialClosingDraft?(input:{actorUserId:string;branchId:string;expectedRevision:number;items:unknown[]}):Promise<unknown>;
   submitFinancialClosing?(input:{actorUserId:string;branchId:string;expectedRevision:number;items:unknown[]}):Promise<unknown>;
+  listSupervisorNotifications?(actorUserId:string):Promise<unknown>;
+  markSupervisorNotificationRead?(actorUserId:string,notificationId:string):Promise<unknown>;
   getInventoryItemsCurrentState?(actorUserId:string,branchId:string,inventoryMonth?:string|null):Promise<unknown>;
   saveInventoryItemsDraft?(input:{actorUserId:string;branchId:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
   submitInventoryItems?(input:{actorUserId:string;branchId:string;idempotencyKey:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
@@ -437,7 +439,9 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
 	  getFinancialClosingCurrentState:(actorUserId,branchId)=>rpc("get_financial_closing_current_state",{actor_user_id:actorUserId,target_branch_id:branchId}),
 	  saveFinancialClosingDraft:(input)=>rpc("save_financial_closing_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,report_items:input.items}),
 	  submitFinancialClosing:(input)=>rpc("submit_financial_closing",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,report_items:input.items}),
-	  async getInventoryItemsCurrentState(actorUserId,branchId,inventoryMonth){
+	  listSupervisorNotifications:(actorUserId)=>rpc("evaluate_supervisor_notifications",{actor_user_id:actorUserId}),
+	  markSupervisorNotificationRead:(actorUserId,notificationId)=>rpc("mark_supervisor_notification_read",{actor_user_id:actorUserId,target_notification_id:notificationId}),
+  async getInventoryItemsCurrentState(actorUserId,branchId,inventoryMonth){
    const args=inventoryMonth?{actor_user_id:actorUserId,target_branch_id:branchId,target_inventory_month:inventoryMonth}:{actor_user_id:actorUserId,target_branch_id:branchId};
    return inventoryItemsCurrent.parse(await rpc("get_inventory_items_current_state",args));
   },
