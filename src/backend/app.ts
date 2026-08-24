@@ -1417,6 +1417,12 @@ async function loadActiveUser(request: Request): Promise<UserContext> {
   }
 }
 
+function hasSupervisorBrowserPushAccess(context: UserContext) {
+  return !context.must_change_password
+    && context.managed_organizations.length === 0
+    && context.branches.some((branch) => branch.role === "branch_manager");
+}
+
 async function requireInternalAdmin(request: Request): Promise<void> {
   const auth = requireAuthContext(request);
   try {
@@ -3288,7 +3294,7 @@ export function createApp(
       try {
         if (!emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
         const context = await loadActiveUser(request);
-        if (context.must_change_password || context.managed_organizations.length > 0 || context.branches.length === 0) throw new HttpError(403, "forbidden", "Access is denied.");
+        if (!hasSupervisorBrowserPushAccess(context)) throw new HttpError(403, "forbidden", "Access is denied.");
         const publicKey = dependencies.maintenancePush?.getPublicKey() ?? null;
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json({ enabled: publicKey !== null, public_key: publicKey });
@@ -3308,7 +3314,7 @@ export function createApp(
         if (!dependencies.maintenancePush) throw new HttpError(503, "service_unavailable", "Notifications are temporarily unavailable.");
         const auth = requireAuthContext(request);
         const context = await loadActiveUser(request);
-        if (context.must_change_password || context.managed_organizations.length > 0 || context.branches.length === 0) throw new HttpError(403, "forbidden", "Access is denied.");
+        if (!hasSupervisorBrowserPushAccess(context)) throw new HttpError(403, "forbidden", "Access is denied.");
         const result = pushSubscriptionResponseSchema.parse(await dependencies.maintenancePush.registerSupervisorSubscription({
           actorUserId: auth.userId,
           endpoint: body.data.endpoint,
@@ -3334,7 +3340,7 @@ export function createApp(
         if (!dependencies.maintenancePush) throw new HttpError(503, "service_unavailable", "Notifications are temporarily unavailable.");
         const auth = requireAuthContext(request);
         const context = await loadActiveUser(request);
-        if (context.must_change_password || context.managed_organizations.length > 0 || context.branches.length === 0) throw new HttpError(403, "forbidden", "Access is denied.");
+        if (!hasSupervisorBrowserPushAccess(context)) throw new HttpError(403, "forbidden", "Access is denied.");
         const result = pushSubscriptionResponseSchema.parse(await dependencies.maintenancePush.disableSubscription({
           actorUserId: auth.userId,
           endpoint: body.data.endpoint,

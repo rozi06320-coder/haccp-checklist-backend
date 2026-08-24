@@ -11,7 +11,10 @@ import type { UserContext } from "./user-context";
 const ids = {
   supervisor: "18000000-0000-4000-8000-000000000001",
   manager: "18000000-0000-4000-8000-000000000002",
+  staff: "18000000-0000-4000-8000-000000000003",
+  otherUser: "18000000-0000-4000-8000-000000000004",
   branch: "28000000-0000-4000-8000-000000000001",
+  otherBranch: "28000000-0000-4000-8000-000000000002",
   org: "38000000-0000-4000-8000-000000000001",
 } as const;
 
@@ -30,6 +33,7 @@ const config = loadBackendConfig({
 const contexts: Record<string, UserContext> = {
   supervisor: { id: ids.supervisor, full_name: "Supervisor", must_change_password: false, disabled: false, branches: [{ id: ids.branch, name: "Branch", organization_id: ids.org, role: "branch_manager" }], managed_organizations: [] },
   manager: { id: ids.manager, full_name: "Manager", must_change_password: false, disabled: false, branches: [], managed_organizations: [{ id: ids.org, name: "Org", role: "organization_manager" }] },
+  staff: { id: ids.staff, full_name: "Staff", must_change_password: false, disabled: false, branches: [{ id: ids.branch, name: "Branch", organization_id: ids.org, role: "staff" }], managed_organizations: [] },
 };
 
 const calls: Array<{ name: string; input: unknown }> = [];
@@ -57,7 +61,7 @@ function push(): MaintenancePushService {
   };
 }
 
-function deps(): BackendDependencies {
+function deps(maintenancePush: MaintenancePushService = push()): BackendDependencies {
   return {
     checkReadiness: async () => true,
     passwordChange: { verifyCurrent: async () => true, updatePassword: async () => {}, finalize: async () => {} },
@@ -73,9 +77,22 @@ function deps(): BackendDependencies {
       validateActiveBranches: async () => false,
       listActiveBranches: async () => [],
     }),
-    maintenancePush: push(),
+    maintenancePush,
     now: () => new Date("2026-08-24T19:00:00.000Z"),
   } as unknown as BackendDependencies;
+}
+
+async function listen(maintenancePush: MaintenancePushService = push()) {
+  const instance = createServer(createApp(config, deps(maintenancePush)));
+  await new Promise<void>((resolve, reject) => instance.listen(0, "127.0.0.1", resolve).once("error", reject));
+  return {
+    server: instance,
+    baseUrl: `http://127.0.0.1:${(instance.address() as AddressInfo).port}`,
+  };
+}
+
+async function close(instance: Server) {
+  await new Promise<void>((resolve) => instance.close(() => resolve()));
 }
 
 function auth(token: string) {
@@ -91,21 +108,34 @@ let baseUrl: string;
 
 describe("Supervisor notification browser push API", () => {
   before(async () => {
-    server = createServer(createApp(config, deps()));
-    await new Promise<void>((resolve, reject) => server.listen(0, "127.0.0.1", resolve).once("error", reject));
-    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    ({ server, baseUrl } = await listen());
   });
-  after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  after(() => close(server));
   beforeEach(() => { calls.length = 0; });
 
-  it("returns the shared VAPID public key only for Supervisor users", async () => {
+  it("returns the shared VAPID public key only for Supervisor users without exposing the private key", async () => {
     const response = await fetch(`${baseUrl}/api/v1/supervisor/push/public-key`, { headers: auth("supervisor") });
     assert.equal(response.status, 200);
-    assert.deepEqual(await json(response), { enabled: true, public_key: "test-public-key" });
+    const body = await json(response);
+    assert.deepEqual(body, { enabled: true, public_key: "test-public-key" });
+    assert.equal(JSON.stringify(body).includes("test-private-key"), false);
     assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/push/public-key`, { headers: auth("manager") })).status, 403);
   });
 
-  it("registers and disables a Supervisor subscription without using Maintenance recipient logic", async () => {
+  it("reports Supervisor browser push as disabled when VAPID transport is unconfigured", async () => {
+    const disabledPush = push();
+    disabledPush.getPublicKey = () => null;
+    const instance = await listen(disabledPush);
+    try {
+      const response = await fetch(`${instance.baseUrl}/api/v1/supervisor/push/public-key`, { headers: auth("supervisor") });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await json(response), { enabled: false, public_key: null });
+    } finally {
+      await close(instance.server);
+    }
+  });
+
+  it("registers an eligible authenticated Supervisor through the shared push subscription infrastructure", async () => {
     const response = await fetch(`${baseUrl}/api/v1/supervisor/push/subscriptions`, {
       method: "POST",
       headers: { ...auth("supervisor"), "Content-Type": "application/json", "User-Agent": "Node Test" },
@@ -113,7 +143,50 @@ describe("Supervisor notification browser push API", () => {
     });
     assert.equal(response.status, 200);
     assert.deepEqual(calls.at(-1), { name: "supervisor-register", input: { actorUserId: ids.supervisor, endpoint: "https://push.example/supervisor", p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret", userAgent: "Node Test" } });
+    assert.equal(JSON.stringify(calls.at(-1)).includes("example.invalid"), false);
+    assert.equal((await json(response)).subscription !== null, true);
+  });
 
+  it("rejects non-Supervisor branch users before registration", async () => {
+    const response = await fetch(`${baseUrl}/api/v1/supervisor/push/subscriptions`, {
+      method: "POST",
+      headers: { ...auth("staff"), "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: "https://push.example/staff", keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" } }),
+    });
+    assert.equal(response.status, 403);
+    assert.equal(calls.length, 0);
+  });
+
+  it("does not let clients choose arbitrary push user or branch scope", async () => {
+    const response = await fetch(`${baseUrl}/api/v1/supervisor/push/subscriptions`, {
+      method: "POST",
+      headers: { ...auth("supervisor"), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: ids.otherUser,
+        branch_id: ids.otherBranch,
+        endpoint: "https://push.example/spoofed",
+        keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" },
+      }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(calls.length, 0);
+  });
+
+  it("rejects email recipient lists as a routing authority", async () => {
+    const response = await fetch(`${baseUrl}/api/v1/supervisor/push/subscriptions`, {
+      method: "POST",
+      headers: { ...auth("supervisor"), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        endpoint: "https://push.example/email-list",
+        keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" },
+        emails: ["maintenance@example.invalid"],
+      }),
+    });
+    assert.equal(response.status, 400);
+    assert.equal(calls.length, 0);
+  });
+
+  it("disables only the authenticated Supervisor user's matching subscription", async () => {
     const disabled = await fetch(`${baseUrl}/api/v1/supervisor/push/subscriptions`, {
       method: "DELETE",
       headers: { ...auth("supervisor"), "Content-Type": "application/json" },
@@ -121,6 +194,15 @@ describe("Supervisor notification browser push API", () => {
     });
     assert.equal(disabled.status, 200);
     assert.deepEqual(calls.at(-1), { name: "disable", input: { actorUserId: ids.supervisor, endpoint: "https://push.example/supervisor" } });
+
+    calls.length = 0;
+    const spoofed = await fetch(`${baseUrl}/api/v1/supervisor/push/subscriptions`, {
+      method: "DELETE",
+      headers: { ...auth("supervisor"), "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: ids.otherUser, endpoint: "https://push.example/supervisor" }),
+    });
+    assert.equal(spoofed.status, 400);
+    assert.equal(calls.length, 0);
   });
 
   it("requires the scheduler secret before running due reminder delivery", async () => {
