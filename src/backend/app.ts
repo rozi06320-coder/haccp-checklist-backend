@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
@@ -361,6 +361,11 @@ const pushSubscriptionResponseSchema = z.object({
     endpoint: z.string(),
     disabled_at: z.string().nullable(),
   }).nullable(),
+}).strict();
+const supervisorPushRunResponseSchema = z.object({
+  evaluated_at: z.string(),
+  deliveries_attempted: z.number().int().nonnegative(),
+  deliveries_sent: z.number().int().nonnegative(),
 }).strict();
 const maintenancePurchaseAttachmentSchema=z.object({id:z.uuid(),original_filename:z.string().nullable(),mime_type:z.string().nullable(),size_bytes:z.number().nullable(),position:z.number().int().min(1).max(MAX_MAINTENANCE_PURCHASE_PHOTOS),url:z.string().nullable()}).strict();
 const maintenancePurchaseRowSchema=z.object({id:z.uuid(),branch_id:z.uuid(),item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnitSchema,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:z.string().nullable(),payment_status:z.enum(["unpaid","reimbursed"]),reimbursement_note:z.string().nullable(),reimbursed_at:z.string().nullable(),receipt_original_name:z.string().nullable(),receipt_url:z.string().nullable(),attachments:z.array(maintenancePurchaseAttachmentSchema).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
@@ -1279,6 +1284,22 @@ function maintenancePushError(error: unknown) {
   if (error instanceof MaintenancePushAccessError) return new HttpError(403, "forbidden", "Access is denied.");
   if (error instanceof MaintenancePushUnavailableError) return new HttpError(503, "service_unavailable", "Maintenance notifications are temporarily unavailable.");
   return new HttpError(503, "service_unavailable", "Maintenance notifications are temporarily unavailable.");
+}
+
+function browserPushError(error: unknown) {
+  if (error instanceof MaintenancePushInputError) return new HttpError(422, "unprocessable_entity", "The push subscription is invalid.");
+  if (error instanceof MaintenancePushConflictError) return new HttpError(409, "conflict", "This browser subscription belongs to another account.");
+  if (error instanceof MaintenancePushAccessError) return new HttpError(403, "forbidden", "Access is denied.");
+  if (error instanceof MaintenancePushUnavailableError) return new HttpError(503, "service_unavailable", "Notifications are temporarily unavailable.");
+  return new HttpError(503, "service_unavailable", "Notifications are temporarily unavailable.");
+}
+
+function schedulerSecretIsValid(request: Request, configuredSecret: string | undefined) {
+  if (!configuredSecret) return false;
+  const supplied = request.header("X-Scheduler-Secret") ?? "";
+  const expected = Buffer.from(configuredSecret, "utf8");
+  const actual = Buffer.from(supplied, "utf8");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
 function logSupervisorProvisioningFailure(
@@ -3256,6 +3277,91 @@ export function createApp(
         response.status(200).json(result);
       } catch (error) {
         next(error instanceof HttpError ? error : maintenancePushError(error));
+      }
+    },
+  );
+  app.get(
+    "/api/v1/supervisor/push/public-key",
+    protectedRateLimit,
+    authenticate,
+    async (request, response, next) => {
+      try {
+        if (!emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || context.managed_organizations.length > 0 || context.branches.length === 0) throw new HttpError(403, "forbidden", "Access is denied.");
+        const publicKey = dependencies.maintenancePush?.getPublicKey() ?? null;
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ enabled: publicKey !== null, public_key: publicKey });
+      } catch (error) {
+        next(error instanceof HttpError ? error : browserPushError(error));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/supervisor/push/subscriptions",
+    protectedRateLimit,
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const body = pushSubscriptionBodySchema.safeParse(request.body);
+        if (!body.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        if (!dependencies.maintenancePush) throw new HttpError(503, "service_unavailable", "Notifications are temporarily unavailable.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || context.managed_organizations.length > 0 || context.branches.length === 0) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = pushSubscriptionResponseSchema.parse(await dependencies.maintenancePush.registerSupervisorSubscription({
+          actorUserId: auth.userId,
+          endpoint: body.data.endpoint,
+          p256dh: body.data.keys.p256dh,
+          auth: body.data.keys.auth,
+          userAgent: request.header("User-Agent") ?? null,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : browserPushError(error));
+      }
+    },
+  );
+  app.delete(
+    "/api/v1/supervisor/push/subscriptions",
+    protectedRateLimit,
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const body = pushSubscriptionDeleteBodySchema.safeParse(request.body);
+        if (!body.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        if (!dependencies.maintenancePush) throw new HttpError(503, "service_unavailable", "Notifications are temporarily unavailable.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || context.managed_organizations.length > 0 || context.branches.length === 0) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = pushSubscriptionResponseSchema.parse(await dependencies.maintenancePush.disableSubscription({
+          actorUserId: auth.userId,
+          endpoint: body.data.endpoint,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : browserPushError(error));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal/supervisor-notifications/push/run",
+    protectedRateLimit,
+    async (request, response, next) => {
+      try {
+        if (!emptyQuerySchema.safeParse(request.query).success || !emptyQuerySchema.safeParse(request.body ?? {}).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        if (!config.supervisorNotificationSchedulerSecret) throw new HttpError(503, "service_unavailable", "Notification scheduler is not configured.");
+        if (!schedulerSecretIsValid(request, config.supervisorNotificationSchedulerSecret)) throw new HttpError(401, "unauthorized", "Access is denied.");
+        if (!dependencies.maintenancePush) throw new HttpError(503, "service_unavailable", "Notifications are temporarily unavailable.");
+        const result = supervisorPushRunResponseSchema.parse(await dependencies.maintenancePush.notifyDueSupervisorChecklistReminders({
+          asOf: dependencies.now?.() ?? new Date(),
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : browserPushError(error));
       }
     },
   );

@@ -33,6 +33,7 @@ const environmentSchema = z
     VAPID_PUBLIC_KEY: z.string().trim().min(1).max(4_096).optional(),
     VAPID_PRIVATE_KEY: z.string().trim().min(1).max(4_096).optional(),
     VAPID_SUBJECT: z.string().trim().min(1).max(512).optional(),
+    SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET: z.string().min(32).max(4_096).optional(),
   })
   .superRefine((environment, context) => {
     const protocol = new URL(environment.SUPABASE_URL).protocol;
@@ -76,6 +77,7 @@ export type BackendConfig = {
     privateKey?: string;
     subject?: string;
   };
+  supervisorNotificationSchedulerSecret?: string;
 };
 
 export class BackendConfigurationError extends Error {
@@ -115,5 +117,6 @@ export function loadBackendConfig(
       privateKey: result.data.VAPID_PRIVATE_KEY,
       subject: result.data.VAPID_SUBJECT,
     },
+    supervisorNotificationSchedulerSecret: result.data.SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET,
   };
 }

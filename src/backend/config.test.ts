@@ -20,6 +20,8 @@ describe("backend configuration", () => {
     assert.equal(config.port, 3001);
     assert.equal(config.trustProxy, false);
     assert.equal(config.nodeEnv, "test");
+    assert.equal(config.supervisorNotificationSchedulerSecret, undefined);
+    assert.equal(loadBackendConfig({ ...validEnvironment, SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET: "test-supervisor-notification-scheduler-secret" }).supervisorNotificationSchedulerSecret, "test-supervisor-notification-scheduler-secret");
   });
 
   it("accepts only false or the constrained loopback proxy setting", () => {
@@ -83,6 +85,10 @@ describe("backend configuration", () => {
         BackendConfigurationError,
       );
     }
+    assert.throws(
+      () => loadBackendConfig({ ...validEnvironment, SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET: "short" }),
+      BackendConfigurationError,
+    );
     assert.throws(
       () =>
         loadBackendConfig({

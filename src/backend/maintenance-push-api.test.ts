@@ -114,10 +114,16 @@ describe("Maintenance push notification API", () => {
         disabledEndpoint = input.endpoint;
         return { subscription: { id: "59000000-0000-4000-8000-000000000001", user_id: input.actorUserId, endpoint: input.endpoint, disabled_at: "2026-08-15T10:00:00.000Z" } };
       },
+      async registerSupervisorSubscription(input) {
+        return { subscription: { id: "59000000-0000-4000-8000-000000000001", user_id: input.actorUserId, endpoint: input.endpoint, disabled_at: null } };
+      },
       async notifyMaintenanceIssueCreated(input) {
         notifyAttempts += 1;
         notifyInput = input;
         throw new Error("push transport failed");
+      },
+      async notifyDueSupervisorChecklistReminders() {
+        return { evaluated_at: "2026-08-15T10:00:00.000Z", deliveries_attempted: 0, deliveries_sent: 0 };
       },
     };
     ({ server, baseUrl } = await listen(push));
@@ -140,7 +146,13 @@ describe("Maintenance push notification API", () => {
       async disableSubscription() {
         return { subscription: null };
       },
+      async registerSupervisorSubscription() {
+        return { subscription: null };
+      },
       async notifyMaintenanceIssueCreated() {},
+      async notifyDueSupervisorChecklistReminders() {
+        return { evaluated_at: "2026-08-15T10:00:00.000Z", deliveries_attempted: 0, deliveries_sent: 0 };
+      },
     };
     const instance = await listen(push);
     try {
