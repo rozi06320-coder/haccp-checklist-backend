@@ -1,5 +1,5 @@
 begin;
-select plan(26);
+select plan(28);
 
 insert into auth.users(
   instance_id, id, aud, role, email, raw_app_meta_data, raw_user_meta_data, created_at, updated_at
@@ -127,6 +127,18 @@ select has_column(
   'cold_storage_equipment',
   'branch_id',
   'snapshot table has nullable branch scope'
+);
+select has_column(
+  'public',
+  'branch_cold_storage_equipment',
+  'equipment_code',
+  'master equipment has nullable equipment code'
+);
+select has_column(
+  'public',
+  'cold_storage_equipment',
+  'equipment_code',
+  'snapshot equipment has nullable equipment code'
 );
 select ok(
   (select relrowsecurity

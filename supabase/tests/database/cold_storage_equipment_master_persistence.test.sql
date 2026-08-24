@@ -1,5 +1,5 @@
 begin;
-select plan(23);
+select plan(27);
 
 insert into auth.users(
   instance_id, id, aud, role, email, raw_app_meta_data, raw_user_meta_data, created_at, updated_at
@@ -48,10 +48,10 @@ insert into public.branch_supervisor_teams(id, organization_id, branch_id, super
   ('ce400000-0000-4000-8000-000000000002', 'ce200000-0000-4000-8000-000000000001', 'ce300000-0000-4000-8000-000000000002', 'ce100000-0000-4000-8000-000000000002');
 
 insert into public.branch_cold_storage_equipment(
-  id, organization_id, branch_id, name, equipment_type, created_by
+  id, organization_id, branch_id, equipment_code, name, equipment_type, created_by
 ) values
-  ('ce500000-0000-4000-8000-000000000001', 'ce200000-0000-4000-8000-000000000001', 'ce300000-0000-4000-8000-000000000001', 'Walk-in Freezer', 'freezer', 'ce100000-0000-4000-8000-000000000001'),
-  ('ce500000-0000-4000-8000-000000000099', 'ce200000-0000-4000-8000-000000000001', 'ce300000-0000-4000-8000-000000000002', 'Other Branch Freezer', 'freezer', 'ce100000-0000-4000-8000-000000000002');
+  ('ce500000-0000-4000-8000-000000000001', 'ce200000-0000-4000-8000-000000000001', 'ce300000-0000-4000-8000-000000000001', 'G1', 'Walk-in Freezer', 'freezer', 'ce100000-0000-4000-8000-000000000001'),
+  ('ce500000-0000-4000-8000-000000000099', 'ce200000-0000-4000-8000-000000000001', 'ce300000-0000-4000-8000-000000000002', 'G1', 'Other Branch Freezer', 'freezer', 'ce100000-0000-4000-8000-000000000002');
 
 select is(
   jsonb_array_length(
@@ -73,6 +73,15 @@ select is(
   'master UUID is the canonical current-state equipment ID'
 );
 
+select is(
+  public.get_cold_storage_current_state(
+    'ce100000-0000-4000-8000-000000000001',
+    'ce300000-0000-4000-8000-000000000001'
+  ) -> 'equipment' -> 0 ->> 'equipment_code',
+  'G1',
+  'current-state exposes the active master equipment code'
+);
+
 select lives_ok($$
   select public.save_cold_storage_draft(
     'ce100000-0000-4000-8000-000000000001',
@@ -89,6 +98,14 @@ select is(
    where master_equipment_id = 'ce500000-0000-4000-8000-000000000001'),
   'Walk-in Freezer|freezer|true',
   'draft snapshot name, type, and active state are derived from the master'
+);
+
+select is(
+  (select equipment_code
+   from public.cold_storage_equipment
+   where master_equipment_id = 'ce500000-0000-4000-8000-000000000001'),
+  'G1',
+  'draft snapshot code is derived from the master'
 );
 
 select is(
@@ -109,11 +126,12 @@ select is(
 );
 
 insert into public.branch_cold_storage_equipment(
-  id, organization_id, branch_id, name, equipment_type, created_by
+  id, organization_id, branch_id, equipment_code, name, equipment_type, created_by
 ) values (
   'ce500000-0000-4000-8000-000000000002',
   'ce200000-0000-4000-8000-000000000001',
   'ce300000-0000-4000-8000-000000000001',
+  'C1',
   'Line Refrigerator',
   'refrigerator',
   'ce100000-0000-4000-8000-000000000001'
@@ -203,13 +221,15 @@ select lives_ok($$
 $$, 'first slot submit stores the server-derived master snapshot');
 
 select lives_ok($$
-  select * from public.rename_supervisor_cold_storage_equipment(
+  select * from public.update_supervisor_cold_storage_equipment(
     'ce100000-0000-4000-8000-000000000001',
     'ce300000-0000-4000-8000-000000000001',
     'ce500000-0000-4000-8000-000000000001',
-    'Renamed After Submit'
+    'CH1',
+    'Renamed After Submit',
+    'freezer'
   )
-$$, 'master can be renamed after a slot is submitted');
+$$, 'master code and name can be edited after a slot is submitted');
 
 select is(
   (select value ->> 'equipment_name'
@@ -220,6 +240,17 @@ select is(
    where value ->> 'equipment_id' = 'ce500000-0000-4000-8000-000000000001'),
   'Main Walk-in Freezer',
   'a submitted slot freezes the current-day equipment name snapshot'
+);
+
+select is(
+  (select value ->> 'equipment_code'
+   from jsonb_array_elements(public.get_cold_storage_current_state(
+     'ce100000-0000-4000-8000-000000000001',
+     'ce300000-0000-4000-8000-000000000001'
+   ) -> 'equipment')
+   where value ->> 'equipment_id' = 'ce500000-0000-4000-8000-000000000001'),
+  'G1',
+  'a submitted slot freezes the current-day equipment code snapshot'
 );
 
 select lives_ok($$
@@ -257,6 +288,19 @@ select is(
    where value ->> 'equipment_id' = 'ce500000-0000-4000-8000-000000000001'),
   'Main Walk-in Freezer',
   'Manager report detail continues to read the frozen submission snapshot name'
+);
+
+select is(
+  (select value ->> 'equipment_code'
+   from jsonb_array_elements(public.get_cold_storage_managed_report_detail(
+     'ce100000-0000-4000-8000-000000000003',
+     'ce200000-0000-4000-8000-000000000001',
+     (select id from public.cold_storage_submissions
+      where supervisor_team_id = 'ce400000-0000-4000-8000-000000000001')
+   ) -> 'rows')
+   where value ->> 'equipment_id' = 'ce500000-0000-4000-8000-000000000001'),
+  'G1',
+  'Manager report detail reads the frozen submission snapshot code'
 );
 
 update public.cold_storage_submissions

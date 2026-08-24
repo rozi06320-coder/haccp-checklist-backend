@@ -180,6 +180,7 @@ const branchSupplierRow = z.object({
 const coldStorageEquipmentMasterRow = z.object({
   id: uuid,
   branch_id: uuid,
+  equipment_code: z.string().min(1).max(24).nullable(),
   name: z.string().min(1).max(120),
   equipment_type: z.enum(["refrigerator", "freezer"]),
   active: z.boolean(),
@@ -231,6 +232,7 @@ export const supplierReceivingPhotoMime = z.enum(["image/jpeg", "image/png", "im
 export type OperationalRole = z.infer<typeof role>;
 export class OperationalConflictError extends Error {}
 export class OperationalDuplicateStaffCodeError extends Error {}
+export class OperationalDuplicateColdStorageEquipmentCodeError extends Error {}
 export class OperationalAccessError extends Error {}
 export class OperationalInputError extends Error {}
 export class OperationalHygieneSubmittedError extends Error {}
@@ -244,6 +246,7 @@ export type OperationalAdmin = {
   createSupervisorColdStorageEquipment?(input: {
     actorUserId: string;
     branchId: string;
+    equipmentCode: string;
     name: string;
     equipmentType: "refrigerator" | "freezer";
   }): Promise<unknown>;
@@ -251,6 +254,7 @@ export type OperationalAdmin = {
     actorUserId: string;
     branchId: string;
     equipmentId: string;
+    equipmentCode: string;
     name: string;
     equipmentType: "refrigerator" | "freezer";
   }): Promise<unknown>;
@@ -399,6 +403,9 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       if (result.error.code === "23505" && /employee code/i.test(result.error.message)) {
         throw new OperationalDuplicateStaffCodeError();
       }
+      if (result.error.code === "23505" && /equipment[_ ]code/i.test(result.error.message)) {
+        throw new OperationalDuplicateColdStorageEquipmentCodeError();
+      }
       if (result.error.code === "23514" && /annual evaluation incomplete/i.test(result.error.message)) throw new OperationalInputError();
       if (result.error.code === "23514" && /destination team hygiene already submitted/i.test(result.error.message)) throw new OperationalHygieneSubmittedError();
       if (["23505", "23514", "40001", "55000"].includes(result.error.code)) {
@@ -415,6 +422,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     const result = await client.rpc(name, input);
     if (result.error) {
       if (result.error.code === "23505" && /employee code/i.test(result.error.message)) throw new OperationalDuplicateStaffCodeError();
+      if (result.error.code === "23505" && /equipment[_ ]code/i.test(result.error.message)) throw new OperationalDuplicateColdStorageEquipmentCodeError();
       if (result.error.code === "23514" && /annual evaluation incomplete/i.test(result.error.message)) throw new OperationalInputError();
       if (result.error.code === "23514" && /destination team hygiene already submitted/i.test(result.error.message)) throw new OperationalHygieneSubmittedError();
       if (["23505", "23514", "40001", "55000"].includes(result.error.code)) throw new OperationalConflictError();
@@ -608,6 +616,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         {
           actor_user_id: input.actorUserId,
           target_branch_id: input.branchId,
+          equipment_code: input.equipmentCode,
           equipment_name: input.name,
           equipment_type: input.equipmentType,
         },
@@ -635,6 +644,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
           actor_user_id: input.actorUserId,
           target_branch_id: input.branchId,
           target_equipment_id: input.equipmentId,
+          equipment_code: input.equipmentCode,
           equipment_name: input.name,
           equipment_type: input.equipmentType,
         },

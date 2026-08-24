@@ -1,5 +1,5 @@
 begin;
-select plan(31);
+select plan(40);
 
 insert into auth.users(
   instance_id, id, aud, role, email, raw_app_meta_data, raw_user_meta_data, created_at, updated_at
@@ -63,7 +63,7 @@ select ok(
   )
   and has_function_privilege(
     'service_role',
-    'public.create_supervisor_cold_storage_equipment(uuid,uuid,text,text)',
+    'public.create_supervisor_cold_storage_equipment(uuid,uuid,text,text,text)',
     'execute'
   )
   and has_function_privilege(
@@ -73,7 +73,7 @@ select ok(
   )
   and has_function_privilege(
     'service_role',
-    'public.update_supervisor_cold_storage_equipment(uuid,uuid,uuid,text,text)',
+    'public.update_supervisor_cold_storage_equipment(uuid,uuid,uuid,text,text,text)',
     'execute'
   )
   and has_function_privilege(
@@ -92,7 +92,7 @@ select ok(
   )
   and not has_function_privilege(
     'authenticated',
-    'public.create_supervisor_cold_storage_equipment(uuid,uuid,text,text)',
+    'public.create_supervisor_cold_storage_equipment(uuid,uuid,text,text,text)',
     'execute'
   )
   and not has_function_privilege(
@@ -102,7 +102,7 @@ select ok(
   )
   and not has_function_privilege(
     'authenticated',
-    'public.update_supervisor_cold_storage_equipment(uuid,uuid,uuid,text,text)',
+    'public.update_supervisor_cold_storage_equipment(uuid,uuid,uuid,text,text,text)',
     'execute'
   )
   and not has_function_privilege(
@@ -114,15 +114,16 @@ select ok(
 );
 
 select is(
-  (select name
+  (select equipment_code || '|' || name
    from public.create_supervisor_cold_storage_equipment(
      'cf100000-0000-4000-8000-000000000001',
      'cf300000-0000-4000-8000-000000000001',
+     E' g1 ',
      E'  Walk-in\t  Freezer  ',
      'freezer'
    )),
-  'Walk-in Freezer',
-  'assigned Supervisor creates equipment with trimmed and collapsed name'
+  'G1|Walk-in Freezer',
+  'assigned Supervisor creates equipment with normalized code and name'
 );
 
 select is(
@@ -171,6 +172,7 @@ select throws_ok($$
   from public.create_supervisor_cold_storage_equipment(
     'cf100000-0000-4000-8000-000000000001',
     'cf300000-0000-4000-8000-000000000001',
+    'W1',
     'Warmer',
     'warmer'
   )
@@ -181,6 +183,7 @@ select throws_ok($$
   from public.create_supervisor_cold_storage_equipment(
     'cf100000-0000-4000-8000-000000000001',
     'cf300000-0000-4000-8000-000000000001',
+    'B1',
     '   ',
     'freezer'
   )
@@ -191,6 +194,7 @@ select throws_ok($$
   from public.create_supervisor_cold_storage_equipment(
     'cf100000-0000-4000-8000-000000000001',
     'cf300000-0000-4000-8000-000000000001',
+    'L1',
     repeat('x', 121),
     'freezer'
   )
@@ -201,22 +205,119 @@ select throws_ok($$
   from public.create_supervisor_cold_storage_equipment(
     'cf100000-0000-4000-8000-000000000001',
     'cf300000-0000-4000-8000-000000000001',
+    'G2',
     'walk-in freezer',
     'freezer'
   )
 $$, '23505', null, 'create rejects duplicate normalized active name');
 
 select is(
-  (select name
+  (select equipment_code || '|' || name
    from public.create_supervisor_cold_storage_equipment(
      'cf100000-0000-4000-8000-000000000001',
      'cf300000-0000-4000-8000-000000000001',
+     'C1',
      'Reach-in Refrigerator',
      'refrigerator'
    )),
-  'Reach-in Refrigerator',
+  'C1|Reach-in Refrigerator',
   'assigned Supervisor can create a second distinct equipment row'
 );
+
+select is(
+  (select equipment_code
+   from public.create_supervisor_cold_storage_equipment(
+     'cf100000-0000-4000-8000-000000000001',
+     'cf300000-0000-4000-8000-000000000001',
+     'ch-01',
+     'Front Counter Chiller',
+     'refrigerator'
+   )),
+  'CH-01',
+  'create accepts hyphenated codes and normalizes lowercase'
+);
+
+select throws_ok($$
+  select * from public.create_supervisor_cold_storage_equipment(
+    'cf100000-0000-4000-8000-000000000001',
+    'cf300000-0000-4000-8000-000000000001',
+    'C 2',
+    'Invalid Space Code',
+    'refrigerator'
+  )
+$$, '22023', 'invalid cold storage equipment code', 'create rejects internal code spaces');
+
+select throws_ok($$
+  select * from public.create_supervisor_cold_storage_equipment(
+    'cf100000-0000-4000-8000-000000000001',
+    'cf300000-0000-4000-8000-000000000001',
+    'C/2',
+    'Invalid Slash Code',
+    'refrigerator'
+  )
+$$, '22023', 'invalid cold storage equipment code', 'create rejects invalid code characters');
+
+select throws_ok($$
+  select * from public.create_supervisor_cold_storage_equipment(
+    'cf100000-0000-4000-8000-000000000001',
+    'cf300000-0000-4000-8000-000000000001',
+    repeat('C', 25),
+    'Overlong Code',
+    'refrigerator'
+  )
+$$, '22023', 'invalid cold storage equipment code', 'create rejects codes longer than 24 characters');
+
+select throws_ok($$
+  select * from public.create_supervisor_cold_storage_equipment(
+    'cf100000-0000-4000-8000-000000000001',
+    'cf300000-0000-4000-8000-000000000001',
+    '',
+    'Blank Code',
+    'refrigerator'
+  )
+$$, '22023', 'invalid cold storage equipment code', 'create rejects empty code');
+
+select throws_ok($$
+  select * from public.create_supervisor_cold_storage_equipment(
+    'cf100000-0000-4000-8000-000000000001',
+    'cf300000-0000-4000-8000-000000000001',
+    'C1',
+    'Duplicate Code Refrigerator',
+    'refrigerator'
+  )
+$$, '23505', 'equipment code already exists', 'create rejects duplicate active code in the same branch');
+
+select lives_ok($$
+  select * from public.create_supervisor_cold_storage_equipment(
+    'cf100000-0000-4000-8000-000000000002',
+    'cf300000-0000-4000-8000-000000000002',
+    'C1',
+    'Other Branch Code Freezer',
+    'freezer'
+  )
+$$, 'same equipment code is allowed in another branch');
+
+insert into public.branch_cold_storage_equipment(
+  organization_id, branch_id, equipment_code, name, equipment_type, active, created_by
+) values (
+  'cf200000-0000-4000-8000-000000000001',
+  'cf300000-0000-4000-8000-000000000001',
+  'R1',
+  'Archived Code Fixture',
+  'freezer',
+  false,
+  'cf100000-0000-4000-8000-000000000001'
+);
+
+select lives_ok($$
+  select * from public.create_supervisor_cold_storage_equipment(
+    'cf100000-0000-4000-8000-000000000001',
+    'cf300000-0000-4000-8000-000000000001',
+    'R1',
+    'Reused Archived Code',
+    'freezer'
+  )
+$$, 'archived equipment code can be reused in the same branch');
 
 insert into public.cold_storage_submissions(
   id, organization_id, branch_id, supervisor_user_id, supervisor_team_id,
@@ -325,7 +426,7 @@ select throws_ok($$
 $$, '42501', 'cold storage equipment access denied', 'rename rejects inactive equipment rows');
 
 select is(
-  (select name || '|' || equipment_type
+  (select equipment_code || '|' || name || '|' || equipment_type
    from public.update_supervisor_cold_storage_equipment(
      'cf100000-0000-4000-8000-000000000001',
      'cf300000-0000-4000-8000-000000000001',
@@ -333,11 +434,12 @@ select is(
       from public.branch_cold_storage_equipment
       where branch_id = 'cf300000-0000-4000-8000-000000000001'
         and name = 'Main Walk-in Freezer'),
+     'CH1',
      'Prep Refrigerator',
      'refrigerator'
    )),
-  'Prep Refrigerator|refrigerator',
-  'assigned Supervisor updates equipment name and type'
+  'CH1|Prep Refrigerator|refrigerator',
+  'assigned Supervisor updates equipment code, name, and type'
 );
 
 select is(
@@ -368,10 +470,26 @@ select throws_ok($$
      from public.branch_cold_storage_equipment
      where branch_id = 'cf300000-0000-4000-8000-000000000001'
        and name = 'Reach-in Refrigerator'),
+    'C2',
     'prep refrigerator',
     'freezer'
   )
 $$, '23505', null, 'update rejects duplicate active name');
+
+select throws_ok($$
+  select *
+  from public.update_supervisor_cold_storage_equipment(
+    'cf100000-0000-4000-8000-000000000001',
+    'cf300000-0000-4000-8000-000000000001',
+    (select id
+     from public.branch_cold_storage_equipment
+     where branch_id = 'cf300000-0000-4000-8000-000000000001'
+       and name = 'Reach-in Refrigerator'),
+    'CH-01',
+    'Distinct Name',
+    'freezer'
+  )
+$$, '23505', 'equipment code already exists', 'update rejects duplicate active code');
 
 select is(
   (select active
@@ -451,7 +569,7 @@ select is(
      'cf100000-0000-4000-8000-000000000002',
      'cf300000-0000-4000-8000-000000000002'
    )),
-  1::bigint,
+  2::bigint,
   'other branch active roster is unaffected by branch equipment archive'
 );
 
@@ -468,6 +586,7 @@ select throws_ok($$
   from public.create_supervisor_cold_storage_equipment(
     'cf100000-0000-4000-8000-000000000001',
     'cf300000-0000-4000-8000-000000000003',
+    'X1',
     'Cross Organization Unit',
     'freezer'
   )
@@ -491,6 +610,7 @@ select throws_ok($$
   from public.create_supervisor_cold_storage_equipment(
     'cf100000-0000-4000-8000-000000000003',
     'cf300000-0000-4000-8000-000000000001',
+    'M1',
     'Manager Unit',
     'refrigerator'
   )

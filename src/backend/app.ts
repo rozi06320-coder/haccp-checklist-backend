@@ -16,7 +16,7 @@ import {
   type BackendDependencies,
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
-import { branchLocalDate, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalConflictError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenancePurchaseReceiptMime } from "./operational";
+import { branchLocalDate, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenancePurchaseReceiptMime } from "./operational";
 import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ManagementOverviewUnavailableError } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
@@ -41,6 +41,9 @@ const normalizedNameSchema = z.string().max(120)
 const branchCodeSchema = z.string().max(120)
   .transform((value) => value.trim().toUpperCase())
   .pipe(z.string().min(1).max(120).regex(/^[A-Z0-9-]+$/));
+const coldStorageEquipmentCodeSchema = z.string()
+  .transform((value) => value.trim().toUpperCase())
+  .pipe(z.string().min(1).max(24).regex(/^[A-Z0-9-]+$/));
 const branchCitySchema = z.string().max(120)
   .transform((value) => value.trim().replace(/\s+/gu, " "))
   .pipe(z.string().min(1).max(120));
@@ -681,6 +684,8 @@ const coldEquipmentInputSchema=z.object({
   id:z.string().min(1).max(80).optional(),
   equipmentId:z.string().min(1).max(80).optional(),
   equipment_id:z.string().min(1).max(80).optional(),
+  equipmentCode:z.union([coldStorageEquipmentCodeSchema,z.null()]).optional(),
+  equipment_code:z.union([coldStorageEquipmentCodeSchema,z.null()]).optional(),
   name:z.string().min(1).max(120).optional(),
   equipmentName:z.string().min(1).max(120).optional(),
   equipment_name:z.string().min(1).max(120).optional(),
@@ -690,12 +695,13 @@ const coldEquipmentInputSchema=z.object({
   active:z.boolean().optional(),
 }).strict().transform((value,context)=>{
   const equipmentId=value.equipment_id??value.equipmentId??value.id;
+  const equipmentCode=value.equipment_code??value.equipmentCode??null;
   const equipmentName=value.equipment_name??value.equipmentName??value.name;
   const equipmentType=value.equipment_type??value.equipmentType??value.type;
   if(!equipmentId)context.addIssue({code:"custom",path:["equipmentId"],message:"Equipment ID is required."});
   if(!equipmentName)context.addIssue({code:"custom",path:["equipmentName"],message:"Equipment name is required."});
   if(!equipmentType)context.addIssue({code:"custom",path:["equipmentType"],message:"Equipment type is required."});
-  return {equipment_id:equipmentId??"",equipment_name:equipmentName??"",equipment_type:equipmentType??"refrigerator",active:value.active??true};
+  return {equipment_id:equipmentId??"",equipment_code:equipmentCode,equipment_name:equipmentName??"",equipment_type:equipmentType??"refrigerator",active:value.active??true};
 });
 const coldReadingInputSchema=z.object({
   equipmentId:z.string().min(1).max(80).optional(),
@@ -721,13 +727,15 @@ const coldReadingInputSchema=z.object({
 const coldStorageBodySchema=z.object({expected_revision:z.number().int().nonnegative().default(0),equipment:z.array(coldEquipmentInputSchema).max(100),readings:z.array(coldReadingInputSchema).max(300)}).strict();
 const coldStorageEquipmentMasterTypeSchema=z.enum(["refrigerator","freezer"]);
 const coldStorageEquipmentMasterBodySchema=z.object({
+  equipment_code:coldStorageEquipmentCodeSchema,
   name:normalizedNameSchema,
   equipment_type:coldStorageEquipmentMasterTypeSchema,
 }).strict();
-const coldStorageEquipmentMasterRenameBodySchema=z.object({name:normalizedNameSchema,equipment_type:coldStorageEquipmentMasterTypeSchema.optional()}).strict();
+const coldStorageEquipmentMasterUpdateBodySchema=z.object({equipment_code:coldStorageEquipmentCodeSchema,name:normalizedNameSchema,equipment_type:coldStorageEquipmentMasterTypeSchema}).strict();
 const coldStorageEquipmentMasterSchema=z.object({
   id:z.uuid(),
   branch_id:z.uuid(),
+  equipment_code:z.string().min(1).max(24).nullable(),
   name:z.string().min(1).max(120),
   equipment_type:coldStorageEquipmentMasterTypeSchema,
   active:z.boolean(),
@@ -869,8 +877,8 @@ const recordKindSchema=z.enum(["submission","derived_missing"]);
 const phase4aListSchema=z.object({reports:z.array(z.object({id:z.uuid(),branch_id:z.uuid(),branch_name:z.string().optional(),checklist_type:supervisorChecklistTypeSchema,business_date:z.string(),submitted_at:z.string().nullable(),submitted_by:z.string().nullable(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),completion:z.number().optional(),issue_count:z.number().int().nonnegative(),status:z.string(),record_kind:recordKindSchema.optional(),source_submission_id:z.uuid().nullable().optional(),submitted_slots:z.array(coldPersistedSlotSchema).max(3).optional(),...coldStorageMissedMetadataSchema})).max(50),page:z.number().int().positive(),page_size:z.number().int().positive().max(50),total:z.number().int().nonnegative()});
 const oilReportRowSchema=z.object({fryer_id:z.string(),fryer_label:z.string(),fryer_short_label:z.string(),in_use_today:z.boolean(),oil_status:z.enum(["pending","new_oil","filtered_oil"]),opening_temperature_c:z.union([z.number(),z.string()]).nullable().optional(),opening_status:z.enum(["pending","pass","fail"]),opening_note:z.string(),closing_tpm_percent:z.union([z.number(),z.string()]).nullable().optional(),closing_note:z.string(),tpm_classification:z.enum(["good","nearing_end","filtering_required","change_discard"]).nullable().optional()}).strict();
 const oilReportIssueSchema=z.object({id:z.uuid(),section:z.enum(["opening","closing"]),fryer_id:z.string(),fryer_label:z.string(),title:z.string(),remark:z.string(),tpm_status:z.enum(["good","nearing_end","filtering_required","change_discard"]).nullable().optional()}).strict();
-const coldStorageReportRowSchema=z.object({equipment_id:z.string(),equipment_name:z.string(),equipment_type:z.enum(["refrigerator","freezer"]),active:z.boolean(),slot:coldPersistedSlotSchema,temperature_c:z.union([z.number(),z.string()]).nullable().optional(),status:z.enum(["pending","pass","fail"]),corrective_action:z.string(),submitted_at:z.string().nullable().optional()}).strict();
-const coldStorageReportIssueSchema=z.object({id:z.uuid(),equipment_id:z.string(),equipment_name:z.string(),slot:coldPersistedSlotSchema,temperature_c:z.union([z.number(),z.string()]),title:z.string(),remark:z.string()}).strict();
+const coldStorageReportRowSchema=z.object({equipment_id:z.string(),equipment_code:z.string().min(1).max(24).nullable().optional(),equipment_name:z.string(),equipment_type:z.enum(["refrigerator","freezer"]),active:z.boolean(),slot:coldPersistedSlotSchema,temperature_c:z.union([z.number(),z.string()]).nullable().optional(),status:z.enum(["pending","pass","fail"]),corrective_action:z.string(),submitted_at:z.string().nullable().optional()}).strict();
+const coldStorageReportIssueSchema=z.object({id:z.uuid(),equipment_id:z.string(),equipment_code:z.string().min(1).max(24).nullable().optional(),equipment_name:z.string(),slot:coldPersistedSlotSchema,temperature_c:z.union([z.number(),z.string()]),title:z.string(),remark:z.string()}).strict();
 const phase4aDetailSchema=z.object({id:z.uuid(),branch_id:z.uuid(),branch_name:z.string(),business_date:z.string(),checklist_type:supervisorChecklistTypeSchema,definition_id:z.string(),submitted_at:z.string().nullable(),submitted_by:z.string().nullable(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),completion:z.number(),issue_count:z.number().int().nonnegative(),status:z.string(),record_kind:recordKindSchema.optional(),source_submission_id:z.uuid().nullable().optional(),items:z.array(z.object({item_id:z.string(),item_text:z.string(),answer:z.string(),remark:z.string(),entry_period:salesTrackingPeriodSchema.nullable().optional(),entered_by:z.string().nullable().optional(),entered_at:z.string().nullable().optional(),evidence:phase4aEvidenceMetadataSchema.nullable().optional()})).max(300).optional(),staff:z.array(phase4aStaffSnapshotSchema).max(500).optional(),opening_submitted_at:z.string().nullable().optional(),closing_submitted_at:z.string().nullable().optional(),submitted_slots:z.array(coldPersistedSlotSchema).max(3).optional(),...coldStorageMissedMetadataSchema,rows:z.array(z.union([oilReportRowSchema,coldStorageReportRowSchema])).max(300).optional(),issues:z.array(z.union([oilReportIssueSchema,coldStorageReportIssueSchema])).max(300).optional()});
 const phase4aIssueListSchema=z.object({issues:z.array(z.object({id:uuidLikeSchema,report_id:uuidLikeSchema.nullable(),branch_id:z.uuid(),branch_name:z.string(),business_date:z.string(),submitted_by:z.string().nullable(),checklist_type:managementIssueChecklistTypeSchema,title:z.string(),description:z.string(),status:z.string(),created_at:z.string(),item_id:z.string().nullable().optional(),item_text:z.string().nullable().optional(),affected_staff_id:z.uuid().nullable().optional(),affected_staff_name:z.string().nullable().optional(),record_kind:recordKindSchema.optional(),source_submission_id:uuidLikeSchema.nullable().optional()})).max(50),page:z.number().int().positive(),page_size:z.number().int().positive().max(50),total:z.number().int().nonnegative()});
 const managedSalesTrackingOnlineProviderAmountSchema=z.object({provider_id:z.uuid().nullable().optional(),provider_key:z.string().nullable().optional(),provider_name:z.string().min(1).max(120),amount:z.union([z.number(),z.string()])}).strict();
@@ -946,6 +954,7 @@ const coldStorageCurrentSchema=z.object({
   equipment:z.array(z.object({
     id:z.uuid().optional(),
     equipment_id:z.string().max(80),
+    equipment_code:z.string().min(1).max(24).nullable().optional(),
     equipment_name:z.string().max(120),
     equipment_type:z.enum(["refrigerator","freezer"]),
     active:z.boolean(),
@@ -1114,6 +1123,10 @@ function oilReportLabel(value:string|null|undefined){
   return value?value.replaceAll("_"," ").replace(/\b\w/g,(letter)=>letter.toUpperCase()):"Not recorded";
 }
 
+function coldStorageEquipmentLabel(row:{equipment_code?:string|null;equipment_name:string}){
+  return row.equipment_code?`${row.equipment_code} - ${row.equipment_name}`:row.equipment_name;
+}
+
 function oilReportDetailWithItems(detail:z.infer<typeof phase4aDetailSchema>){
   if(detail.checklist_type!=="oil_tracking"||!detail.rows)return detail;
   const rows=detail.rows as z.infer<typeof oilReportRowSchema>[];
@@ -1143,7 +1156,7 @@ function coldStorageReportDetailWithItems(detail:z.infer<typeof phase4aDetailSch
     items:rows.map((row)=>({
       item_id:`${row.equipment_id}-${row.slot}`,
       item_text:[
-        row.equipment_name,
+        coldStorageEquipmentLabel(row),
         oilReportLabel(row.equipment_type),
         row.active?"Active":"Inactive",
         row.slot,
@@ -1200,6 +1213,7 @@ function operationalSupplierReceivingError(error: unknown) {
 
 function operationalColdStorageEquipmentError(error: unknown) {
   if (error instanceof OperationalInputError) return new HttpError(400, "bad_request", "The Cold Storage equipment is invalid.");
+  if (error instanceof OperationalDuplicateColdStorageEquipmentCodeError) return new HttpError(409, "duplicate_equipment_code", "Equipment code already exists.");
   if (error instanceof OperationalConflictError) return new HttpError(409, "conflict", "An active equipment name already exists for this branch.");
   if (error instanceof OperationalAccessError) return new HttpError(403, "forbidden", "Access is denied.");
   return new HttpError(503, "service_unavailable", "Cold Storage equipment is temporarily unavailable.");
@@ -4515,22 +4529,17 @@ export function createApp(
     const auth=requireAuthContext(request),context=await loadActiveUser(request),operational=dependencies.operationalAdmin;
     if(context.must_change_password||context.managed_organizations.length>0||!context.branches.some(item=>item.id===branch.data&&item.role==="branch_manager"))throw new HttpError(403,"forbidden","Access is denied.");
     if(!operational?.createSupervisorColdStorageEquipment)throw new HttpError(503,"service_unavailable","Cold Storage equipment is temporarily unavailable.");
-    const result=coldStorageEquipmentMasterMutationSchema.parse(await operational.createSupervisorColdStorageEquipment({actorUserId:auth.userId,branchId:branch.data,name:body.data.name,equipmentType:body.data.equipment_type}));
+    const result=coldStorageEquipmentMasterMutationSchema.parse(await operational.createSupervisorColdStorageEquipment({actorUserId:auth.userId,branchId:branch.data,equipmentCode:body.data.equipment_code,name:body.data.name,equipmentType:body.data.equipment_type}));
     response.setHeader("Cache-Control","private, no-store");response.status(201).json(result);
   }catch(error){next(error instanceof HttpError?error:operationalColdStorageEquipmentError(error));}});
 
   app.patch("/api/v1/supervisor/branches/:branchId/cold-storage/equipment/:equipmentId",protectedRateLimit,authenticate,async(request,response,next)=>{try{
-    const branch=branchIdSchema.safeParse(request.params.branchId),equipment=z.uuid().safeParse(request.params.equipmentId),body=coldStorageEquipmentMasterRenameBodySchema.safeParse(request.body);
+    const branch=branchIdSchema.safeParse(request.params.branchId),equipment=z.uuid().safeParse(request.params.equipmentId),body=coldStorageEquipmentMasterUpdateBodySchema.safeParse(request.body);
     if(!branch.success||!equipment.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request),operational=dependencies.operationalAdmin;
     if(context.must_change_password||context.managed_organizations.length>0||!context.branches.some(item=>item.id===branch.data&&item.role==="branch_manager"))throw new HttpError(403,"forbidden","Access is denied.");
-    if(body.data.equipment_type){
-      if(!operational?.updateSupervisorColdStorageEquipment)throw new HttpError(503,"service_unavailable","Cold Storage equipment is temporarily unavailable.");
-      const result=coldStorageEquipmentMasterMutationSchema.parse(await operational.updateSupervisorColdStorageEquipment({actorUserId:auth.userId,branchId:branch.data,equipmentId:equipment.data,name:body.data.name,equipmentType:body.data.equipment_type}));
-      response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);return;
-    }
-    if(!operational?.renameSupervisorColdStorageEquipment)throw new HttpError(503,"service_unavailable","Cold Storage equipment is temporarily unavailable.");
-    const result=coldStorageEquipmentMasterMutationSchema.parse(await operational.renameSupervisorColdStorageEquipment({actorUserId:auth.userId,branchId:branch.data,equipmentId:equipment.data,name:body.data.name}));
+    if(!operational?.updateSupervisorColdStorageEquipment)throw new HttpError(503,"service_unavailable","Cold Storage equipment is temporarily unavailable.");
+    const result=coldStorageEquipmentMasterMutationSchema.parse(await operational.updateSupervisorColdStorageEquipment({actorUserId:auth.userId,branchId:branch.data,equipmentId:equipment.data,equipmentCode:body.data.equipment_code,name:body.data.name,equipmentType:body.data.equipment_type}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
   }catch(error){next(error instanceof HttpError?error:operationalColdStorageEquipmentError(error));}});
 

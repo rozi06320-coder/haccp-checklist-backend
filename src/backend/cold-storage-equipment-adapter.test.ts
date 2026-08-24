@@ -39,6 +39,7 @@ describe("Cold Storage equipment master operational adapter", () => {
       const row = {
         id: ids.equipment,
         branch_id: ids.branch,
+        equipment_code: isCreate || isUpdate ? String(body.equipment_code) : "G1",
         name: malformed ? "" : name,
         equipment_type: isUpdate ? String(body.equipment_type) : "freezer",
         active: !isArchive,
@@ -70,6 +71,7 @@ describe("Cold Storage equipment master operational adapter", () => {
       equipment: [{
         id: ids.equipment,
         branch_id: ids.branch,
+        equipment_code: "G1",
         name: "Walk-in Freezer",
         equipment_type: "freezer",
         active: true,
@@ -88,6 +90,7 @@ describe("Cold Storage equipment master operational adapter", () => {
     const result = await admin.createSupervisorColdStorageEquipment({
       actorUserId: ids.actor,
       branchId: ids.branch,
+      equipmentCode: "g1",
       name: "Walk-in Freezer",
       equipmentType: "freezer",
     });
@@ -97,6 +100,7 @@ describe("Cold Storage equipment master operational adapter", () => {
       body: {
         actor_user_id: ids.actor,
         target_branch_id: ids.branch,
+        equipment_code: "g1",
         equipment_name: "Walk-in Freezer",
         equipment_type: "freezer",
       },
@@ -132,6 +136,7 @@ describe("Cold Storage equipment master operational adapter", () => {
       actorUserId: ids.actor,
       branchId: ids.branch,
       equipmentId: ids.equipment,
+      equipmentCode: "CH1",
       name: "Prep Refrigerator",
       equipmentType: "refrigerator",
     });
@@ -143,6 +148,7 @@ describe("Cold Storage equipment master operational adapter", () => {
         actor_user_id: ids.actor,
         target_branch_id: ids.branch,
         target_equipment_id: ids.equipment,
+        equipment_code: "CH1",
         equipment_name: "Prep Refrigerator",
         equipment_type: "refrigerator",
       },
