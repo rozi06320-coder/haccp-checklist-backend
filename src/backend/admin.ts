@@ -530,7 +530,6 @@ export type PasswordChangeService = {
 };
 
 export class AdminConflictError extends Error {}
-export class AdminBranchCodeConflictError extends AdminConflictError {}
 export class AdminDuplicatePersonCodeError extends Error {}
 export class AdminDuplicateStaffCodeError extends Error {}
 export class AdminAccessError extends Error {}
@@ -1092,7 +1091,6 @@ export function createManagementAdmin(
       });
       if (error) {
         if (error.code === "23505") {
-          if (error.message?.includes("branch code already exists")) throw new AdminBranchCodeConflictError();
           throw new AdminConflictError();
         }
         if (error.code === "42501") throw new AdminAccessError();
@@ -1128,7 +1126,6 @@ export function createManagementAdmin(
       });
       if (error) {
         if (error.code === "23505") {
-          if (error.message?.includes("branch code already exists")) throw new AdminBranchCodeConflictError();
           throw new AdminConflictError();
         }
         if (error.code === "42501") throw new AdminAccessError();
@@ -1166,7 +1163,6 @@ export function createManagementAdmin(
       });
       if (error) {
         if (error.code === "23505") {
-          if (error.message?.includes("branch code already exists")) throw new AdminBranchCodeConflictError();
           throw new AdminConflictError();
         }
         if (error.code === "42501") throw new AdminAccessError();

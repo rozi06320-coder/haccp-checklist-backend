@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, it } from "node:test";
-import { AdminAccessError, AdminBranchCodeConflictError, AdminConflictError, AdminDuplicatePersonCodeError, AdminDuplicateStaffCodeError, AdminInputError, AdminNotFoundError, ProvisioningStageError, type FinalizeProvisionedOrganizationManagerInput, type FinalizeProvisionedUserInput } from "./admin";
+import { AdminAccessError, AdminConflictError, AdminDuplicatePersonCodeError, AdminDuplicateStaffCodeError, AdminInputError, AdminNotFoundError, ProvisioningStageError, type FinalizeProvisionedOrganizationManagerInput, type FinalizeProvisionedUserInput } from "./admin";
 import { createApp } from "./app";
 import { loadBackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
@@ -753,13 +753,6 @@ describe("internal-admin supervisor provisioning", () => {
     const duplicate = await patchInternalAdminBranch(deps({ branchLifecycleError: new AdminConflictError() }), validUpdateBody);
     assert.equal(duplicate.status, 409);
     assert.match(await duplicate.text(), /Branch already exists/);
-
-    const duplicateCode = await patchInternalAdminBranch(deps({ branchLifecycleError: new AdminBranchCodeConflictError() }), validUpdateBody);
-    assert.equal(duplicateCode.status, 409);
-    const duplicateCodeText = await duplicateCode.text();
-    assert.match(duplicateCodeText, /duplicate_branch_code/);
-    assert.match(duplicateCodeText, /Branch code already exists/);
-    assert.doesNotMatch(duplicateCodeText, /postgres|duplicate key|service_role|stack/i);
 
     const invalidDetails = await patchInternalAdminBranch(deps({ branchLifecycleError: new AdminInputError() }), validUpdateBody);
     assert.equal(invalidDetails.status, 422);

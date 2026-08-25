@@ -39,7 +39,7 @@ function deps(tokenRole: "manager" | "staff" = "manager", rawError = false): Bac
         const { AdminConflictError } = await import("./admin");
         throw new AdminConflictError();
       }
-      const branch = { id: "34000000-0000-4000-8000-000000000002", name: input.name, code: input.code, city: input.city, area: input.area ?? null, address: input.address ?? null, timezone: input.timezone, active: input.active };
+      const branch = { id: `34000000-0000-4000-8000-${String(branchRows.length + 1).padStart(12, "0")}`, name: input.name, code: input.code, city: input.city, area: input.area ?? null, address: input.address ?? null, timezone: input.timezone, active: input.active };
       branchRows.push({ id: branch.id, name: branch.name, code: branch.code });
       return branch;
     } },
@@ -94,11 +94,18 @@ describe("management listing endpoints", () => {
   });
   it("lets a manager create a branch and then list it", async () => {
     const dependencies = deps();
-    const response = await post(`/api/v1/management/organizations/${ids.orgA}/branches`, { name: "New Branch", code: " mlt-ruh-001 ", city: " Riyadh ", area: " Olaya ", address: " Main Road ", timezone: "Asia/Riyadh", active: true }, dependencies);
+    const response = await post(`/api/v1/management/organizations/${ids.orgA}/branches`, { name: "Burger Hunch Al Takhassusi", code: " hun-ruh ", city: " Riyadh ", area: " Olaya ", address: " Main Road ", timezone: "Asia/Riyadh", active: true }, dependencies);
     assert.equal(response.status, 201);
-    assert.deepEqual(await response.json(), { branch: { id: "34000000-0000-4000-8000-000000000002", name: "New Branch", code: "MLT-RUH-001", city: "Riyadh", area: "Olaya", address: "Main Road", timezone: "Asia/Riyadh", active: true } });
+    assert.deepEqual(await response.json(), { branch: { id: "34000000-0000-4000-8000-000000000002", name: "Burger Hunch Al Takhassusi", code: "HUN-RUH", city: "Riyadh", area: "Olaya", address: "Main Road", timezone: "Asia/Riyadh", active: true } });
+    const duplicateCodeResponse = await post(`/api/v1/management/organizations/${ids.orgA}/branches`, { name: "Burger Hunch Olaya", code: "HUN-RUH", city: "Riyadh", area: "Olaya", address: "Olaya Road", timezone: "Asia/Riyadh", active: true }, dependencies);
+    assert.equal(duplicateCodeResponse.status, 201);
+    assert.deepEqual(await duplicateCodeResponse.json(), { branch: { id: "34000000-0000-4000-8000-000000000003", name: "Burger Hunch Olaya", code: "HUN-RUH", city: "Riyadh", area: "Olaya", address: "Olaya Road", timezone: "Asia/Riyadh", active: true } });
     const branchResponse = await get(`/api/v1/management/organizations/${ids.orgA}/branches`, dependencies);
-    assert.deepEqual(await branchResponse.json(), { branches: [{ id: ids.branch, name: "Active A", code: "AA" }, { id: "34000000-0000-4000-8000-000000000002", name: "New Branch", code: "MLT-RUH-001" }] });
+    assert.deepEqual(await branchResponse.json(), { branches: [
+      { id: ids.branch, name: "Active A", code: "AA" },
+      { id: "34000000-0000-4000-8000-000000000002", name: "Burger Hunch Al Takhassusi", code: "HUN-RUH" },
+      { id: "34000000-0000-4000-8000-000000000003", name: "Burger Hunch Olaya", code: "HUN-RUH" },
+    ] });
   });
   it("rejects invalid, duplicate, unauthorized, and cross-organization branch creation", async () => {
     assert.equal((await post(`/api/v1/management/organizations/${ids.orgA}/branches`, { name: " ", code: "MLT-RUH-002", city: "Riyadh" })).status, 400);

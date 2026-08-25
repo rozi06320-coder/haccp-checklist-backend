@@ -1,5 +1,5 @@
 begin;
-select plan(36);
+select plan(37);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated',
@@ -25,7 +25,7 @@ insert into public.organizations(id,name,slug) values
 
 insert into public.branches(id,organization_id,name,name_ar,code,timezone,active) values
   ('3f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001','Monthly Alpha','ألفا الشهرية','MALPHA','Asia/Riyadh',true),
-  ('3f000000-0000-4000-8000-000000000002','2f000000-0000-4000-8000-000000000001','Monthly Historical','تاريخي شهري','MHIST','Asia/Riyadh',false),
+  ('3f000000-0000-4000-8000-000000000002','2f000000-0000-4000-8000-000000000001','Monthly Historical','تاريخي شهري','MALPHA','Asia/Riyadh',false),
   ('3f000000-0000-4000-8000-000000000003','2f000000-0000-4000-8000-000000000002','Other Monthly Branch','فرع شهري آخر','MOTHER','Asia/Riyadh',true);
 
 insert into public.organization_memberships(organization_id,user_id,role) values
@@ -124,6 +124,7 @@ select is(public.get_managed_sales_tracking_monthly_summary('1f000000-0000-4000-
 select is(public.get_managed_sales_tracking_monthly_summary('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001','2026-07-01','3f000000-0000-4000-8000-000000000001')->'totals'->>'submitted_report_count','2','branch filter is applied inside RPC');
 select is(public.get_managed_sales_tracking_monthly_summary('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001','2026-07-01','3f000000-0000-4000-8000-000000000001')->'totals'->>'submitted_branch_day_count','2','filtered branch has two submitted days');
 select is(jsonb_array_length(public.get_managed_sales_tracking_monthly_summary('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001','2026-07-01',null)->'branches'),2,'branch breakdown includes historical inactive branch');
+select is((select count(*) from jsonb_array_elements(public.get_managed_sales_tracking_monthly_summary('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001','2026-07-01',null)->'branches') branch where branch->>'branch_code'='MALPHA'),2::bigint,'same branch code does not merge monthly branch rows');
 select is(public.get_managed_sales_tracking_monthly_summary('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001','2026-07-01',null)->'branches'->1->>'branch_name_ar','تاريخي شهري','Arabic branch name is returned');
 select is(public.get_managed_sales_tracking_monthly_summary('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001','2026-08-01',null)->'totals'->>'submitted_report_count','0','empty month returns zero counts');
 select is(public.get_managed_sales_tracking_monthly_summary('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001','2026-08-01',null)->'branches','[]'::jsonb,'empty month returns empty branches');

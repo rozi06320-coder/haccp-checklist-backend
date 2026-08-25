@@ -1,5 +1,5 @@
 begin;
-select plan(43);
+select plan(46);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated', id || '@example.invalid', '{}', '{}', now(), now()
@@ -41,12 +41,12 @@ select is(has_function_privilege('authenticated','public.create_internal_admin_b
 select is(has_function_privilege('service_role','public.create_internal_admin_branch(uuid,uuid,text,text,text,text,text,text,text,boolean)','execute'),true,'service role can execute internal admin branch creation RPC');
 
 select is(
-  (select name from public.create_managed_branch('1e000000-0000-4000-8000-000000000001','2e000000-0000-4000-8000-000000000001','  New   Riyadh Branch  ',null,' hun-ruh-001 ','  Riyadh   North  ',' Al   Takhassusi ',' 123 Main Road ','Asia/Riyadh',true)),
-  'New Riyadh Branch',
+  (select name from public.create_managed_branch('1e000000-0000-4000-8000-000000000001','2e000000-0000-4000-8000-000000000001','  Burger   Hunch Al   Takhassusi  ',null,' hun-ruh ','  Riyadh  ',' Al   Takhassusi ',' 123 Main Road ','Asia/Riyadh',true)),
+  'Burger Hunch Al Takhassusi',
   'manager can create normalized branch inside managed organization'
 );
 select is(
-  (select count(*) from public.branches where organization_id='2e000000-0000-4000-8000-000000000001' and name='New Riyadh Branch' and code='HUN-RUH-001' and city='Riyadh North' and area='Al Takhassusi' and address='123 Main Road' and timezone='Asia/Riyadh' and active),
+  (select count(*) from public.branches where organization_id='2e000000-0000-4000-8000-000000000001' and name='Burger Hunch Al Takhassusi' and code='HUN-RUH' and city='Riyadh' and area='Al Takhassusi' and address='123 Main Road' and timezone='Asia/Riyadh' and active),
   1::bigint,
   'created branch persists manual code and location metadata'
 );
@@ -56,19 +56,33 @@ select is(
   'branch creation is audited'
 );
 select is(
-  (select count(*) from public.branch_supervisor_teams where branch_id = (select id from public.branches where name='New Riyadh Branch')),
+  (select count(*) from public.branch_supervisor_teams where branch_id = (select id from public.branches where name='Burger Hunch Al Takhassusi')),
   0::bigint,
   'branch creation does not create supervisor teams'
 );
 select is(
-  (select count(*) from public.operational_staff where branch_id = (select id from public.branches where name='New Riyadh Branch')),
+  (select count(*) from public.operational_staff where branch_id = (select id from public.branches where name='Burger Hunch Al Takhassusi')),
   0::bigint,
   'branch creation does not create operational staff'
 );
-select is((select code from public.branches where name='New Riyadh Branch'),'HUN-RUH-001','branch code is manually supplied and uppercased');
+select is((select code from public.branches where name='Burger Hunch Al Takhassusi'),'HUN-RUH','branch code is manually supplied and uppercased');
+select lives_ok(
+  $$select public.create_managed_branch('1e000000-0000-4000-8000-000000000001','2e000000-0000-4000-8000-000000000001','Burger Hunch Olaya',null,'HUN-RUH','Riyadh',null,null,'Asia/Riyadh',true)$$,
+  'manager can create second same-city branch with same Branch Code'
+);
 select is(
-  (select code from public.create_managed_branch('1e000000-0000-4000-8000-000000000002','2e000000-0000-4000-8000-000000000002','Other Org Same Code',null,'hun-ruh-001','Riyadh',null,null,'Asia/Riyadh',true)),
-  'HUN-RUH-001',
+  (select count(distinct id) from public.branches where organization_id='2e000000-0000-4000-8000-000000000001' and code='HUN-RUH' and name in ('Burger Hunch Al Takhassusi','Burger Hunch Olaya')),
+  2::bigint,
+  'same-code branches keep different branch IDs'
+);
+select is(
+  (select count(distinct name) from public.branches where organization_id='2e000000-0000-4000-8000-000000000001' and code='HUN-RUH' and city='Riyadh'),
+  2::bigint,
+  'same-code branch creation preserves branch names and city'
+);
+select is(
+  (select code from public.create_managed_branch('1e000000-0000-4000-8000-000000000002','2e000000-0000-4000-8000-000000000002','Other Org Same Code',null,'hun-ruh','Riyadh',null,null,'Asia/Riyadh',true)),
+  'HUN-RUH',
   'same branch code is allowed in another organization'
 );
 
@@ -106,7 +120,7 @@ select is((select timezone from internal_admin_utc_branch),'UTC','internal admin
 select is((select count(*) from public.branches where id = (select id from internal_admin_utc_branch) and timezone = 'UTC'),1::bigint,'internal admin UTC branch row actually exists');
 
 select throws_ok($$select public.create_internal_admin_branch('1e000000-0000-4000-8000-000000000005','2e000000-0000-4000-8000-000000000001','admin created branch',null,'HUN-QSM-006','Riyadh',null,null,'Asia/Riyadh',true)$$,'23505','branch already exists','internal admin duplicate branch name is rejected case-insensitively');
-select throws_ok($$select public.create_internal_admin_branch('1e000000-0000-4000-8000-000000000005','2e000000-0000-4000-8000-000000000001','Duplicate Code Branch',null,'HUN-RUH-001','Riyadh',null,null,'Asia/Riyadh',true)$$,'23505','branch code already exists','internal admin duplicate branch code is rejected inside organization');
+select lives_ok($$select public.create_internal_admin_branch('1e000000-0000-4000-8000-000000000005','2e000000-0000-4000-8000-000000000001','Duplicate Code Branch',null,'HUN-RUH','Riyadh',null,null,'Asia/Riyadh',true)$$,'internal admin duplicate branch code is allowed inside organization');
 select throws_ok($$select public.create_internal_admin_branch('1e000000-0000-4000-8000-000000000005','2e000000-0000-4000-8000-000000000001','Bad Code',null,'BAD/CODE','Riyadh',null,null,'Asia/Riyadh',true)$$,'22023','invalid branch creation request','internal admin invalid code is rejected');
 select throws_ok($$select public.create_internal_admin_branch('1e000000-0000-4000-8000-000000000005','2e000000-0000-4000-8000-000000000001','Missing City',null,'HUN-RUH-002',' ',null,null,'Asia/Riyadh',true)$$,'22023','invalid branch creation request','internal admin missing city is rejected');
 select throws_ok($$select public.create_internal_admin_branch('1e000000-0000-4000-8000-000000000005','2e000000-0000-4000-8000-000000000001','Bad Timezone',null,'HUN-RUH-002','Riyadh',null,null,'Not/A_Timezone',true)$$,'22023','invalid branch creation request','internal admin invalid timezone is rejected');
@@ -115,8 +129,8 @@ select throws_ok($$select public.create_internal_admin_branch('1e000000-0000-400
 select throws_ok($$select public.create_internal_admin_branch('1e000000-0000-4000-8000-000000000005','2e000000-0000-4000-8000-999999999999','Missing Organization Branch',null,'HUN-RUH-002','Riyadh',null,null,'Asia/Riyadh',true)$$,'P0002','organization unavailable','internal admin cannot create branch for nonexistent organization');
 select throws_ok($$select public.create_internal_admin_branch('1e000000-0000-4000-8000-000000000005','2e000000-0000-4000-8000-000000000003','Inactive Organization Branch',null,'HUN-RUH-002','Riyadh',null,null,'Asia/Riyadh',true)$$,'P0002','organization unavailable','internal admin cannot create branch for inactive organization');
 
-select throws_ok($$select public.create_managed_branch('1e000000-0000-4000-8000-000000000001','2e000000-0000-4000-8000-000000000001','new riyadh branch',null,'HUN-RUH-002','Riyadh',null,null,'Asia/Riyadh',true)$$,'23505','branch already exists','duplicate branch name is rejected case-insensitively');
-select throws_ok($$select public.create_managed_branch('1e000000-0000-4000-8000-000000000001','2e000000-0000-4000-8000-000000000001','Duplicate Managed Code',null,'HUN-RUH-001','Riyadh',null,null,'Asia/Riyadh',true)$$,'23505','branch code already exists','duplicate branch code is rejected inside organization');
+select throws_ok($$select public.create_managed_branch('1e000000-0000-4000-8000-000000000001','2e000000-0000-4000-8000-000000000001','burger hunch al takhassusi',null,'HUN-RUH-002','Riyadh',null,null,'Asia/Riyadh',true)$$,'23505','branch already exists','duplicate branch name is rejected case-insensitively');
+select lives_ok($$select public.create_managed_branch('1e000000-0000-4000-8000-000000000001','2e000000-0000-4000-8000-000000000001','Duplicate Managed Code',null,'HUN-RUH','Riyadh',null,null,'Asia/Riyadh',true)$$,'duplicate branch code is allowed inside organization');
 select throws_ok($$select public.create_managed_branch('1e000000-0000-4000-8000-000000000001','2e000000-0000-4000-8000-000000000001','Bad Code',null,'BAD/CODE','Riyadh',null,null,'Asia/Riyadh',true)$$,'22023','invalid branch creation request','managed invalid code is rejected');
 select throws_ok($$select public.create_managed_branch('1e000000-0000-4000-8000-000000000001','2e000000-0000-4000-8000-000000000001','Missing City',null,'HUN-RUH-002',' ',null,null,'Asia/Riyadh',true)$$,'22023','invalid branch creation request','managed missing city is rejected');
 select throws_ok($$select public.create_managed_branch('1e000000-0000-4000-8000-000000000001','2e000000-0000-4000-8000-000000000001','Bad Timezone',null,'HUN-RUH-002','Riyadh',null,null,'Not/A_Timezone',true)$$,'22023','invalid branch creation request','invalid timezone is rejected');

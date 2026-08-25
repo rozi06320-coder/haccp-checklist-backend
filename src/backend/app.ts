@@ -9,7 +9,7 @@ import { managementOperationsSummarySchema } from "../lib/contracts/management-o
 import { managementSalesTrackingMonthlySummarySchema } from "../lib/contracts/management-sales-tracking-monthly";
 import { annualEvaluationDetailSchema, annualEvaluationScoreSchema, annualEvaluationSubjectTypeSchema, annualEvaluationWorkspaceSchema } from "../lib/contracts/annual-evaluation";
 import { requireAuthentication } from "./auth";
-import { AdminAccessError, AdminBranchCodeConflictError, AdminConflictError, AdminDuplicatePersonCodeError, AdminDuplicateStaffCodeError, AdminInputError, AdminNotFoundError, ProvisioningStageError, type DailyAuditAccessUserCredential, type ManagerPinCredential } from "./admin";
+import { AdminAccessError, AdminConflictError, AdminDuplicatePersonCodeError, AdminDuplicateStaffCodeError, AdminInputError, AdminNotFoundError, ProvisioningStageError, type DailyAuditAccessUserCredential, type ManagerPinCredential } from "./admin";
 import type { BackendConfig } from "./config";
 import {
   createDefaultDependencies,
@@ -2521,7 +2521,6 @@ export function createApp(
         response.status(200).json({ branch: { ...branch, name_ar: branch.name_ar ?? null } });
       } catch (error) {
         if (error instanceof HttpError) next(error);
-        else if (error instanceof AdminBranchCodeConflictError) next(new HttpError(409, "duplicate_branch_code", "Branch code already exists."));
         else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Branch already exists."));
         else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter valid branch details."));
         else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Organization is unavailable."));
@@ -2620,7 +2619,6 @@ export function createApp(
         response.status(201).json({ branch: { ...branch, name_ar: branch.name_ar ?? null } });
       } catch (error) {
         if (error instanceof HttpError) next(error);
-        else if (error instanceof AdminBranchCodeConflictError) next(new HttpError(409, "duplicate_branch_code", "Branch code already exists."));
         else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Branch already exists."));
         else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter valid branch details."));
         else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Organization is unavailable."));

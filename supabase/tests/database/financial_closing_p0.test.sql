@@ -1,5 +1,5 @@
 begin;
-select plan(28);
+select plan(31);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated',
@@ -27,7 +27,7 @@ insert into public.organizations(id,name,slug) values
 
 insert into public.branches(id,organization_id,name,code,city,timezone,active) values
   ('3f100000-0000-4000-8000-000000000001','2f100000-0000-4000-8000-000000000001','Financial Branch A','HUN-RUH-001','Riyadh','Asia/Riyadh',true),
-  ('3f100000-0000-4000-8000-000000000002','2f100000-0000-4000-8000-000000000001','Financial Branch B','HUN-JED-017','Jeddah','Asia/Riyadh',true),
+  ('3f100000-0000-4000-8000-000000000002','2f100000-0000-4000-8000-000000000001','Financial Branch B','HUN-RUH-001','Riyadh','Asia/Riyadh',true),
   ('3f100000-0000-4000-8000-000000000003','2f100000-0000-4000-8000-000000000002','Financial Other Branch','OTH-RUH-001','Riyadh','Asia/Riyadh',true);
 
 insert into public.organization_memberships(organization_id,user_id,role) values
@@ -121,6 +121,16 @@ select lives_ok($$
 $$, 'valid final submission succeeds with Not Completed exception recorded');
 select is(public.get_financial_closing_current_state('1f100000-0000-4000-8000-000000000001','3f100000-0000-4000-8000-000000000001')->>'state', 'submitted', 'final state is submitted');
 select is(public.get_financial_closing_current_state('1f100000-0000-4000-8000-000000000001','3f100000-0000-4000-8000-000000000001')->>'completion', '87.5', 'N/A is excluded from completion denominator');
+select lives_ok($$
+  select public.submit_financial_closing(
+    '1f100000-0000-4000-8000-000000000002',
+    '3f100000-0000-4000-8000-000000000002',
+    0,
+    (select jsonb_agg(jsonb_build_object('item_key', item_key, 'status', 'completed', 'reason', '', 'follow_up', '') order by ordinal) from financial_closing_test_keys)
+  )
+$$, 'same-code second branch Financial Closing submission succeeds');
+select is((select count(*) from public.financial_closing_reports where organization_id='2f100000-0000-4000-8000-000000000001' and branch_code_snapshot='HUN-RUH-001'), 2::bigint, 'Financial Closing keeps separate report rows with the same branch code');
+select is((select count(distinct branch_id) from public.financial_closing_reports where organization_id='2f100000-0000-4000-8000-000000000001' and branch_code_snapshot='HUN-RUH-001'), 2::bigint, 'Financial Closing ownership remains branch_id scoped for duplicate codes');
 select throws_ok($$
   select public.save_financial_closing_draft(
     '1f100000-0000-4000-8000-000000000001',
@@ -132,7 +142,7 @@ $$, '55000', 'financial closing already submitted', 'submitted report cannot be 
 
 update public.branches set code='HUN-RUH-999', name='Changed Branch Name', city='Changed City' where id='3f100000-0000-4000-8000-000000000001';
 select is((select branch_code_snapshot from public.financial_closing_reports where branch_id='3f100000-0000-4000-8000-000000000001'), 'HUN-RUH-001', 'submitted branch code snapshot remains immutable');
-select is(jsonb_array_length(public.list_managed_financial_closing_reports('1f100000-0000-4000-8000-000000000003','2f100000-0000-4000-8000-000000000001')->'reports'), 1, 'manager sees only managed organization Financial Closing report');
+select is(jsonb_array_length(public.list_managed_financial_closing_reports('1f100000-0000-4000-8000-000000000003','2f100000-0000-4000-8000-000000000001')->'reports'), 2, 'manager sees same-code Financial Closing reports as separate branch_id-scoped rows');
 select throws_ok($$select public.list_managed_financial_closing_reports('1f100000-0000-4000-8000-000000000004','2f100000-0000-4000-8000-000000000001')$$, '42501', 'financial closing report access denied', 'other organization manager is denied');
 select throws_ok($$select public.get_financial_closing_current_state('1f100000-0000-4000-8000-000000000001','3f100000-0000-4000-8000-000000000002')$$, '42501', 'financial closing access denied', 'supervisor cannot read another branch current state');
 

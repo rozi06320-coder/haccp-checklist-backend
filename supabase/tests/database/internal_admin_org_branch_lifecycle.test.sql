@@ -1,5 +1,5 @@
 begin;
-select plan(42);
+select plan(44);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated', email, '{}', '{}', now(), now()
@@ -174,11 +174,15 @@ select throws_ok(
   'branch unavailable',
   'cross-organization branch mutation is rejected'
 );
-select throws_ok(
+select lives_ok(
   $$select public.update_internal_admin_branch('1f400000-0000-4000-8000-000000000001','2f400000-0000-4000-8000-000000000001','3f400000-0000-4000-8000-000000000001','Unique Branch Name',null,'DUPB','Riyadh',null,null,'UTC')$$,
-  '23505',
-  'branch code already exists',
-  'duplicate branch code in same organization is rejected'
+  'duplicate branch code update in same organization is allowed'
+);
+select is((select code from public.branches where id='3f400000-0000-4000-8000-000000000001'),'DUPB','duplicate-code update applies to the requested branch ID');
+select is(
+  (select name || ':' || coalesce(city, '') from public.branches where id='3f400000-0000-4000-8000-000000000002'),
+  'Duplicate Branch:',
+  'duplicate-code update does not mutate the other same-code branch'
 );
 
 select lives_ok(
