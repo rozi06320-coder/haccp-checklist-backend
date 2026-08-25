@@ -20,8 +20,9 @@ const summary={
   maintenance_issues:{open_count:3,urgent_high_count:1},
   maintenance_purchases:{purchase_count:1,total_amount:"5.00",unpaid_count:1,unpaid_amount:"5.00"},
   inventory:{active_branch_count:1,reported_branch_count:0,submitted_branch_count:0,beef_row_count:0,item_usage_row_count:0},
+  financial_closing:{total_branches:1,completed_today:1,pending_today:0,overdue_prior_day:0,business_dates:[{business_date:"2026-08-11",branch_count:1}]},
   staff:{active_count:4,inactive_count:1},
-  availability:{purchase_logs:"ready" as const,supplier_receivings:"ready" as const,maintenance_issues:"ready" as const,maintenance_purchases:"ready" as const,inventory:"ready" as const,staff:"ready" as const},
+  availability:{purchase_logs:"ready" as const,supplier_receivings:"ready" as const,maintenance_issues:"ready" as const,maintenance_purchases:"ready" as const,inventory:"ready" as const,financial_closing:"ready" as const,staff:"ready" as const},
 };
 const config:BackendConfig={nodeEnv:"test",host:"127.0.0.1",port:1,trustProxy:false,supabase:{url:"http://127.0.0.1",publishableKey:"test",secretKey:"test"},dailyAuditGrantSecret:"test-placeholder-long-enough-for-tests"};
 function dependencies():BackendDependencies{return{
@@ -50,6 +51,7 @@ describe("Manager operations summary API",()=>{
     const body=await response.json();
     assert.equal(managementOperationsSummarySchema.safeParse(body).success,true);
     assert.equal(body.purchase_logs.unpaid_amount,"12.50");
+    assert.equal(body.financial_closing.completed_today,1);
     assert.equal("invoice_storage_path" in body,false);
     assert.equal("notes" in body,false);
   });

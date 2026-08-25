@@ -36,6 +36,20 @@ export const managementOperationsSummarySchema = z.object({
     beef_row_count: z.number().int().nonnegative(),
     item_usage_row_count: z.number().int().nonnegative(),
   }).strict(),
+  financial_closing: z.object({
+    total_branches: z.number().int().nonnegative(),
+    completed_today: z.number().int().nonnegative(),
+    pending_today: z.number().int().nonnegative(),
+    overdue_prior_day: z.number().int().nonnegative(),
+    business_dates: z.array(z.object({
+      business_date: z.iso.date(),
+      branch_count: z.number().int().positive(),
+    }).strict()).max(200),
+  }).strict().superRefine((value, context) => {
+    if (value.completed_today + value.pending_today !== value.total_branches) {
+      context.addIssue({ code: "custom", message: "Financial Closing current-day counts do not reconcile." });
+    }
+  }),
   staff: z.object({
     active_count: z.number().int().nonnegative(),
     inactive_count: z.number().int().nonnegative(),
@@ -46,6 +60,7 @@ export const managementOperationsSummarySchema = z.object({
     maintenance_issues: availability,
     maintenance_purchases: availability,
     inventory: availability,
+    financial_closing: availability,
     staff: availability,
   }).strict(),
 }).strict();
