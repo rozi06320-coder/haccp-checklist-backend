@@ -277,8 +277,12 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
 describe("managed maintenance operational adapter", () => {
   it("accepts the Manager RPC row shape without a maintenance-only assignee", async () => {
     const rpc = createServer((request, response) => {
-      assert.equal(request.url, "/rest/v1/rpc/list_managed_maintenance_issues");
       response.setHeader("content-type", "application/json");
+      if (request.url === "/rest/v1/rpc/list_maintenance_issue_attachments") {
+        response.end(JSON.stringify([]));
+        return;
+      }
+      assert.equal(request.url, "/rest/v1/rpc/list_managed_maintenance_issues");
       response.end(JSON.stringify([{
         id: id.maintenanceIssue, organization_id: id.organization, branch_id: id.branch, branch_name: "Branch", title: "Freezer door",
         category: "refrigeration", priority: "urgent", status: "in_progress", description: null, location: null,
@@ -294,6 +298,7 @@ describe("managed maintenance operational adapter", () => {
       assert.deepEqual(result, { maintenance_issues: [{
         id: id.maintenanceIssue, branch_id: id.branch, branch_name: "Branch", title: "Freezer door", category: "refrigeration", priority: "urgent", status: "in_progress",
         description: null, location: null, reported_by: id.supervisor, reporter_name: null, created_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T01:00:00.000Z",
+        before_photo: null, after_photo: null,
         updates: [{ id: id.maintenanceUpdate, status: "in_progress", note: null, updated_by: null, updated_by_access_user_id: null, updated_by_name: null, created_at: "2026-08-10T01:00:00.000Z" }],
       }] });
     } finally {
@@ -956,7 +961,23 @@ describe("Phase 3A operational API", () => {
       actorUserId: id.supervisor,
       branchId: id.branch,
       payload: { title: "Freezer door", category: "refrigeration", priority: "urgent", description: "Door is loose", location: "Kitchen" },
+      photo: null,
     });
+
+    const withPhoto = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/maintenance-issues`, {
+      method: "POST",
+      headers: { ...headers("supervisor"), "content-type": "application/vnd.maintenance-issue+json" },
+      body: JSON.stringify({
+        issue: { title: "Sink leak", category: "plumbing", priority: "normal", description: "Small leak", location: "Prep" },
+        before_photo: { original_name: "before.png", mime_type: "image/png", content_base64: Buffer.from("png-bytes").toString("base64") },
+      }),
+    });
+    assert.equal(withPhoto.status, 201);
+    const photoCall = calls.at(-1) as { method: string; photo?: { mimeType: string; originalName: string; bytes: Buffer } | null };
+    assert.equal(photoCall.method, "createSupervisorMaintenanceIssue");
+    assert.equal(photoCall.photo?.mimeType, "image/png");
+    assert.equal(photoCall.photo?.originalName, "before.png");
+    assert.ok(Buffer.isBuffer(photoCall.photo?.bytes));
   });
   it("rejects supervisor Maintenance issue auth and invalid payloads safely", async () => {
     assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/maintenance-issues`)).status, 401);
@@ -995,7 +1016,31 @@ describe("Phase 3A operational API", () => {
       issueId: id.maintenanceIssue,
       status: "in_progress",
       note: "Started repair",
+      repairPhoto: null,
     });
+
+    const beforeResolveCalls = calls.length;
+    const resolvedWithoutPhoto = await fetch(`${baseUrl}/api/v1/maintenance/issues/${id.maintenanceIssue}`, {
+      method: "PATCH", headers: headers("maintenance"),
+      body: JSON.stringify({ status: "resolved", note: "Fixed" }),
+    });
+    assert.equal(resolvedWithoutPhoto.status, 422);
+    assert.equal(calls.length, beforeResolveCalls);
+
+    const resolvedWithPhoto = await fetch(`${baseUrl}/api/v1/maintenance/issues/${id.maintenanceIssue}`, {
+      method: "PATCH",
+      headers: { ...headers("maintenance"), "content-type": "application/vnd.maintenance-issue+json" },
+      body: JSON.stringify({
+        issue: { status: "resolved", note: "Fixed" },
+        repair_photo: { original_name: "after.jpg", mime_type: "image/jpeg", content_base64: Buffer.from("jpg-bytes").toString("base64") },
+      }),
+    });
+    assert.equal(resolvedWithPhoto.status, 200);
+    const repairCall = calls.at(-1) as { method: string; repairPhoto?: { mimeType: string; originalName: string; bytes: Buffer } | null };
+    assert.equal(repairCall.method, "updateMaintenanceIssue");
+    assert.equal(repairCall.repairPhoto?.mimeType, "image/jpeg");
+    assert.equal(repairCall.repairPhoto?.originalName, "after.jpg");
+    assert.ok(Buffer.isBuffer(repairCall.repairPhoto?.bytes));
   });
   it("exposes Maintenance purchase history without raw storage or membership fields", async () => {
     const history = await fetch(`${baseUrl}/api/v1/maintenance/purchases`, { headers: headers("maintenance") });

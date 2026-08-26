@@ -16,7 +16,7 @@ import {
   type BackendDependencies,
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
-import { branchLocalDate, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenancePurchaseReceiptMime } from "./operational";
+import { branchLocalDate, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime } from "./operational";
 import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ManagementOverviewUnavailableError } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
@@ -314,6 +314,25 @@ const maintenanceIssueUpdateBodySchema = z.object({
   status: maintenanceIssueStatusSchema,
   note: optionalStaffTextSchema(2000),
 }).strict();
+const maintenanceIssuePhotoResponseSchema = z.object({
+  url: z.string().nullable(),
+  mime_type: z.string().nullable(),
+  size_bytes: z.number().nullable(),
+  original_filename: z.string().nullable(),
+}).strict().nullable();
+const maintenanceIssuePhotoUploadSchema = z.object({
+  original_name: z.string().max(180).optional().nullable(),
+  mime_type: maintenanceIssuePhotoMime,
+  content_base64: z.string().min(1),
+}).strict();
+const maintenanceIssueCreateEnvelopeSchema = z.object({
+  issue: maintenanceIssueBodySchema,
+  before_photo: maintenanceIssuePhotoUploadSchema.nullable().optional(),
+}).strict();
+const maintenanceIssueUpdateEnvelopeSchema = z.object({
+  issue: maintenanceIssueUpdateBodySchema,
+  repair_photo: maintenanceIssuePhotoUploadSchema.nullable().optional(),
+}).strict();
 const maintenanceIssueUpdateResponseRowSchema = z.object({
   id: z.uuid(),
   status: maintenanceIssueStatusSchema,
@@ -339,6 +358,8 @@ const maintenanceIssueResponseRowSchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
   updates: z.array(maintenanceIssueUpdateResponseRowSchema).optional(),
+  before_photo: maintenanceIssuePhotoResponseSchema.optional(),
+  after_photo: maintenanceIssuePhotoResponseSchema.optional(),
 }).strict();
 const maintenanceIssueListResponseSchema = z.object({ maintenance_issues: z.array(maintenanceIssueResponseRowSchema).max(1000) }).strict();
 const maintenanceIssueMutationResponseSchema = z.object({ maintenance_issue: maintenanceIssueResponseRowSchema }).strict();
@@ -1665,6 +1686,7 @@ export function createApp(
   const brandingRawBody=express.raw({type:()=>true,limit:MAX_BRANDING_BYTES});
   const purchaseInvoiceRawBody=express.raw({type:()=>true,limit:MAX_PURCHASE_INVOICE_BYTES});
   const maintenanceReceiptRawBody=express.raw({type:()=>true,limit:MAX_PURCHASE_INVOICE_BYTES*MAX_MAINTENANCE_PURCHASE_PHOTOS*2});
+  const maintenanceIssuePhotoRawBody=express.raw({type:()=>true,limit:MAX_MAINTENANCE_ISSUE_PHOTO_BYTES*2});
   const supplierReceivingPhotoRawBody=express.raw({type:()=>true,limit:MAX_SUPPLIER_RECEIVING_PHOTO_BYTES});
   const authenticate = requireAuthentication(
     dependencies.authVerifier,
@@ -3993,12 +4015,39 @@ export function createApp(
   app.patch(
     "/api/v1/maintenance/issues/:issueId",
     protectedRateLimit,
+    maintenanceIssuePhotoRawBody,
     async (request, response, next) => {
       try {
         const issueId = z.uuid().safeParse(request.params.issueId);
-        const body = maintenanceIssueUpdateBodySchema.safeParse(request.body);
+        let rawPayload: unknown = request.body;
+        let repairPhoto: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null = null;
+        if (Buffer.isBuffer(request.body)) {
+          if (request.header("Content-Type")?.split(";")[0]?.trim().toLowerCase() !== "application/vnd.maintenance-issue+json") {
+            throw new HttpError(400, "bad_request", "The request is invalid.");
+          }
+          let decoded: unknown;
+          try {
+            decoded = JSON.parse(request.body.toString("utf8"));
+          } catch {
+            throw new HttpError(400, "bad_request", "The request is invalid.");
+          }
+          const envelope = maintenanceIssueUpdateEnvelopeSchema.safeParse(decoded);
+          if (!envelope.success) throw new HttpError(400, "bad_request", "The request is invalid.");
+          rawPayload = envelope.data.issue;
+          if (envelope.data.repair_photo) {
+            repairPhoto = {
+              bytes: Buffer.from(envelope.data.repair_photo.content_base64, "base64"),
+              mimeType: envelope.data.repair_photo.mime_type,
+              originalName: envelope.data.repair_photo.original_name?.trim() || "after-repair-photo",
+            };
+          }
+        }
+        const body = maintenanceIssueUpdateBodySchema.safeParse(rawPayload);
         if (!issueId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
           throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        if (body.data.status === "resolved" && !repairPhoto) {
+          throw new HttpError(422, "unprocessable_entity", "Photo required to resolve this issue.");
         }
         if (!dependencies.operationalAdmin) throw new HttpError(503, "service_unavailable", "Maintenance issues are temporarily unavailable.");
         const actor = await loadMaintenanceIssueActor(request);
@@ -4008,6 +4057,7 @@ export function createApp(
           issueId: issueId.data,
           status: body.data.status,
           note: body.data.note,
+          repairPhoto,
         }));
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json(result);
@@ -4859,11 +4909,34 @@ export function createApp(
       }
     });
 
-  app.post("/api/v1/supervisor/branches/:branchId/maintenance-issues", protectedRateLimit, authenticate,
+  app.post("/api/v1/supervisor/branches/:branchId/maintenance-issues", protectedRateLimit, authenticate, maintenanceIssuePhotoRawBody,
     async (request, response, next) => {
       try {
         const branchId = branchIdSchema.safeParse(request.params.branchId);
-        const body = maintenanceIssueBodySchema.safeParse(request.body);
+        let rawPayload: unknown = request.body;
+        let photo: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null = null;
+        if (Buffer.isBuffer(request.body)) {
+          if (request.header("Content-Type")?.split(";")[0]?.trim().toLowerCase() !== "application/vnd.maintenance-issue+json") {
+            throw new HttpError(400, "bad_request", "The request is invalid.");
+          }
+          let decoded: unknown;
+          try {
+            decoded = JSON.parse(request.body.toString("utf8"));
+          } catch {
+            throw new HttpError(400, "bad_request", "The request is invalid.");
+          }
+          const envelope = maintenanceIssueCreateEnvelopeSchema.safeParse(decoded);
+          if (!envelope.success) throw new HttpError(400, "bad_request", "The request is invalid.");
+          rawPayload = envelope.data.issue;
+          if (envelope.data.before_photo) {
+            photo = {
+              bytes: Buffer.from(envelope.data.before_photo.content_base64, "base64"),
+              mimeType: envelope.data.before_photo.mime_type,
+              originalName: envelope.data.before_photo.original_name?.trim() || "reported-photo",
+            };
+          }
+        }
+        const body = maintenanceIssueBodySchema.safeParse(rawPayload);
         if (!branchId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
         const auth = requireAuthContext(request);
         const context = await loadActiveUser(request);
@@ -4872,6 +4945,7 @@ export function createApp(
           actorUserId: auth.userId,
           branchId: branchId.data,
           payload: body.data,
+          photo,
         }));
         response.setHeader("Cache-Control", "private, no-store");
         response.status(201).json(result);

@@ -217,6 +217,9 @@ const maintenanceIssueRow = z.object({
   updated_at: z.string(),
   updates: z.array(maintenanceIssueUpdateRow).optional(),
 }).strict();
+const managedMaintenanceIssueRow = maintenanceIssueRow.extend({
+  assigned_to: uuid.nullable().optional(),
+}).strict();
 
 const PURCHASE_INVOICE_BUCKET = "branch-purchase-invoices";
 const PURCHASE_INVOICE_SIGNED_URL_SECONDS = 5 * 60;
@@ -228,6 +231,10 @@ const SUPPLIER_RECEIVING_PHOTO_BUCKET = "branch-supplier-receiving-photos";
 const SUPPLIER_RECEIVING_PHOTO_SIGNED_URL_SECONDS = 5 * 60;
 export const MAX_SUPPLIER_RECEIVING_PHOTO_BYTES = 5 * 1024 * 1024;
 export const supplierReceivingPhotoMime = z.enum(["image/jpeg", "image/png", "image/webp"]);
+const MAINTENANCE_ISSUE_PHOTO_BUCKET = "maintenance-issue-photos";
+const MAINTENANCE_ISSUE_PHOTO_SIGNED_URL_SECONDS = 5 * 60;
+export const MAX_MAINTENANCE_ISSUE_PHOTO_BYTES = 5 * 1024 * 1024;
+export const maintenanceIssuePhotoMime = z.enum(["image/jpeg", "image/png", "image/webp"]);
 
 export type OperationalRole = z.infer<typeof role>;
 export class OperationalConflictError extends Error {}
@@ -350,6 +357,7 @@ export type OperationalAdmin = {
       description?: string | null;
       location?: string | null;
     };
+    photo?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
   }): Promise<unknown>;
   listMaintenanceIssues(input: { actorUserId?: string | null; accessUserId?: string | null; organizationId?: string | null }): Promise<unknown>;
   updateMaintenanceIssue(input: {
@@ -358,6 +366,7 @@ export type OperationalAdmin = {
     issueId: string;
     status: z.infer<typeof maintenanceIssueStatus>;
     note?: string | null;
+    repairPhoto?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
   }): Promise<unknown>;
   listMaintenancePurchases(actorUserId: string, issueId: string): Promise<unknown>;
   createMaintenancePurchase(input: { actorUserId:string; issueId:string; payload:{item_name:string;quantity:string|number;unit:"pcs"|"meter"|"kg"|"box"|"bag"|"roll"|"set"|"liter"|"other";amount:string|number;vendor_name?:string|null;purchase_date:string;notes?:string|null}; receipts?:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>|null }): Promise<unknown>;
@@ -397,6 +406,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   const purchaseInvoiceStorage = client.storage.from(PURCHASE_INVOICE_BUCKET);
   const supplierReceivingPhotoStorage = client.storage.from(SUPPLIER_RECEIVING_PHOTO_BUCKET);
   const maintenanceReceiptStorage = client.storage.from("maintenance-purchase-receipts");
+  const maintenanceIssuePhotoStorage = client.storage.from(MAINTENANCE_ISSUE_PHOTO_BUCKET);
   async function rpc(name: string, input: Record<string, unknown>) {
     const result = await client.rpc(name, input);
     if (result.error) {
@@ -479,6 +489,18 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     if (!detected || detected.mime !== mime.data) throw new AdminOperationError();
     return detected;
   }
+  function inspectMaintenanceIssuePhoto(bytes: Buffer, declaredMime: string) {
+    if (bytes.length === 0 || bytes.length > MAX_MAINTENANCE_ISSUE_PHOTO_BYTES) throw new AdminOperationError();
+    const mime = maintenanceIssuePhotoMime.safeParse(declaredMime.toLowerCase());
+    if (!mime.success) throw new AdminOperationError();
+    const jpeg = bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9;
+    const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const png = bytes.length >= 33 && bytes.subarray(0, 8).equals(pngSignature) && bytes.subarray(12, 16).toString("ascii") === "IHDR" && bytes.subarray(bytes.length - 8, bytes.length - 4).toString("ascii") === "IEND";
+    const webp = bytes.length >= 20 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP" && bytes.readUInt32LE(4) === bytes.length - 8;
+    const detected = jpeg ? { mime: "image/jpeg" as const, extension: "jpg" as const } : png ? { mime: "image/png" as const, extension: "png" as const } : webp ? { mime: "image/webp" as const, extension: "webp" as const } : null;
+    if (!detected || detected.mime !== mime.data) throw new AdminOperationError();
+    return detected;
+  }
   function safeFileName(value: string, extension: string, fallback = "invoice") {
     const base = value.trim().split(/[\\/]/u).pop()?.replace(/\.[^.]+$/u, "") ?? fallback;
     const cleaned = base.toLowerCase().replace(/[^a-z0-9._-]+/gu, "-").replace(/^-+|-+$/gu, "").slice(0, 80) || fallback;
@@ -506,6 +528,17 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     }
   }
   async function signMaintenanceReceipt(path:string|null){if(!path)return null;try{const result=await maintenanceReceiptStorage.createSignedUrl(path,PURCHASE_INVOICE_SIGNED_URL_SECONDS);return result.error||!result.data?.signedUrl?null:result.data.signedUrl;}catch{return null;}}
+  async function signMaintenanceIssuePhoto(path:string|null){if(!path)return null;try{const result=await maintenanceIssuePhotoStorage.createSignedUrl(path,MAINTENANCE_ISSUE_PHOTO_SIGNED_URL_SECONDS);return result.error||!result.data?.signedUrl?null:result.data.signedUrl;}catch{return null;}}
+  async function uploadMaintenanceIssuePhoto(issueId:string,type:"issue"|"repair",photo:{bytes:Buffer;mimeType:z.infer<typeof maintenanceIssuePhotoMime>;originalName:string}){
+    const inspected=inspectMaintenanceIssuePhoto(photo.bytes,photo.mimeType);
+    const originalName=safeOriginalFileName(photo.originalName,`${type}-photo.${inspected.extension}`);
+    const storageName=`${randomUUID()}-${safeFileName(photo.originalName,inspected.extension,`${type}-photo`)}`;
+    const path=`maintenance/${issueId}/${type}/${storageName}`;
+    const upload=await maintenanceIssuePhotoStorage.upload(path,photo.bytes,{contentType:inspected.mime,upsert:false,metadata:{byteSize:String(photo.bytes.length),mimeType:inspected.mime,originalName}});
+    if(upload.error)throw new AdminOperationError();
+    return{id:randomUUID(),storage_path:path,original_filename:originalName,mime_type:inspected.mime,size_bytes:photo.bytes.length};
+  }
+  const maintenanceIssuePhotoRpcRow=z.object({id:uuid,maintenance_issue_id:uuid,attachment_type:z.enum(["issue","repair"]),storage_path:z.string(),original_filename:optionalStaffText,mime_type:optionalStaffText,size_bytes:z.union([z.number(),z.string()]).nullable(),created_at:z.string()}).strict();
   const maintenancePurchaseAttachmentRpcRow=z.object({id:uuid,storage_path:z.string(),original_filename:optionalStaffText,mime_type:optionalStaffText,size_bytes:z.union([z.number(),z.string()]).nullable(),position:z.number().int().min(1).max(MAX_MAINTENANCE_PURCHASE_PHOTOS)}).strict();
   const maintenancePurchaseListRpcRow=z.object({id:uuid,branch_id:uuid,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnit,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:optionalStaffText,payment_status:purchaseLogPaymentStatus,reimbursement_note:optionalStaffText,reimbursed_at:z.string().nullable(),receipt_storage_path:optionalStaffText,receipt_original_name:optionalStaffText,attachments:z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
   const maintenancePurchaseMutationRpcRow=maintenancePurchaseListRpcRow.extend({organization_id:uuid,maintenance_issue_id:uuid,maintenance_user_id:uuid}).strict();
@@ -582,22 +615,38 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       return safeRow;
     });
   }
-  function normalizeMaintenanceIssueRows(rows: unknown[]) {
-    return z.array(maintenanceIssueRow).max(1000).parse(rows).map((row) => {
+  async function attachMaintenanceIssuePhotos(rows:z.infer<typeof managedMaintenanceIssueRow>[],actorUserId?:string|null,accessUserId?:string|null){
+    if(rows.length===0)return rows.map((row)=> {
       const { organization_id, ...safeRow } = row;
       void organization_id;
-      return {
-        ...safeRow,
-        updates: row.updates ?? [],
-      };
+      return {...safeRow,updates:row.updates??[],before_photo:null,after_photo:null};
+    });
+    const attachments=z.array(maintenanceIssuePhotoRpcRow).max(rows.length*2).parse(await rpc("list_maintenance_issue_attachments",{
+      actor_user_id:actorUserId??null,
+      access_user_id:accessUserId??null,
+      target_issue_ids:rows.map((row)=>row.id),
+    }));
+    const photosByIssue=new Map<string,{before_photo:unknown|null;after_photo:unknown|null}>();
+    for(const attachment of attachments){
+      const current=photosByIssue.get(attachment.maintenance_issue_id)??{before_photo:null,after_photo:null};
+      const safePhoto={url:await signMaintenanceIssuePhoto(attachment.storage_path),mime_type:attachment.mime_type,size_bytes:attachment.size_bytes===null?null:Number(attachment.size_bytes),original_filename:attachment.original_filename};
+      if(attachment.attachment_type==="issue")current.before_photo=safePhoto;
+      else current.after_photo=safePhoto;
+      photosByIssue.set(attachment.maintenance_issue_id,current);
+    }
+    return rows.map((row)=>{
+      const { organization_id, ...safeRow } = row;
+      void organization_id;
+      const photos=photosByIssue.get(row.id);
+      return {...safeRow,updates:row.updates??[],before_photo:photos?.before_photo??null,after_photo:photos?.after_photo??null};
     });
   }
-  function normalizeManagedMaintenanceIssueRows(rows: unknown[]) {
-    return z.array(maintenanceIssueRow.omit({ assigned_to: true }).strict()).max(1000).parse(rows).map((row) => {
-      const { organization_id, ...safeRow } = row;
-      void organization_id;
-      return safeRow;
-    });
+  async function normalizeMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null,accessUserId?:string|null) {
+    return attachMaintenanceIssuePhotos(z.array(maintenanceIssueRow).max(1000).parse(rows),actorUserId,accessUserId);
+  }
+  async function normalizeManagedMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null) {
+    const rowsWithPhotos=await attachMaintenanceIssuePhotos(z.array(managedMaintenanceIssueRow).max(1000).parse(rows),actorUserId,null);
+    return rowsWithPhotos.map(({assigned_to,...row})=>{void assigned_to;return row;});
   }
   return {
     resolveDailyAuditGrantBranchScope,
@@ -991,37 +1040,53 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       }
     },
     async listSupervisorMaintenanceIssues(actorUserId, branchId) {
-      return { maintenance_issues: normalizeMaintenanceIssueRows(await rpc("list_supervisor_maintenance_issues", {
+      return { maintenance_issues: await normalizeMaintenanceIssueRows(await rpc("list_supervisor_maintenance_issues", {
         actor_user_id: actorUserId,
         target_branch_id: branchId,
-      })) };
+      }),actorUserId,null) };
     },
     async createSupervisorMaintenanceIssue(input) {
-      const rows = normalizeMaintenanceIssueRows(await rpc("create_supervisor_maintenance_issue", {
-        actor_user_id: input.actorUserId,
-        target_branch_id: input.branchId,
-        payload: input.payload,
-      }));
-      if (rows.length !== 1) throw new AdminOperationError();
-      return { maintenance_issue: rows[0] };
+      let uploaded:{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}|null=null;
+      const issueId=input.photo?randomUUID():null;
+      try{
+        if(input.photo&&issueId)uploaded=await uploadMaintenanceIssuePhoto(issueId,"issue",input.photo);
+        const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded?"create_supervisor_maintenance_issue_with_photo":"create_supervisor_maintenance_issue", {
+          actor_user_id: input.actorUserId,
+          target_branch_id: input.branchId,
+          payload: uploaded?{...input.payload,issue_id:issueId,before_photo:uploaded}:input.payload,
+        }),input.actorUserId,null);
+        if (rows.length !== 1) throw new AdminOperationError();
+        return { maintenance_issue: rows[0] };
+      }catch(error){
+        if(uploaded)await maintenanceIssuePhotoStorage.remove([uploaded.storage_path]);
+        throw error;
+      }
     },
     async listMaintenanceIssues(input) {
-      return { maintenance_issues: normalizeMaintenanceIssueRows(await rpc("list_maintenance_issues", {
+      return { maintenance_issues: await normalizeMaintenanceIssueRows(await rpc("list_maintenance_issues", {
         actor_user_id: input.actorUserId ?? null,
         access_user_id: input.accessUserId ?? null,
         target_organization_id: input.organizationId,
-      })) };
+      }),input.actorUserId,input.accessUserId) };
     },
     async updateMaintenanceIssue(input) {
-      const rows = normalizeMaintenanceIssueRows(await rpc("update_maintenance_issue", {
-        actor_user_id: input.actorUserId ?? null,
-        access_user_id: input.accessUserId ?? null,
-        target_issue_id: input.issueId,
-        new_status: input.status,
-        new_note: input.note ?? null,
-      }));
-      if (rows.length !== 1) throw new AdminOperationError();
-      return { maintenance_issue: rows[0] };
+      let uploaded:{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}|null=null;
+      try{
+        if(input.repairPhoto)uploaded=await uploadMaintenanceIssuePhoto(input.issueId,"repair",input.repairPhoto);
+        const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded?"update_maintenance_issue_with_repair_photo":"update_maintenance_issue", {
+          actor_user_id: input.actorUserId ?? null,
+          access_user_id: input.accessUserId ?? null,
+          target_issue_id: input.issueId,
+          new_status: input.status,
+          new_note: input.note ?? null,
+          ...(uploaded?{repair_photo:uploaded}:{}),
+        }),input.actorUserId,input.accessUserId);
+        if (rows.length !== 1) throw new AdminOperationError();
+        return { maintenance_issue: rows[0] };
+      }catch(error){
+        if(uploaded)await maintenanceIssuePhotoStorage.remove([uploaded.storage_path]);
+        throw error;
+      }
     },
     async listMaintenancePurchases(actorUserId,issueId){return{maintenance_purchases:await normalizeMaintenancePurchases(await rpc("list_maintenance_purchase_logs",{actor_user_id:actorUserId,target_issue_id:issueId}))};},
     async createMaintenancePurchase(input){
@@ -1171,11 +1236,11 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       })) };
     },
     async listManagedMaintenanceIssues(input) {
-      return { maintenance_issues: normalizeManagedMaintenanceIssueRows(await rpc("list_managed_maintenance_issues", {
+      return { maintenance_issues: await normalizeManagedMaintenanceIssueRows(await rpc("list_managed_maintenance_issues", {
         actor_user_id: input.actorUserId, target_organization_id: input.organizationId, branch_filter: input.branchId ?? null,
         status_filter: input.status ?? null, priority_filter: input.priority ?? null, category_filter: input.category ?? null,
         date_from_filter: input.dateFrom ?? null, date_to_filter: input.dateTo ?? null,
-      })) };
+      }),input.actorUserId) };
     },
     async listManagedTeams(actorUserId, organizationId) {
       return {
