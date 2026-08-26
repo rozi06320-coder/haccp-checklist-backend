@@ -344,7 +344,7 @@ const maintenanceIssueUpdateResponseRowSchema = z.object({
 }).strict();
 const maintenanceIssueResponseRowSchema = z.object({
   id: z.uuid(),
-  branch_id: z.uuid(),
+  branch_id: z.uuid().nullable(),
   branch_name: z.string(),
   title: z.string(),
   category: maintenanceIssueCategorySchema,
@@ -5252,6 +5252,49 @@ export function createApp(
         if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.listManagedMaintenanceIssues)throw new HttpError(403,"forbidden","Access is denied.");
         const result=managedMaintenanceIssueListResponseSchema.parse(await dependencies.operationalAdmin.listManagedMaintenanceIssues({actorUserId:auth.userId,organizationId:organizationId.data,branchId:query.data.branch_id,status:query.data.status,priority:query.data.priority,category:query.data.category,dateFrom:query.data.date_from,dateTo:query.data.date_to}));
         response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+      }catch(error){next(error instanceof HttpError?error:error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Maintenance Issues are temporarily unavailable."));}
+    });
+
+  app.post("/api/v1/management/organizations/:organizationId/maintenance-issues", protectedRateLimit, authenticate, maintenanceIssuePhotoRawBody,
+    async(request,response,next)=>{
+      try{
+        const organizationId=organizationIdSchema.safeParse(request.params.organizationId);
+        let rawPayload: unknown = request.body;
+        let photo: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null = null;
+        if (Buffer.isBuffer(request.body)) {
+          if (request.header("Content-Type")?.split(";")[0]?.trim().toLowerCase() !== "application/vnd.maintenance-issue+json") {
+            throw new HttpError(400, "bad_request", "The request is invalid.");
+          }
+          let decoded: unknown;
+          try {
+            decoded = JSON.parse(request.body.toString("utf8"));
+          } catch {
+            throw new HttpError(400, "bad_request", "The request is invalid.");
+          }
+          const envelope = maintenanceIssueCreateEnvelopeSchema.safeParse(decoded);
+          if (!envelope.success) throw new HttpError(400, "bad_request", "The request is invalid.");
+          rawPayload = envelope.data.issue;
+          if (envelope.data.before_photo) {
+            photo = {
+              bytes: Buffer.from(envelope.data.before_photo.content_base64, "base64"),
+              mimeType: envelope.data.before_photo.mime_type,
+              originalName: envelope.data.before_photo.original_name?.trim() || "reported-photo",
+            };
+          }
+        }
+        const body=maintenanceIssueBodySchema.safeParse(rawPayload);
+        if(!organizationId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const auth=requireAuthContext(request),context=await loadActiveUser(request);
+        if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.createManagerOfficeMaintenanceIssue)throw new HttpError(403,"forbidden","Access is denied.");
+        const result=maintenanceIssueMutationResponseSchema.parse(await dependencies.operationalAdmin.createManagerOfficeMaintenanceIssue({actorUserId:auth.userId,organizationId:organizationId.data,payload:body.data,photo}));
+        response.setHeader("Cache-Control","private, no-store");response.status(201).json(result);
+        void dependencies.maintenancePush?.notifyMaintenanceIssueCreated({
+          issueId: result.maintenance_issue.id,
+          branchId: result.maintenance_issue.branch_id,
+          branchName: result.maintenance_issue.branch_name,
+          priority: result.maintenance_issue.priority,
+          title: result.maintenance_issue.title,
+        }).catch(()=>undefined);
       }catch(error){next(error instanceof HttpError?error:error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Maintenance Issues are temporarily unavailable."));}
     });
 

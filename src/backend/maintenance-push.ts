@@ -26,7 +26,7 @@ const recipientRow = z.object({
   p256dh: z.string(),
   auth: z.string(),
   organization_id: uuid,
-  branch_id: uuid,
+  branch_id: uuid.nullable(),
   organization_name: z.string(),
   branch_name: z.string(),
   issue_title: z.string(),
@@ -76,7 +76,7 @@ export type MaintenancePushService = {
   }): Promise<unknown>;
   notifyMaintenanceIssueCreated(input: {
     issueId: string;
-    branchId: string;
+    branchId: string | null;
     branchName: string;
     priority: string;
     title: string;

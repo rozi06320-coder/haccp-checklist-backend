@@ -200,6 +200,11 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
         if (input.actorUserId !== id.supervisor) throw new Error("denied");
         return { maintenance_issue: { id: id.maintenanceIssue, branch_id: input.branchId, branch_name: "Branch", title: input.payload.title, category: input.payload.category, priority: input.payload.priority, status: "new", description: input.payload.description ?? null, location: input.payload.location ?? null, reported_by: input.actorUserId, reporter_name: "Supervisor", assigned_to: null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", updates: [] } };
       },
+      async createManagerOfficeMaintenanceIssue(input) {
+        calls.push({ method: "createManagerOfficeMaintenanceIssue", ...input });
+        if (input.actorUserId !== id.manager) throw new OperationalAccessError();
+        return { maintenance_issue: { id: id.maintenanceIssue, branch_id: null, branch_name: "Office", title: input.payload.title, category: input.payload.category, priority: input.payload.priority, status: "new", description: input.payload.description ?? null, location: input.payload.location ?? null, reported_by: input.actorUserId, reporter_name: "Manager", assigned_to: null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", updates: [] } };
+      },
       async listMaintenanceIssues(input) {
         calls.push({ method: "maintenanceIssues", ...input });
         if (input.actorUserId !== id.staffAccount && input.accessUserId !== id.maintenanceAccessUser) throw new Error("denied");
@@ -1153,6 +1158,50 @@ describe("Phase 3A operational API", () => {
     assert.deepEqual(calls.at(-1), { method: "managedMaintenanceIssues", actorUserId: id.manager, organizationId: id.organization, branchId: id.branch, status: "in_progress", priority: "urgent", category: "refrigeration", dateFrom: "2026-08-01", dateTo: "2026-08-31" });
     assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/30000000-0000-4000-8000-000000000099/maintenance-issues`, { headers: headers("manager") })).status, 403);
     assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/${id.organization}/maintenance-issues/${id.maintenanceIssue}`, { method: "PATCH", headers: headers("manager"), body: JSON.stringify({}) })).status, 404);
+  });
+  it("allows Managers to report Office Maintenance issues without branch spoofing", async () => {
+    const created = await fetch(`${baseUrl}/api/v1/management/organizations/${id.organization}/maintenance-issues`, {
+      method: "POST",
+      headers: headers("manager"),
+      body: JSON.stringify({ title: "  Office AC  ", category: "equipment", priority: "high", location: "  Office  ", description: "  Not cooling  " }),
+    });
+    assert.equal(created.status, 201);
+    const body = await created.json() as { maintenance_issue: { branch_id: string | null; branch_name: string; title: string } };
+    assert.equal(body.maintenance_issue.branch_id, null);
+    assert.equal(body.maintenance_issue.branch_name, "Office");
+    assert.equal(body.maintenance_issue.title, "Office AC");
+    assert.deepEqual(calls.at(-1), {
+      method: "createManagerOfficeMaintenanceIssue",
+      actorUserId: id.manager,
+      organizationId: id.organization,
+      payload: { title: "Office AC", category: "equipment", priority: "high", description: "Not cooling", location: "Office" },
+      photo: null,
+    });
+
+    const withPhoto = await fetch(`${baseUrl}/api/v1/management/organizations/${id.organization}/maintenance-issues`, {
+      method: "POST",
+      headers: { ...headers("manager"), "content-type": "application/vnd.maintenance-issue+json" },
+      body: JSON.stringify({
+        issue: { title: "Office light", category: "electrical", priority: "normal", description: "Flickering", location: "Admin room" },
+        before_photo: { original_name: "office.webp", mime_type: "image/webp", content_base64: Buffer.from("webp-bytes").toString("base64") },
+      }),
+    });
+    assert.equal(withPhoto.status, 201);
+    const photoCall = calls.at(-1) as { method: string; branchId?: string; photo?: { mimeType: string; originalName: string; bytes: Buffer } | null };
+    assert.equal(photoCall.method, "createManagerOfficeMaintenanceIssue");
+    assert.equal(photoCall.branchId, undefined);
+    assert.equal(photoCall.photo?.mimeType, "image/webp");
+    assert.equal(photoCall.photo?.originalName, "office.webp");
+    assert.ok(Buffer.isBuffer(photoCall.photo?.bytes));
+
+    const spoofed = await fetch(`${baseUrl}/api/v1/management/organizations/${id.organization}/maintenance-issues`, {
+      method: "POST",
+      headers: headers("manager"),
+      body: JSON.stringify({ title: "Spoof", category: "equipment", priority: "high", branch_id: id.branch }),
+    });
+    assert.equal(spoofed.status, 400);
+    assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/${id.organization}/maintenance-issues`, { method: "POST", headers: headers("supervisor"), body: JSON.stringify({ title: "Office", category: "equipment", priority: "high" }) })).status, 403);
+    assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/30000000-0000-4000-8000-000000000099/maintenance-issues`, { method: "POST", headers: headers("manager"), body: JSON.stringify({ title: "Office", category: "equipment", priority: "high" }) })).status, 403);
   });
   it("has no hard-delete endpoint", async () => {
     const response = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}`, {

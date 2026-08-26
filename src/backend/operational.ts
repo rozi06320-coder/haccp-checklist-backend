@@ -202,7 +202,7 @@ const maintenanceIssueUpdateRow = z.object({
 const maintenanceIssueRow = z.object({
   id: uuid,
   organization_id: uuid.optional(),
-  branch_id: uuid,
+  branch_id: uuid.nullable(),
   branch_name: z.string(),
   title: z.string(),
   category: maintenanceIssueCategory,
@@ -350,6 +350,18 @@ export type OperationalAdmin = {
   createSupervisorMaintenanceIssue(input: {
     actorUserId: string;
     branchId: string;
+    payload: {
+      title: string;
+      category: z.infer<typeof maintenanceIssueCategory>;
+      priority: z.infer<typeof maintenanceIssuePriority>;
+      description?: string | null;
+      location?: string | null;
+    };
+    photo?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
+  }): Promise<unknown>;
+  createManagerOfficeMaintenanceIssue?(input: {
+    actorUserId: string;
+    organizationId: string;
     payload: {
       title: string;
       category: z.infer<typeof maintenanceIssueCategory>;
@@ -1053,6 +1065,23 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded?"create_supervisor_maintenance_issue_with_photo":"create_supervisor_maintenance_issue", {
           actor_user_id: input.actorUserId,
           target_branch_id: input.branchId,
+          payload: uploaded?{...input.payload,issue_id:issueId,before_photo:uploaded}:input.payload,
+        }),input.actorUserId,null);
+        if (rows.length !== 1) throw new AdminOperationError();
+        return { maintenance_issue: rows[0] };
+      }catch(error){
+        if(uploaded)await maintenanceIssuePhotoStorage.remove([uploaded.storage_path]);
+        throw error;
+      }
+    },
+    async createManagerOfficeMaintenanceIssue(input) {
+      let uploaded:{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}|null=null;
+      const issueId=input.photo?randomUUID():null;
+      try{
+        if(input.photo&&issueId)uploaded=await uploadMaintenanceIssuePhoto(issueId,"issue",input.photo);
+        const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded?"create_manager_office_maintenance_issue_with_photo":"create_manager_office_maintenance_issue", {
+          actor_user_id: input.actorUserId,
+          target_organization_id: input.organizationId,
           payload: uploaded?{...input.payload,issue_id:issueId,before_photo:uploaded}:input.payload,
         }),input.actorUserId,null);
         if (rows.length !== 1) throw new AdminOperationError();

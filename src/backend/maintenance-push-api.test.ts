@@ -284,4 +284,50 @@ describe("Maintenance push notification API", () => {
       assert.doesNotMatch(JSON.stringify(delivery.payload), /p256dh|authsecret|endpoint|subscription/i);
     }
   });
+  it("supports Office issue push payloads without a branch id", async () => {
+    const sent: Array<{ endpoint: string; payload: Record<string, unknown> }> = [];
+    const service = createMaintenancePushService(loadBackendConfig({
+      NODE_ENV: "test",
+      SUPABASE_URL: "http://127.0.0.1:54321",
+      SUPABASE_PUBLISHABLE_KEY: "test-publishable-placeholder",
+      SUPABASE_SECRET_KEY: "test-secret-placeholder",
+      DAILY_AUDIT_GRANT_SECRET: "test-daily-audit-grant-secret-placeholder-32-bytes",
+      VAPID_PUBLIC_KEY: "test-public-key",
+      VAPID_PRIVATE_KEY: "test-private-key",
+      VAPID_SUBJECT: "mailto:test@example.invalid",
+    }), {
+      supabase: {
+        async rpc(name) {
+          if (name === "list_maintenance_issue_push_subscriptions") {
+            return { data: [{
+              subscription_id: "59000000-0000-4000-8000-000000000201",
+              user_id: "19000000-0000-4000-8000-000000000201",
+              endpoint: "https://push.example/office-maintenance",
+              p256dh: "abcdefghijklmnopqrstuvwxyz",
+              auth: "authsecret",
+              organization_id: "29000000-0000-4000-8000-000000000001",
+              branch_id: null,
+              organization_name: "Push Org",
+              branch_name: "Office",
+              issue_title: "AC not cooling",
+            }], error: null };
+          }
+          return { data: [], error: null };
+        },
+      },
+      webPush: {
+        setVapidDetails() {},
+        async sendNotification(subscription, payload) {
+          sent.push({ endpoint: subscription.endpoint, payload: JSON.parse(String(payload)) as Record<string, unknown> });
+        },
+      },
+    });
+
+    await service.notifyMaintenanceIssueCreated({ issueId: ids.issue, branchId: null, branchName: "Office", priority: "high", title: "AC not cooling" });
+
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0]?.payload.branch_id, null);
+    assert.equal(sent[0]?.payload.body, "Office · High priority\nAC not cooling");
+    assert.doesNotMatch(JSON.stringify(sent[0]?.payload), /p256dh|authsecret|endpoint|subscription/i);
+  });
 });
