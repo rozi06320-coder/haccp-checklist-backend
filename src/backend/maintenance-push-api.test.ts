@@ -5,7 +5,7 @@ import { after, before, describe, it } from "node:test";
 import { createApp } from "./app";
 import { loadBackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
-import { MaintenancePushAccessError, type MaintenancePushService } from "./maintenance-push";
+import { createMaintenancePushService, MaintenancePushAccessError, type MaintenancePushService } from "./maintenance-push";
 import type { UserContext } from "./user-context";
 
 const ids = {
@@ -205,6 +205,83 @@ describe("Maintenance push notification API", () => {
     assert.equal((body.maintenance_issue as { id: string }).id, ids.issue);
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(notifyAttempts, 1);
-    assert.deepEqual(notifyInput, { issueId: ids.issue, branchId: ids.branch, branchName: "Main Branch", title: "Freezer not cooling" });
+    assert.deepEqual(notifyInput, { issueId: ids.issue, branchId: ids.branch, branchName: "Main Branch", priority: "urgent", title: "Freezer not cooling" });
+  });
+
+  it("fans out new issue pushes to every organization Maintenance subscription without branch filtering", async () => {
+    const sent: Array<{ endpoint: string; payload: Record<string, unknown> }> = [];
+    const disabled: Array<Record<string, unknown>> = [];
+    const rpcCalls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    const row = (subscriptionId: string, userId: string, endpoint: string) => ({
+      subscription_id: subscriptionId,
+      user_id: userId,
+      endpoint,
+      p256dh: "abcdefghijklmnopqrstuvwxyz",
+      auth: "authsecret",
+      organization_id: "29000000-0000-4000-8000-000000000001",
+      branch_id: ids.branch,
+      organization_name: "Push Org",
+      branch_name: "Burger Hunch Al Takhassusi",
+      issue_title: "Freezer not cooling",
+    });
+    const service = createMaintenancePushService(loadBackendConfig({
+      NODE_ENV: "test",
+      SUPABASE_URL: "http://127.0.0.1:54321",
+      SUPABASE_PUBLISHABLE_KEY: "test-publishable-placeholder",
+      SUPABASE_SECRET_KEY: "test-secret-placeholder",
+      DAILY_AUDIT_GRANT_SECRET: "test-daily-audit-grant-secret-placeholder-32-bytes",
+      VAPID_PUBLIC_KEY: "test-public-key",
+      VAPID_PRIVATE_KEY: "test-private-key",
+      VAPID_SUBJECT: "mailto:test@example.invalid",
+    }), {
+      supabase: {
+        async rpc(name, args) {
+          rpcCalls.push({ name, args });
+          if (name === "list_maintenance_issue_push_subscriptions") {
+            return { data: [
+              row("59000000-0000-4000-8000-000000000101", "19000000-0000-4000-8000-000000000101", "https://push.example/maint-a-laptop"),
+              row("59000000-0000-4000-8000-000000000102", "19000000-0000-4000-8000-000000000101", "https://push.example/maint-a-phone"),
+              row("59000000-0000-4000-8000-000000000103", "19000000-0000-4000-8000-000000000102", "https://push.example/maint-b-phone"),
+              row("59000000-0000-4000-8000-000000000104", "19000000-0000-4000-8000-000000000102", "https://push.example/maint-b-stale"),
+              row("59000000-0000-4000-8000-000000000105", "19000000-0000-4000-8000-000000000102", "https://push.example/maint-a-laptop"),
+            ], error: null };
+          }
+          if (name === "disable_push_subscription_delivery") {
+            disabled.push(args);
+            return { data: true, error: null };
+          }
+          return { data: [], error: null };
+        },
+      },
+      webPush: {
+        setVapidDetails() {},
+        async sendNotification(subscription, payload) {
+          if (subscription.endpoint.endsWith("stale")) {
+            const error = new Error("stale subscription") as Error & { statusCode: number };
+            error.statusCode = 410;
+            throw error;
+          }
+          sent.push({ endpoint: subscription.endpoint, payload: JSON.parse(String(payload)) as Record<string, unknown> });
+        },
+      },
+    });
+
+    await service.notifyMaintenanceIssueCreated({ issueId: ids.issue, branchId: ids.branch, branchName: "Burger Hunch Al Takhassusi", priority: "urgent", title: "Freezer not cooling" });
+
+    assert.deepEqual(rpcCalls[0], { name: "list_maintenance_issue_push_subscriptions", args: { target_issue_id: ids.issue } });
+    assert.deepEqual(sent.map((item) => item.endpoint).sort(), [
+      "https://push.example/maint-a-laptop",
+      "https://push.example/maint-a-phone",
+      "https://push.example/maint-b-phone",
+    ]);
+    assert.equal(sent.filter((item) => item.endpoint === "https://push.example/maint-a-laptop").length, 1);
+    assert.deepEqual(disabled, [{ target_subscription_id: "59000000-0000-4000-8000-000000000104", target_endpoint: "https://push.example/maint-b-stale" }]);
+    for (const delivery of sent) {
+      assert.equal(delivery.payload.type, "maintenance_issue_created");
+      assert.equal(delivery.payload.branch_id, ids.branch);
+      assert.equal(delivery.payload.priority, "urgent");
+      assert.equal(delivery.payload.body, "Burger Hunch Al Takhassusi · Urgent priority\nFreezer not cooling");
+      assert.doesNotMatch(JSON.stringify(delivery.payload), /p256dh|authsecret|endpoint|subscription/i);
+    }
   });
 });

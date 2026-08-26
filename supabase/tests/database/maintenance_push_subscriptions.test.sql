@@ -1,5 +1,5 @@
 begin;
-select plan(26);
+select plan(28);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated', email, '{}', '{}', now(), now()
@@ -10,7 +10,8 @@ from (values
   ('1a900000-0000-4000-8000-000000000004'::uuid, 'manager@push.invalid'),
   ('1a900000-0000-4000-8000-000000000005'::uuid, 'disabled-maintenance@push.invalid'),
   ('1a900000-0000-4000-8000-000000000006'::uuid, 'pending-maintenance@push.invalid'),
-  ('1a900000-0000-4000-8000-000000000007'::uuid, 'inactive-maintenance@push.invalid')
+  ('1a900000-0000-4000-8000-000000000007'::uuid, 'inactive-maintenance@push.invalid'),
+  ('1a900000-0000-4000-8000-000000000008'::uuid, 'second-maintenance@push.invalid')
 ) users(id, email);
 
 update public.profiles set full_name = case id
@@ -19,6 +20,7 @@ update public.profiles set full_name = case id
   when '1a900000-0000-4000-8000-000000000003' then 'Other Push Maintenance'
   when '1a900000-0000-4000-8000-000000000005' then 'Disabled Push Maintenance'
   when '1a900000-0000-4000-8000-000000000006' then 'Pending Push Maintenance'
+  when '1a900000-0000-4000-8000-000000000008' then 'Second Push Maintenance'
   else 'Inactive Push Maintenance'
 end,
 must_change_password = case when id = '1a900000-0000-4000-8000-000000000006' then true else false end,
@@ -40,7 +42,8 @@ insert into public.maintenance_memberships(organization_id,user_id,active,create
  ('2a900000-0000-4000-8000-000000000002','1a900000-0000-4000-8000-000000000003',true,'1a900000-0000-4000-8000-000000000004','1a900000-0000-4000-8000-000000000004'),
  ('2a900000-0000-4000-8000-000000000001','1a900000-0000-4000-8000-000000000005',true,'1a900000-0000-4000-8000-000000000004','1a900000-0000-4000-8000-000000000004'),
  ('2a900000-0000-4000-8000-000000000001','1a900000-0000-4000-8000-000000000006',true,'1a900000-0000-4000-8000-000000000004','1a900000-0000-4000-8000-000000000004'),
- ('2a900000-0000-4000-8000-000000000001','1a900000-0000-4000-8000-000000000007',false,'1a900000-0000-4000-8000-000000000004','1a900000-0000-4000-8000-000000000004');
+ ('2a900000-0000-4000-8000-000000000001','1a900000-0000-4000-8000-000000000007',false,'1a900000-0000-4000-8000-000000000004','1a900000-0000-4000-8000-000000000004'),
+ ('2a900000-0000-4000-8000-000000000001','1a900000-0000-4000-8000-000000000008',true,'1a900000-0000-4000-8000-000000000004','1a900000-0000-4000-8000-000000000004');
 insert into public.branch_supervisor_teams(id,organization_id,branch_id,supervisor_user_id,company_name)
 values('5a900000-0000-4000-8000-000000000001','2a900000-0000-4000-8000-000000000001','3a900000-0000-4000-8000-000000000001','1a900000-0000-4000-8000-000000000001','Push Company');
 
@@ -113,6 +116,23 @@ select throws_ok($$select * from public.register_maintenance_push_subscription(
 )$$,'22023','invalid push subscription','insecure endpoint is rejected');
 
 set local role service_role;
+select lives_ok($$select * from public.register_maintenance_push_subscription(
+ '1a900000-0000-4000-8000-000000000008',
+ 'https://push.example/endpoint-b',
+ 'abcdefghijklmnopqrstuvwxyz',
+ 'authsecret-b',
+ 'Chrome Test B'
+)$$,'second active Maintenance user registers a push subscription');
+select lives_ok($$select * from public.register_maintenance_push_subscription(
+ '1a900000-0000-4000-8000-000000000008',
+ 'https://push.example/endpoint-c',
+ 'abcdefghijklmnopqrstuvwxyz',
+ 'authsecret-c',
+ 'Chrome Test C'
+)$$,'second active Maintenance user registers a second device');
+reset role;
+
+set local role service_role;
 select lives_ok($$select * from public.create_supervisor_maintenance_issue(
  '1a900000-0000-4000-8000-000000000001',
  '3a900000-0000-4000-8000-000000000001',
@@ -124,7 +144,7 @@ create temp table push_issue_ids as
 select id as issue_id from public.maintenance_issues where organization_id='2a900000-0000-4000-8000-000000000001' order by created_at desc limit 1;
 grant select on push_issue_ids to service_role;
 
-select is((select count(*)::int from public.list_maintenance_issue_push_subscriptions((select issue_id from push_issue_ids))),1,'recipient query includes only active same-org Maintenance subscriptions');
+select is((select count(*)::int from public.list_maintenance_issue_push_subscriptions((select issue_id from push_issue_ids))),3,'recipient query includes every active same-org Maintenance subscription without branch filtering');
 select is((select organization_name from public.list_maintenance_issue_push_subscriptions((select issue_id from push_issue_ids)) limit 1),'Push Org','recipient payload includes organization name');
 select is((select branch_name from public.list_maintenance_issue_push_subscriptions((select issue_id from push_issue_ids)) limit 1),'Push Branch','recipient payload includes branch name');
 select is((select issue_title from public.list_maintenance_issue_push_subscriptions((select issue_id from push_issue_ids)) limit 1),'Freezer not cooling','recipient payload includes normalized issue title');
@@ -133,7 +153,7 @@ select ok(public.disable_push_subscription_delivery(
  (select id from public.push_subscriptions where endpoint='https://push.example/endpoint-a'),
  'https://push.example/endpoint-a'
 ),'delivery cleanup disables the failed endpoint');
-select is((select count(*)::int from public.list_maintenance_issue_push_subscriptions((select issue_id from push_issue_ids))),0,'disabled endpoint is removed from recipient query');
+select is((select count(*)::int from public.list_maintenance_issue_push_subscriptions((select issue_id from push_issue_ids))),2,'disabled endpoint is removed from recipient query while other Maintenance devices remain eligible');
 
 set local role service_role;
 select lives_ok($$select * from public.register_maintenance_push_subscription(
@@ -143,7 +163,7 @@ select lives_ok($$select * from public.register_maintenance_push_subscription(
  'authsecret'
 )$$,'disabled endpoint can be reactivated by owner');
 reset role;
-select is((select count(*)::int from public.list_maintenance_issue_push_subscriptions((select issue_id from push_issue_ids))),1,'reactivated endpoint returns to recipient query');
+select is((select count(*)::int from public.list_maintenance_issue_push_subscriptions((select issue_id from push_issue_ids))),3,'reactivated endpoint returns to organization-wide recipient query');
 
 select * from finish();
 rollback;

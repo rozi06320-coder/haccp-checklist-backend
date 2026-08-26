@@ -4953,6 +4953,7 @@ export function createApp(
           issueId: result.maintenance_issue.id,
           branchId: result.maintenance_issue.branch_id,
           branchName: result.maintenance_issue.branch_name,
+          priority: result.maintenance_issue.priority,
           title: result.maintenance_issue.title,
         }).catch(() => undefined);
       } catch (error) {

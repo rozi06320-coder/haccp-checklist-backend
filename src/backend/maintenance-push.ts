@@ -3,6 +3,15 @@ import webPush from "web-push";
 import { z } from "zod";
 import type { BackendConfig } from "./config";
 
+type PushRpcClient = {
+  rpc(name: string, args: Record<string, unknown>): Promise<{ data: unknown; error: { code?: string } | null }>;
+};
+
+type PushTransport = {
+  setVapidDetails(subject: string, publicKey: string, privateKey: string): void;
+  sendNotification(subscription: { endpoint: string; keys: { p256dh: string; auth: string } }, payload?: string | Buffer, options?: unknown): Promise<unknown>;
+};
+
 const uuid = z.string().uuid();
 const subscriptionRow = z.object({
   id: uuid,
@@ -69,6 +78,7 @@ export type MaintenancePushService = {
     issueId: string;
     branchId: string;
     branchName: string;
+    priority: string;
     title: string;
   }): Promise<void>;
   notifyDueSupervisorChecklistReminders(input: {
@@ -110,19 +120,28 @@ function supervisorNotificationCopy(row: z.infer<typeof supervisorDeliveryRow>) 
   return { title: "Daily Financial Closing", body: "Daily Financial Closing is still incomplete." };
 }
 
+function maintenanceIssuePriorityLabel(priority: string) {
+  if (priority === "urgent") return "Urgent";
+  if (priority === "high") return "High";
+  if (priority === "low") return "Low";
+  return "Normal";
+}
+
 export function createMaintenancePushService(
   config: BackendConfig,
+  options: { supabase?: PushRpcClient; webPush?: PushTransport } = {},
 ): MaintenancePushService {
   const enabled = Boolean(config.vapid?.publicKey && config.vapid.privateKey && config.vapid.subject);
+  const pushTransport = options.webPush ?? webPush;
   if (enabled) {
-    webPush.setVapidDetails(config.vapid!.subject!, config.vapid!.publicKey!, config.vapid!.privateKey!);
+    pushTransport.setVapidDetails(config.vapid!.subject!, config.vapid!.publicKey!, config.vapid!.privateKey!);
   }
   if (!config.supabase.secretKey) {
     throw new Error("SUPABASE_SECRET_KEY is required by Maintenance push notifications.");
   }
-  const supabase = createClient(config.supabase.url, config.supabase.secretKey, {
+  const supabase: PushRpcClient = options.supabase ?? createClient(config.supabase.url, config.supabase.secretKey, {
     auth: clientAuthOptions,
-  });
+  }) as unknown as PushRpcClient;
 
   async function rpcRows<T>(name: string, args: Record<string, unknown>, schema: z.ZodType<T>) {
     const { data, error } = await supabase.rpc(name, args);
@@ -181,11 +200,12 @@ export function createMaintenancePushService(
           type: "maintenance_issue_created",
           issue_id: input.issueId,
           branch_id: input.branchId,
+          priority: input.priority,
           title: "New Maintenance Issue",
-          body: `${recipient.organization_name} - ${input.title}`,
+          body: `${recipient.branch_name || input.branchName} · ${maintenanceIssuePriorityLabel(input.priority)} priority\n${input.title}`,
           url: "/maintenance",
         });
-        return webPush.sendNotification({
+        return pushTransport.sendNotification({
           endpoint: recipient.endpoint,
           keys: { p256dh: recipient.p256dh, auth: recipient.auth },
         }, payload, { TTL: 60 * 60 }).catch(async (error: unknown) => {
@@ -231,7 +251,7 @@ export function createMaintenancePushService(
             target_endpoint: delivery.endpoint,
           });
           if (attemptError) return;
-          await webPush.sendNotification({
+          await pushTransport.sendNotification({
             endpoint: delivery.endpoint,
             keys: { p256dh: delivery.p256dh, auth: delivery.auth },
           }, payload, { TTL: 60 * 60 });
