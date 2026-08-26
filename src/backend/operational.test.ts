@@ -219,20 +219,55 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
         calls.push({ method: "maintenanceIssuePurchases", actorUserId, issueId });
         return { maintenance_purchases: [] };
       },
+      async listMaintenancePurchaseBranches(input) {
+        calls.push({ method: "maintenancePurchaseBranches", ...input });
+        if (input.actorUserId !== id.staffAccount) throw new OperationalAccessError();
+        return { branches: [{ id: id.branch, name: "Branch", name_ar: null }] };
+      },
       async createMaintenancePurchase(input) {
         calls.push({ method: "createMaintenancePurchase", hasReceipts: Boolean(input.receipts?.length), ...input });
-        if (input.actorUserId !== id.staffAccount || input.issueId !== id.maintenanceIssue) throw new Error("denied");
-        return { maintenance_purchase: { id: id.purchaseLog, branch_id: id.branch, item_name: input.payload.item_name, quantity: Number(input.payload.quantity), unit: input.payload.unit, amount: Number(input.payload.amount), vendor_name: input.payload.vendor_name || "N/A", purchase_date: input.payload.purchase_date, notes: input.payload.notes ?? null, payment_status: "unpaid", reimbursement_note: null, reimbursed_at: null, receipt_original_name: "receipt.pdf", receipt_url: "https://storage.example.invalid/signed-maintenance-receipt", attachments: [{ id: "a1000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 1200, position: 1, url: "https://storage.example.invalid/signed-maintenance-receipt" }], created_at: "2026-08-12T10:00:00.000Z", updated_at: "2026-08-12T10:00:00.000Z" } };
+        if (input.actorUserId !== id.staffAccount || (input.issueId !== id.maintenanceIssue && input.issueId !== null && input.issueId !== undefined)) throw new Error("denied");
+        const scope = input.issueId ? "branch" : input.payload.purchase_scope ?? "branch";
+        return { maintenance_purchase: { id: id.purchaseLog, branch_id: scope === "branch" ? input.payload.branch_id ?? id.branch : null, purchase_type: input.issueId ? "issue" : "general", purchase_scope: scope, destination: scope === "office" ? "Office" : scope === "other" ? input.payload.destination ?? "CEO House" : null, category: input.payload.category, item_name: input.payload.item_name, quantity: Number(input.payload.quantity), unit: input.payload.unit, amount: Number(input.payload.amount), vendor_name: input.payload.vendor_name || "N/A", purchase_date: input.payload.purchase_date, notes: input.payload.notes ?? null, payment_status: "unpaid", reimbursement_note: null, reimbursed_at: null, receipt_original_name: "receipt.pdf", receipt_url: "https://storage.example.invalid/signed-maintenance-receipt", attachments: [{ id: "a1000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 1200, position: 1, url: "https://storage.example.invalid/signed-maintenance-receipt" }], created_at: "2026-08-12T10:00:00.000Z", updated_at: "2026-08-12T10:00:00.000Z" } };
       },
       async reimburseMaintenancePurchase(input) {
         calls.push({ method: "reimburseMaintenancePurchase", ...input });
         if (input.actorUserId !== id.staffAccount || input.purchaseId !== id.purchaseLog) throw new Error("denied");
-        return { maintenance_purchase: { id: id.purchaseLog, branch_id: id.branch, item_name: "Replacement seal", quantity: 2, unit: "meter", amount: 35.5, vendor_name: "Parts Shop", purchase_date: "2026-08-12", notes: "Urgent", payment_status: "reimbursed", reimbursement_note: input.reimbursementNote ?? null, reimbursed_at: "2026-08-12T12:00:00.000Z", receipt_original_name: "receipt.pdf", receipt_url: "https://storage.example.invalid/signed-maintenance-receipt", attachments: [{ id: "a1000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 1200, position: 1, url: "https://storage.example.invalid/signed-maintenance-receipt" }], created_at: "2026-08-12T10:00:00.000Z", updated_at: "2026-08-12T12:00:00.000Z" } };
+        return { maintenance_purchase: { id: id.purchaseLog, branch_id: id.branch, purchase_type: "issue", purchase_scope: "branch", destination: null, category: "spare_parts", item_name: "Replacement seal", quantity: 2, unit: "meter", amount: 35.5, vendor_name: "Parts Shop", purchase_date: "2026-08-12", notes: "Urgent", payment_status: "reimbursed", reimbursement_note: input.reimbursementNote ?? null, reimbursed_at: "2026-08-12T12:00:00.000Z", receipt_original_name: "receipt.pdf", receipt_url: "https://storage.example.invalid/signed-maintenance-receipt", attachments: [{ id: "a1000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 1200, position: 1, url: "https://storage.example.invalid/signed-maintenance-receipt" }], created_at: "2026-08-12T10:00:00.000Z", updated_at: "2026-08-12T12:00:00.000Z" } };
       },
       async listMaintenancePurchaseHistory(input) {
         calls.push({ method: "maintenancePurchaseHistory", ...input });
         if (input.actorUserId !== id.staffAccount) throw new OperationalAccessError();
-        return { maintenance_purchases: [{ id: id.purchaseLog, branch_id: id.branch, branch_name: "Branch", maintenance_issue_id: id.maintenanceIssue, issue_title: "Freezer door", issue_category: "refrigeration", issue_status: "new", maintenance_user_id: id.staffAccount, maintenance_user_name: "Maintenance", item_name: "Replacement seal", quantity: 2, unit: "meter", amount: 35.5, vendor_name: "Parts Shop", purchase_date: "2026-08-12", notes: "Urgent", payment_status: "unpaid", reimbursement_note: null, reimbursed_at: null, receipt_original_name: "receipt.pdf", receipt_url: "https://storage.example.invalid/signed-maintenance-receipt", attachments: [{ id: "a1000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 1200, position: 1, url: "https://storage.example.invalid/signed-maintenance-receipt" }], created_at: "2026-08-12T10:00:00.000Z", updated_at: "2026-08-12T10:00:00.000Z" }] };
+        return { maintenance_purchases: [{
+          id: id.purchaseLog,
+          branch_id: input.purchaseType === "issue" ? id.branch : null,
+          branch_name: input.purchaseType === "issue" ? "Branch" : "CEO House",
+          maintenance_issue_id: input.purchaseType === "issue" ? id.maintenanceIssue : null,
+          purchase_type: input.purchaseType,
+          issue_title: input.purchaseType === "issue" ? "Freezer door" : null,
+          issue_category: input.purchaseType === "issue" ? "refrigeration" : null,
+          issue_status: input.purchaseType === "issue" ? "new" : null,
+          purchase_scope: input.purchaseType === "issue" ? "branch" : "other",
+          destination: input.purchaseType === "issue" ? null : "CEO House",
+          category: input.purchaseType === "issue" ? "spare_parts" : "fuel_petrol",
+          maintenance_user_id: id.staffAccount,
+          maintenance_user_name: "Maintenance",
+          item_name: input.purchaseType === "issue" ? "Replacement seal" : "Generator fuel",
+          quantity: input.purchaseType === "issue" ? 2 : 1,
+          unit: input.purchaseType === "issue" ? "meter" : "liter",
+          amount: input.purchaseType === "issue" ? 35.5 : 250,
+          vendor_name: input.purchaseType === "issue" ? "Parts Shop" : "Al Drees",
+          purchase_date: "2026-08-12",
+          notes: "Urgent",
+          payment_status: "unpaid",
+          reimbursement_note: null,
+          reimbursed_at: null,
+          receipt_original_name: "receipt.pdf",
+          receipt_url: "https://storage.example.invalid/signed-maintenance-receipt",
+          attachments: [{ id: "a1000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 1200, position: 1, url: "https://storage.example.invalid/signed-maintenance-receipt" }],
+          created_at: "2026-08-12T10:00:00.000Z",
+          updated_at: "2026-08-12T10:00:00.000Z",
+        }] };
       },
       async listManagedStaff(input) {
         calls.push({ method: "list", ...input });
@@ -318,7 +353,7 @@ describe("managed maintenance operational adapter", () => {
       requests.push({path:request.url??"",body:JSON.parse(raw)as Record<string,unknown>});
       response.setHeader("content-type","application/json");
       response.end(JSON.stringify([{
-        id:id.purchaseLog,organization_id:id.organization,branch_id:id.branch,maintenance_issue_id:id.maintenanceIssue,maintenance_user_id:id.staffAccount,
+        id:id.purchaseLog,organization_id:id.organization,branch_id:id.branch,purchase_type:"issue",purchase_scope:"branch",destination:null,category:"spare_parts",maintenance_issue_id:id.maintenanceIssue,maintenance_user_id:id.staffAccount,
         item_name:"Replacement seal",quantity:"2",unit:"meter",amount:"35.50",vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null,
         payment_status:request.url?.includes("reimburse")?"reimbursed":"unpaid",reimbursement_note:request.url?.includes("reimburse")?"Paid":null,
         reimbursed_at:request.url?.includes("reimburse")?"2026-08-12T12:00:00.000Z":null,receipt_storage_path:null,receipt_original_name:null,attachments:[],
@@ -328,7 +363,7 @@ describe("managed maintenance operational adapter", () => {
     await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
     try{
       const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
-      const created=await admin.createMaintenancePurchase?.({actorUserId:id.staffAccount,issueId:id.maintenanceIssue,payload:{item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null}});
+      const created=await admin.createMaintenancePurchase?.({actorUserId:id.staffAccount,issueId:id.maintenanceIssue,payload:{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null}});
       assert.equal((created as{maintenance_purchase:{payment_status:string}}).maintenance_purchase.payment_status,"unpaid");
       const reimbursed=await admin.reimburseMaintenancePurchase?.({actorUserId:id.staffAccount,purchaseId:id.purchaseLog,reimbursementNote:"Paid"});
       assert.equal((reimbursed as{maintenance_purchase:{payment_status:string}}).maintenance_purchase.payment_status,"reimbursed");
@@ -336,9 +371,48 @@ describe("managed maintenance operational adapter", () => {
       assert.equal(requests[0]?.body.actor_user_id,id.staffAccount);
       assert.equal(requests[0]?.body.target_issue_id,id.maintenanceIssue);
       assert.match(String((requests[0]?.body.payload as {purchase_id:string}).purchase_id),/^[0-9a-f-]{36}$/);
-      assert.deepEqual({...(requests[0]?.body.payload as Record<string,unknown>),purchase_id:"<uuid>"},{item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null,purchase_id:"<uuid>",receipt_storage_path:null,receipt_original_name:null,attachments:[]});
+      assert.deepEqual({...(requests[0]?.body.payload as Record<string,unknown>),purchase_id:"<uuid>"},{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null,purchase_id:"<uuid>",receipt_storage_path:null,receipt_original_name:null,attachments:[]});
       assert.deepEqual(requests[1],{path:"/rest/v1/rpc/reimburse_maintenance_purchase_log",body:{actor_user_id:id.staffAccount,target_purchase_id:id.purchaseLog,new_note:"Paid"}});
     }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("accepts Office Maintenance purchases with nullable branch ids",async()=>{
+    const requests:Array<{path:string;body:Record<string,unknown>}>=[];
+    const rpc=createServer(async(request,response)=>{
+      let raw="";for await(const chunk of request)raw+=chunk;
+      requests.push({path:request.url??"",body:JSON.parse(raw)as Record<string,unknown>});
+      response.setHeader("content-type","application/json");
+      const history=request.url?.includes("list_maintenance_purchase_history");
+      response.end(JSON.stringify([{
+        id:id.purchaseLog,organization_id:id.organization,branch_id:null,maintenance_issue_id:id.maintenanceIssue,purchase_type:"issue",purchase_scope:"office",destination:"Office",category:"hvac_refrigeration",
+        ...(history?{branch_name:"Office",issue_title:"Office AC",issue_category:"equipment",issue_status:"new",maintenance_user_name:"Maintenance"}:{}),
+        maintenance_user_id:id.staffAccount,
+        item_name:"AC capacitor",quantity:"1",unit:"pcs",amount:"85.00",vendor_name:"Parts Shop",purchase_date:"2026-08-26",notes:null,
+        payment_status:"unpaid",reimbursement_note:null,reimbursed_at:null,receipt_storage_path:null,receipt_original_name:null,attachments:[],
+        created_at:"2026-08-26T10:00:00.000Z",updated_at:"2026-08-26T10:00:00.000Z",
+      }]));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      const created=await admin.createMaintenancePurchase?.({actorUserId:id.staffAccount,issueId:id.maintenanceIssue,payload:{category:"hvac_refrigeration",item_name:"AC capacitor",quantity:1,unit:"pcs",amount:85,vendor_name:"Parts Shop",purchase_date:"2026-08-26",notes:null}}) as {maintenance_purchase:{branch_id:string|null}};
+      assert.equal(created.maintenance_purchase.branch_id,null);
+      const history=await admin.listMaintenancePurchaseHistory?.({actorUserId:id.staffAccount,purchaseType:"issue"}) as {maintenance_purchases:Array<{branch_id:string|null;branch_name:string}>};
+      assert.equal(history.maintenance_purchases[0]?.branch_id,null);
+      assert.equal(history.maintenance_purchases[0]?.branch_name,"Office");
+      assert.deepEqual(requests.map((request)=>request.path),["/rest/v1/rpc/create_maintenance_purchase_log","/rest/v1/rpc/list_maintenance_purchase_history"]);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("keeps the Maintenance purchase Office migration narrow and branch-null aware",()=>{
+    const migration=readFileSync(new URL("../../supabase/migrations/20260826150000_maintenance_purchase_office_scope.sql",import.meta.url),"utf8");
+    assert.match(migration,/alter table public\.maintenance_purchase_logs\s+alter column branch_id drop not null/);
+    assert.match(migration,/alter table public\.maintenance_purchase_attachments\s+alter column branch_id drop not null/);
+    assert.match(migration,/purchase\.branch_id is distinct from new\.branch_id/);
+    assert.match(migration,/left join public\.branches branch on branch\.id=p\.branch_id/);
+    assert.match(migration,/case when issue\.location_scope='office' or p\.branch_id is null then 'Office' else branch\.name end/);
+    assert.match(migration,/grant execute on function public\.list_maintenance_purchase_history\(uuid\) to service_role/);
+    assert.doesNotMatch(migration,/maintenance_issue_attachments|maintenance-issue-photos|list_maintenance_issue_push_subscriptions|push_subscriptions/);
   });
 
   it("lists Maintenance purchase history through its Maintenance-only aggregate RPC",async()=>{
@@ -349,7 +423,7 @@ describe("managed maintenance operational adapter", () => {
       response.setHeader("content-type","application/json");
       response.end(JSON.stringify([{
         id:id.purchaseLog,organization_id:id.organization,branch_id:id.branch,branch_name:"Branch",maintenance_issue_id:id.maintenanceIssue,
-        issue_title:"Freezer door",issue_category:"refrigeration",issue_status:"new",maintenance_user_id:id.staffAccount,maintenance_user_name:"Maintenance",
+        issue_title:"Freezer door",issue_category:"refrigeration",issue_status:"new",purchase_type:"issue",purchase_scope:"branch",destination:null,category:"spare_parts",maintenance_user_id:id.staffAccount,maintenance_user_name:"Maintenance",
         item_name:"Replacement seal",quantity:"2",unit:"meter",amount:"35.50",vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:"Urgent",
         payment_status:"unpaid",reimbursement_note:null,reimbursed_at:null,receipt_storage_path:null,receipt_original_name:null,attachments:[],
         created_at:"2026-08-12T10:00:00.000Z",updated_at:"2026-08-12T10:00:00.000Z",
@@ -358,8 +432,8 @@ describe("managed maintenance operational adapter", () => {
     await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
     try{
       const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
-      const result=await admin.listMaintenancePurchaseHistory?.({actorUserId:id.staffAccount}) as {maintenance_purchases:Array<Record<string,unknown>>};
-      assert.deepEqual(requests,[{path:"/rest/v1/rpc/list_maintenance_purchase_history",body:{actor_user_id:id.staffAccount}}]);
+      const result=await admin.listMaintenancePurchaseHistory?.({actorUserId:id.staffAccount,purchaseType:"issue"}) as {maintenance_purchases:Array<Record<string,unknown>>};
+      assert.deepEqual(requests,[{path:"/rest/v1/rpc/list_maintenance_purchase_history",body:{actor_user_id:id.staffAccount,purchase_type_filter:"issue"}}]);
       assert.equal(result.maintenance_purchases[0]?.id,id.purchaseLog);
       assert.equal(result.maintenance_purchases[0]?.maintenance_issue_id,id.maintenanceIssue);
       assert.equal(result.maintenance_purchases[0]?.amount,35.5);
@@ -1048,7 +1122,7 @@ describe("Phase 3A operational API", () => {
     assert.ok(Buffer.isBuffer(repairCall.repairPhoto?.bytes));
   });
   it("exposes Maintenance purchase history without raw storage or membership fields", async () => {
-    const history = await fetch(`${baseUrl}/api/v1/maintenance/purchases`, { headers: headers("maintenance") });
+    const history = await fetch(`${baseUrl}/api/v1/maintenance/purchases/issue`, { headers: headers("maintenance") });
     assert.equal(history.status, 200, await history.clone().text());
     assert.equal(history.headers.get("cache-control"), "private, no-store");
     const text = await history.text();
@@ -1058,13 +1132,70 @@ describe("Phase 3A operational API", () => {
     assert.equal(body.maintenance_purchases[0]?.maintenance_issue_id, id.maintenanceIssue);
     assert.equal(body.maintenance_purchases[0]?.receipt_url, "https://storage.example.invalid/signed-maintenance-receipt");
     assert.equal(body.maintenance_purchases[0]?.attachments[0]?.url, "https://storage.example.invalid/signed-maintenance-receipt");
-    assert.deepEqual(calls.at(-1), { method: "maintenancePurchaseHistory", actorUserId: id.staffAccount });
+    assert.deepEqual(calls.at(-1), { method: "maintenancePurchaseHistory", actorUserId: id.staffAccount, purchaseType: "issue" });
+
+    const general = await fetch(`${baseUrl}/api/v1/maintenance/purchases/general`, { headers: headers("maintenance") });
+    assert.equal(general.status, 200, await general.clone().text());
+    const generalBody = await general.json() as { maintenance_purchases: Array<{ purchase_type: string; maintenance_issue_id: string | null; destination: string | null }> };
+    assert.equal(generalBody.maintenance_purchases[0]?.purchase_type, "general");
+    assert.equal(generalBody.maintenance_purchases[0]?.maintenance_issue_id, null);
+    assert.equal(generalBody.maintenance_purchases[0]?.destination, "CEO House");
+    assert.deepEqual(calls.at(-1), { method: "maintenancePurchaseHistory", actorUserId: id.staffAccount, purchaseType: "general" });
+  });
+  it("allows authenticated Maintenance users to create standalone Purchase Log entries", async () => {
+    const branches = await fetch(`${baseUrl}/api/v1/maintenance/purchase-branches`, { headers: headers("maintenance") });
+    assert.equal(branches.status, 200, await branches.clone().text());
+    assert.deepEqual(await branches.json(), { branches: [{ id: id.branch, name: "Branch", name_ar: null }] });
+    assert.deepEqual(calls.at(-1), { method: "maintenancePurchaseBranches", actorUserId: id.staffAccount });
+
+    const response = await fetch(`${baseUrl}/api/v1/maintenance/purchases/general`, {
+      method: "POST",
+      headers: { ...headers("maintenance"), "content-type": "application/vnd.maintenance-purchase+json" },
+      body: JSON.stringify({
+        purchase: { purchase_type: "general", purchase_scope: "other", destination: "  CEO House  ", category: "fuel_petrol", item_name: "Generator fuel", quantity: "1", unit: "liter", amount: "250", vendor_name: "Al Drees", purchase_date: "2026-08-26", notes: "" },
+        attachments: [{ original_name: "receipt.pdf", mime_type: "application/pdf", content_base64: Buffer.from("pdf-bytes").toString("base64") }],
+      }),
+    });
+    assert.equal(response.status, 201, await response.clone().text());
+    const body = await response.json() as { maintenance_purchase: { maintenance_issue_id?: string | null; purchase_type:string; purchase_scope: string; destination: string | null; category: string; branch_id: string | null } };
+    assert.equal(body.maintenance_purchase.maintenance_issue_id, undefined);
+    assert.equal(body.maintenance_purchase.purchase_type, "general");
+    assert.equal(body.maintenance_purchase.purchase_scope, "other");
+    assert.equal(body.maintenance_purchase.destination, "CEO House");
+    assert.equal(body.maintenance_purchase.category, "fuel_petrol");
+    assert.equal(body.maintenance_purchase.branch_id, null);
+    const call = calls.at(-1) as { method: string; issueId?: string | null; payload?: Record<string, unknown>; receipts?: unknown[] };
+    assert.equal(call.method, "createMaintenancePurchase");
+    assert.equal(call.issueId, null);
+    assert.equal(call.payload?.purchase_scope, "other");
+    assert.equal(call.payload?.destination, "CEO House");
+    assert.equal(call.payload?.category, "fuel_petrol");
+    assert.equal(call.receipts?.length, 1);
+  });
+  it("rejects invalid standalone Purchase Log scope payloads before service mutation", async () => {
+    const before = calls.length;
+    const missingDestination = await fetch(`${baseUrl}/api/v1/maintenance/purchases/general`, {
+      method: "POST",
+      headers: { ...headers("maintenance"), "content-type": "application/json" },
+      body: JSON.stringify({ purchase_type: "general", purchase_scope: "other", category: "fuel_petrol", item_name: "Fuel", quantity: "1", unit: "liter", amount: "250", purchase_date: "2026-08-26" }),
+    });
+    assert.equal(missingDestination.status, 422);
+    assert.equal(calls.length, before);
+
+    const invalidCategory = await fetch(`${baseUrl}/api/v1/maintenance/purchases/general`, {
+      method: "POST",
+      headers: { ...headers("maintenance"), "content-type": "application/json" },
+      body: JSON.stringify({ purchase_type: "general", purchase_scope: "office", category: "bad", item_name: "Fuel", quantity: "1", unit: "liter", amount: "250", purchase_date: "2026-08-26" }),
+    });
+    assert.equal(invalidCategory.status, 400);
+    assert.equal(calls.length, before);
   });
   it("denies non-Maintenance roles from Maintenance purchase history", async () => {
-    assert.equal((await fetch(`${baseUrl}/api/v1/maintenance/purchases`)).status, 401);
-    assert.equal((await fetch(`${baseUrl}/api/v1/maintenance/purchases`, { headers: headers("manager") })).status, 403);
-    assert.equal((await fetch(`${baseUrl}/api/v1/maintenance/purchases`, { headers: headers("supervisor") })).status, 403);
-    assert.equal((await fetch(`${baseUrl}/api/v1/maintenance/purchases`, { headers: headers("staff") })).status, 403);
+    assert.equal((await fetch(`${baseUrl}/api/v1/maintenance/purchases/issue`)).status, 401);
+    assert.equal((await fetch(`${baseUrl}/api/v1/maintenance/purchases/issue`, { headers: headers("manager") })).status, 403);
+    assert.equal((await fetch(`${baseUrl}/api/v1/maintenance/purchases/general`, { headers: headers("supervisor") })).status, 403);
+    assert.equal((await fetch(`${baseUrl}/api/v1/maintenance/purchases/general`, { headers: headers("staff") })).status, 403);
+    assert.equal((await fetch(`${baseUrl}/api/v1/maintenance/purchases/general`, { method: "POST", headers: { ...headers("manager"), "content-type": "application/json" }, body: JSON.stringify({ purchase_type: "general", purchase_scope: "other", destination: "Office", category: "other", item_name: "Fuel", quantity: "1", unit: "liter", amount: "1", purchase_date: "2026-08-26" }) })).status, 403);
   });
   it("keeps Maintenance purchase reimbursement on the existing PATCH route", async () => {
     const response = await fetch(`${baseUrl}/api/v1/maintenance/purchases/${id.purchaseLog}/payment-status`, {
