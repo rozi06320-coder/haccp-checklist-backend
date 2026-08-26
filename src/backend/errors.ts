@@ -13,6 +13,7 @@ type ErrorCode =
   | "duplicate_person_code"
   | "destination_hygiene_submitted"
   | "forbidden"
+  | "gone"
   | "invalid_country"
   | "invalid_iqama_expiry"
   | "invalid_profile"

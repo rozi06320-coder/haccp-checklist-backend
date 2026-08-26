@@ -34,6 +34,7 @@ const environmentSchema = z
     VAPID_PRIVATE_KEY: z.string().trim().min(1).max(4_096).optional(),
     VAPID_SUBJECT: z.string().trim().min(1).max(512).optional(),
     SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET: z.string().min(32).max(4_096).optional(),
+    TRAINING_ORGANIZATION_SLUG: z.string().trim().toLowerCase().min(1).max(120).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional(),
   })
   .superRefine((environment, context) => {
     const protocol = new URL(environment.SUPABASE_URL).protocol;
@@ -78,6 +79,7 @@ export type BackendConfig = {
     subject?: string;
   };
   supervisorNotificationSchedulerSecret?: string;
+  trainingOrganizationSlug?: string;
 };
 
 export class BackendConfigurationError extends Error {
@@ -118,5 +120,6 @@ export function loadBackendConfig(
       subject: result.data.VAPID_SUBJECT,
     },
     supervisorNotificationSchedulerSecret: result.data.SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET,
+    trainingOrganizationSlug: result.data.TRAINING_ORGANIZATION_SLUG,
   };
 }

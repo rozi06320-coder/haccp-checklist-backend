@@ -479,8 +479,33 @@ const maintenanceAccessVerifyBodySchema = z.object({
   display_name: normalizedNameSchema,
   pin: z.string().regex(/^[0-9]{4,8}$/),
 }).strict();
+const trainingOrganizationSlugSchema = z.string()
+  .max(120)
+  .transform((value) => value.trim().toLowerCase())
+  .pipe(z.string().min(1).max(120).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/));
+const trainingPinSchema = z.string().regex(/^[0-9]{4,12}$/);
+const trainingBranchAccessUpdateBodySchema = z.object({
+  enabled: z.boolean(),
+  pin: trainingPinSchema.optional(),
+}).strict();
+const trainingBranchAccessVerifyBodySchema = z.object({
+  branch_id: z.uuid(),
+  pin: trainingPinSchema,
+}).strict();
+const trainingBranchAccessLegacyVerifyBodySchema = trainingBranchAccessVerifyBodySchema.extend({
+  organization_slug: trainingOrganizationSlugSchema,
+}).strict();
+const trainingEmployeeCodeSchema = z.string()
+  .max(80)
+  .transform((value) => value.trim())
+  .pipe(z.string().min(1).max(80));
+const trainingEmployeeSelectBodySchema = z.object({
+  employee_code: trainingEmployeeCodeSchema,
+}).strict();
 const DAILY_AUDIT_COOKIE_PATH = "/api/daily-audit";
 const MAINTENANCE_ACCESS_COOKIE_PATH = "/maintenance";
+const TRAINING_ACCESS_COOKIE_PATH = "/";
+const LEGACY_TRAINING_ACCESS_COOKIE_PATH = "/training";
 export function serializeDailyAuditGrantCookie(
   value: string,
   nodeEnv: BackendConfig["nodeEnv"],
@@ -494,6 +519,34 @@ export function serializeMaintenanceAccessCookie(
   maxAge: number,
 ) {
   return `maintenance_access=${value}; Max-Age=${maxAge}; Path=${MAINTENANCE_ACCESS_COOKIE_PATH}; HttpOnly; SameSite=Strict${nodeEnv === "production" ? "; Secure" : ""}`;
+}
+function serializeTrainingAccessCookieForPath(
+  value: string,
+  nodeEnv: BackendConfig["nodeEnv"],
+  maxAge: number,
+  path: string,
+) {
+  return `training_access=${value}; Max-Age=${maxAge}; Path=${path}; HttpOnly; SameSite=Strict${nodeEnv === "production" ? "; Secure" : ""}`;
+}
+export function serializeTrainingAccessCookie(
+  value: string,
+  nodeEnv: BackendConfig["nodeEnv"],
+  maxAge: number,
+) {
+  return serializeTrainingAccessCookieForPath(value, nodeEnv, maxAge, TRAINING_ACCESS_COOKIE_PATH);
+}
+function serializeTrainingAccessCookieHeaders(
+  value: string,
+  nodeEnv: BackendConfig["nodeEnv"],
+  maxAge: number,
+) {
+  return [
+    serializeTrainingAccessCookie(value, nodeEnv, maxAge),
+    serializeTrainingAccessCookieForPath("", nodeEnv, 0, LEGACY_TRAINING_ACCESS_COOKIE_PATH),
+  ];
+}
+function setTrainingAccessCookie(response: Response, value: string, nodeEnv: BackendConfig["nodeEnv"], maxAge: number) {
+  response.setHeader("Set-Cookie", serializeTrainingAccessCookieHeaders(value, nodeEnv, maxAge));
 }
 function readCookie(header: string | undefined, name: string) {
   if (!header) return null;
@@ -595,6 +648,21 @@ const maintenanceUserBodySchema = z
     temporary_password: z.string().min(6).max(128),
   })
   .strict();
+const trainingAccountBodySchema = z.object({
+  account_name: normalizedNameSchema,
+  email: z.string().trim().toLowerCase().max(254).pipe(z.email()),
+  temporary_password: z.string().min(6).max(128),
+  branch_ids: z.array(z.uuid()).min(1).max(50),
+  active: z.boolean().default(true),
+}).strict().superRefine(rejectDuplicateBranchIds);
+const trainingAccountUpdateBodySchema = z.object({
+  account_name: normalizedNameSchema,
+  branch_ids: z.array(z.uuid()).min(1).max(50),
+  active: z.boolean(),
+}).strict().superRefine(rejectDuplicateBranchIds);
+const trainingAccountPasswordResetBodySchema = z.object({
+  temporary_password: z.string().min(6).max(128),
+}).strict();
 const organizationManagerBodySchema = maintenanceUserBodySchema.extend({
   full_name_ar: optionalDisplayNameSchema,
 }).strict();
@@ -1555,6 +1623,31 @@ export function createApp(
       next(new HttpError(429, "rate_limited", "Unable to verify Daily Audit access."));
     },
   });
+  const trainingBranchDiscoveryRateLimit = rateLimit({
+    windowMs: 60_000,
+    limit: 60,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    validate: { trustProxy: false, xForwardedForHeader: false },
+    handler(_request, _response, next) {
+      next(new HttpError(429, "rate_limited", "Unable to load Training access."));
+    },
+  });
+  const trainingPinVerificationRateLimit = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: 10,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    validate: { trustProxy: false, xForwardedForHeader: false },
+    keyGenerator(request) {
+      const branchId = branchIdSchema.safeParse(request.body?.branch_id);
+      return `${ipKeyGenerator(request.ip ?? "unknown")}:${config.trainingOrganizationSlug ?? "unconfigured"}:${branchId.success ? branchId.data : "invalid"}`;
+    },
+    handler(_request, response, next) {
+      setTrainingAccessCookie(response, "", config.nodeEnv, 0);
+      next(new HttpError(429, "rate_limited", "Unable to verify Training access."));
+    },
+  });
   const evidenceUploadRateLimit = rateLimit({
     windowMs:60_000,limit:12,standardHeaders:"draft-8",legacyHeaders:false,
     validate:{trustProxy:false,xForwardedForHeader:false},
@@ -1612,6 +1705,37 @@ export function createApp(
       throw new HttpError(403, "forbidden", "Access is denied.");
     }
     return auth.userId;
+  }
+
+  async function loadTrainingBranchSession(request: Request) {
+    const grant = readCookie(request.headers.cookie, "training_access");
+    const parsed = grant && dependencies.pinCrypto.verifyTrainingGrant?.(grant);
+    const trainingAdmin = dependencies.trainingBranchAccessAdmin;
+    if (!parsed || !trainingAdmin) {
+      throw new HttpError(401, "unauthorized", "Training access is required.");
+    }
+    const session = await trainingAdmin.validateSession({
+      organizationId: parsed.organizationId,
+      branchId: parsed.branchId,
+      credentialVersion: parsed.credentialVersion,
+    });
+    if (!session) throw new HttpError(401, "unauthorized", "Training access is required.");
+    const employee = parsed.employeeId
+      ? await trainingAdmin.validateEmployee({
+        organizationId: parsed.organizationId,
+        branchId: parsed.branchId,
+        employeeId: parsed.employeeId,
+      })
+      : null;
+    return {
+      ...session,
+      credential_version: parsed.credentialVersion,
+      employee,
+      employee_invalidated: Boolean(parsed.employeeId && !employee),
+      issued_at: new Date(parsed.issuedAt).toISOString(),
+      expires_at: new Date(parsed.expiresAt).toISOString(),
+      expires_at_ms: parsed.expiresAt,
+    };
   }
 
   app.get(
@@ -2096,6 +2220,485 @@ export function createApp(
         if (error instanceof HttpError) next(error);
         else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
         else next(new HttpError(503, "service_unavailable", "Maintenance users are unavailable."));
+      }
+    },
+  );
+  async function respondWithTrainingBranches(organizationSlug: string | null, response: Response, next: NextFunction) {
+    try {
+      if (!organizationSlug) throw new HttpError(503, "service_unavailable", "Training access is not configured.");
+      const trainingAdmin = dependencies.trainingBranchAccessAdmin;
+      if (!trainingAdmin) throw new HttpError(503, "service_unavailable", "Training access is temporarily unavailable.");
+      const result = await trainingAdmin.listPublicBranches(organizationSlug);
+      if (!result) throw new HttpError(404, "not_found", "Training access is unavailable.");
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(200).json(result);
+    } catch (error) {
+      if (error instanceof HttpError) next(error);
+      else next(new HttpError(503, "service_unavailable", "Training access is temporarily unavailable."));
+    }
+  }
+
+  app.get(
+    "/api/v1/training/branches",
+    trainingBranchDiscoveryRateLimit,
+    async (request, response, next) => {
+      if (!emptyQuerySchema.safeParse(request.query).success) {
+        next(new HttpError(400, "bad_request", "The request is invalid."));
+        return;
+      }
+      await respondWithTrainingBranches(config.trainingOrganizationSlug ?? null, response, next);
+    },
+  );
+  app.get(
+    "/api/v1/training/organizations/:organizationSlug/branches",
+    trainingBranchDiscoveryRateLimit,
+    async (request, response, next) => {
+      const organizationSlug = trainingOrganizationSlugSchema.safeParse(request.params.organizationSlug);
+      if (!organizationSlug.success || !emptyQuerySchema.safeParse(request.query).success) {
+        next(new HttpError(400, "bad_request", "The request is invalid."));
+        return;
+      }
+      await respondWithTrainingBranches(organizationSlug.data, response, next);
+    },
+  );
+  app.post(
+    "/api/v1/training/access/verify",
+    trainingPinVerificationRateLimit,
+    async (request, response, next) => {
+      try {
+        const body = trainingBranchAccessVerifyBodySchema.safeParse(request.body);
+        const legacyBody = trainingBranchAccessLegacyVerifyBodySchema.safeParse(request.body);
+        const parsedBody = body.success ? body.data : legacyBody.success ? legacyBody.data : null;
+        const organizationSlug = body.success ? config.trainingOrganizationSlug : legacyBody.success ? legacyBody.data.organization_slug : null;
+        if (!parsedBody || !organizationSlug || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "Unable to verify Training access.");
+        }
+        const trainingAdmin = dependencies.trainingBranchAccessAdmin;
+        const issueGrant = dependencies.pinCrypto.issueTrainingGrant;
+        if (!trainingAdmin || !issueGrant) {
+          throw new HttpError(503, "service_unavailable", "Unable to verify Training access.");
+        }
+        const credential = await trainingAdmin.getCredential({
+          organizationSlug,
+          branchId: parsedBody.branch_id,
+        });
+        if (!credential || !(await dependencies.pinCrypto.verify(parsedBody.pin, credential))) {
+          throw new HttpError(403, "forbidden", "Unable to verify Training access.");
+        }
+        const issuedAt = Date.now();
+        const grant = issueGrant(credential.organization_id, credential.branch_id, credential.credential_version, issuedAt);
+        response.setHeader("Cache-Control", "private, no-store");
+        setTrainingAccessCookie(response, grant, config.nodeEnv, 12 * 60 * 60);
+        response.status(200).json({
+          verified: true,
+          expires_at: new Date(issuedAt + 12 * 60 * 60_000).toISOString(),
+          organization: {
+            id: credential.organization_id,
+            name: credential.organization_name,
+            name_ar: credential.organization_name_ar ?? null,
+          },
+          branch: {
+            id: credential.branch_id,
+            name: credential.branch_name,
+            name_ar: credential.branch_name_ar ?? null,
+          },
+        });
+      } catch (error) {
+        setTrainingAccessCookie(response, "", config.nodeEnv, 0);
+        next(error instanceof HttpError ? error : new HttpError(503, "service_unavailable", "Unable to verify Training access."));
+      }
+    },
+  );
+  app.get(
+    "/api/v1/training/session",
+    trainingBranchDiscoveryRateLimit,
+    async (request, response, next) => {
+      try {
+        if (!emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const session = await loadTrainingBranchSession(request);
+        response.setHeader("Cache-Control", "private, no-store");
+        if (session.employee_invalidated && dependencies.pinCrypto.issueTrainingGrant) {
+          const now = Date.now();
+          setTrainingAccessCookie(
+            response,
+            dependencies.pinCrypto.issueTrainingGrant(session.organization_id, session.branch_id, session.credential_version, now, null, session.expires_at_ms),
+            config.nodeEnv,
+            Math.max(0, Math.ceil((session.expires_at_ms - now) / 1000)),
+          );
+        }
+        response.status(200).json({
+          verified: true,
+          expires_at: session.expires_at,
+          organization: {
+            id: session.organization_id,
+            name: session.organization_name,
+            name_ar: session.organization_name_ar ?? null,
+          },
+          branch: {
+            id: session.branch_id,
+            name: session.branch_name,
+            name_ar: session.branch_name_ar ?? null,
+          },
+          employee: session.employee,
+        });
+      } catch (error) {
+        setTrainingAccessCookie(response, "", config.nodeEnv, 0);
+        if (error instanceof HttpError) next(error);
+        else next(new HttpError(401, "unauthorized", "Training access is required."));
+      }
+    },
+  );
+  app.get(
+    "/api/v1/training/employees",
+    trainingBranchDiscoveryRateLimit,
+    async (request, response, next) => {
+      try {
+        if (!emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const session = await loadTrainingBranchSession(request);
+        const trainingAdmin = dependencies.trainingBranchAccessAdmin;
+        if (!trainingAdmin) throw new HttpError(503, "service_unavailable", "Training employees are unavailable.");
+        const employees = await trainingAdmin.listEmployees({
+          organizationId: session.organization_id,
+          branchId: session.branch_id,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ employees });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else next(new HttpError(503, "service_unavailable", "Training employees are unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/training/employee/select",
+    trainingBranchDiscoveryRateLimit,
+    async (request, response, next) => {
+      try {
+        const body = trainingEmployeeSelectBodySchema.safeParse(request.body);
+        if (!body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const session = await loadTrainingBranchSession(request);
+        const trainingAdmin = dependencies.trainingBranchAccessAdmin;
+        const issueGrant = dependencies.pinCrypto.issueTrainingGrant;
+        if (!trainingAdmin?.selectEmployeeByCode || !issueGrant) throw new HttpError(503, "service_unavailable", "Training employee selection is unavailable.");
+        const employee = await trainingAdmin.selectEmployeeByCode({
+          organizationId: session.organization_id,
+          branchId: session.branch_id,
+          employeeCode: body.data.employee_code,
+        });
+        if (!employee) throw new HttpError(404, "not_found", "Employee code not found.");
+        const now = Date.now();
+        response.setHeader("Cache-Control", "private, no-store");
+        setTrainingAccessCookie(
+          response,
+          issueGrant(session.organization_id, session.branch_id, session.credential_version, now, employee.employee_id, session.expires_at_ms),
+          config.nodeEnv,
+          Math.max(0, Math.ceil((session.expires_at_ms - now) / 1000)),
+        );
+        response.status(200).json({
+          selected: true,
+          expires_at: session.expires_at,
+          employee,
+        });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Employee code is ambiguous."));
+        else next(new HttpError(503, "service_unavailable", "Training employee selection is unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/training/employee/clear",
+    trainingBranchDiscoveryRateLimit,
+    async (request, response, next) => {
+      try {
+        if (!emptyQuerySchema.safeParse(request.query).success || !emptyQuerySchema.safeParse(request.body ?? {}).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const session = await loadTrainingBranchSession(request);
+        const issueGrant = dependencies.pinCrypto.issueTrainingGrant;
+        if (!issueGrant) throw new HttpError(503, "service_unavailable", "Training employee selection is unavailable.");
+        const now = Date.now();
+        response.setHeader("Cache-Control", "private, no-store");
+        setTrainingAccessCookie(
+          response,
+          issueGrant(session.organization_id, session.branch_id, session.credential_version, now, null, session.expires_at_ms),
+          config.nodeEnv,
+          Math.max(0, Math.ceil((session.expires_at_ms - now) / 1000)),
+        );
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else next(new HttpError(503, "service_unavailable", "Training employee selection is unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/training/access/logout",
+    trainingBranchDiscoveryRateLimit,
+    async (request, response, next) => {
+      try {
+        if (!emptyQuerySchema.safeParse(request.query).success || !emptyQuerySchema.safeParse(request.body ?? {}).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        response.setHeader("Cache-Control", "private, no-store");
+        setTrainingAccessCookie(response, "", config.nodeEnv, 0);
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else next(new HttpError(503, "service_unavailable", "Unable to clear Training access."));
+      }
+    },
+  );
+  app.get(
+    "/api/v1/internal-admin/organizations/:organizationId/training-branch-access",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        if (!organizationId.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        const trainingAdmin = dependencies.trainingBranchAccessAdmin;
+        if (!trainingAdmin) throw new HttpError(503, "service_unavailable", "Branch Training Access is unavailable.");
+        const branchAccess = await trainingAdmin.listForInternalAdmin(auth.userId, organizationId.data);
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ branch_access: branchAccess });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Branch Training Access is unavailable."));
+      }
+    },
+  );
+  app.patch(
+    "/api/v1/internal-admin/organizations/:organizationId/training-branch-access/:branchId",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const body = trainingBranchAccessUpdateBodySchema.safeParse(request.body);
+        if (!organizationId.success || !branchId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        const trainingAdmin = dependencies.trainingBranchAccessAdmin;
+        if (!trainingAdmin) throw new HttpError(503, "service_unavailable", "Branch Training Access is unavailable.");
+        const credential = body.data.pin ? await dependencies.pinCrypto.hash(body.data.pin) : null;
+        const result = await trainingAdmin.storeForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          branchId: branchId.data,
+          enabled: body.data.enabled,
+          credential,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Branch is unavailable."));
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter valid Branch Training Access details."));
+        else next(new HttpError(503, "service_unavailable", "Branch Training Access is unavailable."));
+      }
+    },
+  );
+  app.use(
+    [
+      "/api/v1/training/account",
+      "/api/v1/internal-admin/organizations/:organizationId/training-accounts",
+    ],
+    protectedRateLimit,
+    (_request, _response, next) => {
+      next(new HttpError(410, "gone", "Training Account email/password access has been retired."));
+    },
+  );
+  app.get(
+    "/api/v1/training/account",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        if (!emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        if (!dependencies.managementAdmin.getTrainingAccountContext) {
+          throw new HttpError(503, "service_unavailable", "Training access is temporarily unavailable.");
+        }
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password) {
+          throw new HttpError(403, "forbidden", "Access is denied.");
+        }
+        const account = await dependencies.managementAdmin.getTrainingAccountContext(auth.userId);
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ account });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Training access is temporarily unavailable."));
+      }
+    },
+  );
+  app.get(
+    "/api/v1/internal-admin/organizations/:organizationId/training-accounts",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        if (!organizationId.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.listTrainingAccountsForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Training accounts are unavailable.");
+        }
+        const accounts = await dependencies.managementAdmin.listTrainingAccountsForInternalAdmin(auth.userId, organizationId.data);
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ accounts });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Training accounts are unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/training-accounts",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const body = trainingAccountBodySchema.safeParse(request.body);
+        if (!organizationId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.provisioningAdmin.finalizeTrainingAccount) {
+          throw new HttpError(503, "service_unavailable", "Training accounts are unavailable.");
+        }
+        let newUserId: string;
+        try {
+          newUserId = (await dependencies.provisioningAdmin.createUser({
+            email: body.data.email,
+            password: body.data.temporary_password,
+          })).id;
+        } catch (error) {
+          if (error instanceof AdminConflictError) {
+            throw new HttpError(409, "conflict", "An account with that email already exists.");
+          }
+          throw new HttpError(503, "service_unavailable", "Training accounts are unavailable.");
+        }
+        try {
+          await dependencies.provisioningAdmin.finalizeTrainingAccount({
+            actorUserId: auth.userId,
+            organizationId: organizationId.data,
+            newUserId,
+            accountName: body.data.account_name,
+            branchIds: body.data.branch_ids,
+            active: body.data.active,
+          });
+        } catch (error) {
+          try {
+            await dependencies.provisioningAdmin.deleteUser(newUserId);
+          } catch {
+            if (config.nodeEnv !== "test") {
+              console.error("Training account provisioning compensation failed", { requestId: request.id });
+            }
+          }
+          if (error instanceof AdminAccessError) throw new HttpError(403, "forbidden", "Access is denied.");
+          if (error instanceof AdminConflictError || error instanceof AdminInputError) {
+            throw new HttpError(422, "unprocessable_entity", "The Training account is invalid.");
+          }
+          throw new HttpError(503, "service_unavailable", "Training accounts are unavailable.");
+        }
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(201).json({
+          id: newUserId,
+          account_name: body.data.account_name,
+          email: body.data.email,
+          organization_id: organizationId.data,
+          active: body.data.active,
+          branch_ids: body.data.branch_ids,
+          must_change_password: true,
+        });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else next(new HttpError(503, "service_unavailable", "Training accounts are unavailable."));
+      }
+    },
+  );
+  app.patch(
+    "/api/v1/internal-admin/organizations/:organizationId/training-accounts/:userId",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        const body = trainingAccountUpdateBodySchema.safeParse(request.body);
+        if (!organizationId.success || !userId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.updateTrainingAccountForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Training accounts are unavailable.");
+        }
+        await dependencies.managementAdmin.updateTrainingAccountForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+          accountName: body.data.account_name,
+          active: body.data.active,
+          branchIds: body.data.branch_ids,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "The Training account was not found."));
+        else if (error instanceof AdminConflictError || error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "The Training account is invalid."));
+        else next(new HttpError(503, "service_unavailable", "Training accounts are unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/training-accounts/:userId/reset-password",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        const body = trainingAccountPasswordResetBodySchema.safeParse(request.body);
+        if (!organizationId.success || !userId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.authorizeTrainingAccountPasswordReset || !dependencies.managementAdmin.finalizeTrainingAccountPasswordReset) {
+          throw new HttpError(503, "service_unavailable", "Training accounts are unavailable.");
+        }
+        await dependencies.managementAdmin.authorizeTrainingAccountPasswordReset({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+        });
+        await dependencies.passwordChange.updatePassword(userId.data, body.data.temporary_password);
+        await dependencies.managementAdmin.finalizeTrainingAccountPasswordReset({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Training accounts are unavailable."));
       }
     },
   );

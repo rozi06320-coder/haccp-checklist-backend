@@ -6,12 +6,14 @@ import {
   createBranchManagementAdmin,
   createDailyAuditPinAdmin,
   createMaintenanceAccessAdmin,
+  createTrainingBranchAccessAdmin,
   createPinCrypto,
   createProvisioningAdmin,
   type ManagementAdmin,
   type BranchManagementAdmin,
   type DailyAuditPinAdmin,
   type MaintenanceAccessAdmin,
+  type TrainingBranchAccessAdmin,
   type PinCrypto,
   type PasswordChangeService,
   type ProvisioningAdmin,
@@ -53,6 +55,7 @@ export type BackendDependencies = {
   branchManagementAdmin: BranchManagementAdmin;
   dailyAuditPinAdmin?: DailyAuditPinAdmin;
   maintenanceAccessAdmin?: MaintenanceAccessAdmin;
+  trainingBranchAccessAdmin?: TrainingBranchAccessAdmin;
   pinCrypto: PinCrypto;
   operationalAdmin?: OperationalAdmin;
   checklistPersistence?: ChecklistPersistence;
@@ -128,6 +131,7 @@ export function createDefaultDependencies(
     branchManagementAdmin: createBranchManagementAdmin(config.supabase.url, config.supabase.secretKey),
     dailyAuditPinAdmin: createDailyAuditPinAdmin(config.supabase.url, config.supabase.secretKey),
     maintenanceAccessAdmin: createMaintenanceAccessAdmin(config.supabase.url, config.supabase.secretKey),
+    trainingBranchAccessAdmin: createTrainingBranchAccessAdmin(config.supabase.url, config.supabase.secretKey),
     pinCrypto: createPinCrypto(config.dailyAuditGrantSecret),
     operationalAdmin: createOperationalAdmin(config.supabase.url, config.supabase.secretKey),
     checklistPersistence: createChecklistPersistence(config.supabase.url, config.supabase.secretKey),

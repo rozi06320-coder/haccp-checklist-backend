@@ -60,6 +60,14 @@ export type FinalizeProvisionedOrganizationManagerInput = {
   fullName: string;
   fullNameAr?: string | null;
 };
+export type FinalizeProvisionedTrainingAccountInput = {
+  actorUserId: string;
+  organizationId: string;
+  newUserId: string;
+  accountName: string;
+  branchIds: string[];
+  active: boolean;
+};
 
 export type ProvisioningAdmin = {
   createUser(input: CreateAuthUserInput): Promise<ProvisionedUser>;
@@ -67,6 +75,7 @@ export type ProvisioningAdmin = {
   finalize(input: FinalizeProvisionedUserInput): Promise<void>;
   finalizeMaintenance?(input: FinalizeProvisionedMaintenanceUserInput): Promise<void>;
   finalizeOrganizationManager?(input: FinalizeProvisionedOrganizationManagerInput): Promise<void>;
+  finalizeTrainingAccount?(input: FinalizeProvisionedTrainingAccountInput): Promise<void>;
 };
 
 export type ManagedUser = {
@@ -218,6 +227,76 @@ export type ManagedMaintenanceUser = {
   created_at: string;
   updated_at: string;
   updated_by_name: string | null;
+};
+export type TrainingAccountBranch = {
+  id: string;
+  name: string;
+  name_ar?: string | null;
+  code: string;
+  active?: boolean;
+};
+export type InternalAdminTrainingAccount = {
+  id: string;
+  account_name: string;
+  email: string;
+  organization_id: string;
+  active: boolean;
+  must_change_password: boolean;
+  created_at: string;
+  updated_at: string;
+  updated_by_name: string | null;
+  branches: TrainingAccountBranch[];
+};
+export type TrainingAccountContext = {
+  user_id: string;
+  account_name: string;
+  email: string;
+  organization_id: string;
+  organization_name: string;
+  organization_name_ar?: string | null;
+  active: boolean;
+  branches: TrainingAccountBranch[];
+};
+export type BranchTrainingAccessStatus = {
+  branch_id: string;
+  enabled: boolean;
+  pin_configured: boolean;
+  updated_at: string | null;
+};
+export type PublicTrainingBranch = {
+  id: string;
+  name: string;
+  name_ar?: string | null;
+};
+export type PublicTrainingBranchList = {
+  organization: {
+    id: string;
+    name: string;
+    name_ar?: string | null;
+  };
+  branches: PublicTrainingBranch[];
+};
+export type TrainingBranchAccessCredential = PinCredential & {
+  organization_id: string;
+  organization_name: string;
+  organization_name_ar?: string | null;
+  branch_id: string;
+  branch_name: string;
+  branch_name_ar?: string | null;
+  credential_version: string;
+};
+export type TrainingBranchSession = {
+  organization_id: string;
+  organization_name: string;
+  organization_name_ar?: string | null;
+  branch_id: string;
+  branch_name: string;
+  branch_name_ar?: string | null;
+};
+export type TrainingEmployee = {
+  employee_id: string;
+  display_name: string;
+  employee_code: string | null;
 };
 export type InternalAdminOrganizationManager = {
   id: string;
@@ -397,6 +476,26 @@ export type ManagementAdmin = {
     organizationId: string;
     email: string;
   }): Promise<void>;
+  listTrainingAccountsForInternalAdmin?(actorUserId: string, organizationId: string): Promise<InternalAdminTrainingAccount[]>;
+  updateTrainingAccountForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    userId: string;
+    accountName: string;
+    active: boolean;
+    branchIds: string[];
+  }): Promise<void>;
+  authorizeTrainingAccountPasswordReset?(input: {
+    actorUserId: string;
+    organizationId: string;
+    userId: string;
+  }): Promise<void>;
+  finalizeTrainingAccountPasswordReset?(input: {
+    actorUserId: string;
+    organizationId: string;
+    userId: string;
+  }): Promise<void>;
+  getTrainingAccountContext?(actorUserId: string): Promise<TrainingAccountContext>;
 };
 
 export type SupervisedBranch = {
@@ -500,6 +599,22 @@ export type MaintenanceAccessAdmin = {
   getAccessCredential(input: { organizationIdentifier: string; displayName: string }): Promise<MaintenanceAccessCredential | null>;
   validateAccessGrant(input: { organizationId: string; accessUserId: string; credentialVersion: string }): Promise<MaintenanceAccessSession | null>;
 };
+export type TrainingBranchAccessAdmin = {
+  listForInternalAdmin(actorUserId: string, organizationId: string): Promise<BranchTrainingAccessStatus[]>;
+  storeForInternalAdmin(input: {
+    actorUserId: string;
+    organizationId: string;
+    branchId: string;
+    enabled: boolean;
+    credential: PinCredential | null;
+  }): Promise<BranchTrainingAccessStatus>;
+  listPublicBranches(organizationSlug: string): Promise<PublicTrainingBranchList | null>;
+  getCredential(input: { organizationSlug: string; branchId: string }): Promise<TrainingBranchAccessCredential | null>;
+  validateSession(input: { organizationId: string; branchId: string; credentialVersion: string }): Promise<TrainingBranchSession | null>;
+  listEmployees(input: { organizationId: string; branchId: string }): Promise<TrainingEmployee[]>;
+  validateEmployee(input: { organizationId: string; branchId: string; employeeId: string }): Promise<TrainingEmployee | null>;
+  selectEmployeeByCode?(input: { organizationId: string; branchId: string; employeeCode: string }): Promise<TrainingEmployee | null>;
+};
 export type BranchManagementAdmin = {
   listBranches(actorUserId: string): Promise<SupervisedBranch[]>;
   listStaff(actorUserId: string, branchId: string): Promise<BranchStaffMember[]>;
@@ -515,6 +630,8 @@ export type PinCrypto = {
   verifyManagerGrant?(grant: string, userId: string, branchId: string, organizationId: string, managerUserId: string, credentialVersion: string, now?: number): boolean;
   issueMaintenanceGrant?(organizationId: string, accessUserId: string, credentialVersion: string, now?: number): string;
   verifyMaintenanceGrant?(grant: string, now?: number): { organizationId: string; accessUserId: string; credentialVersion: string } | null;
+  issueTrainingGrant?(organizationId: string, branchId: string, credentialVersion: string, now?: number, employeeId?: string | null, expiresAt?: number): string;
+  verifyTrainingGrant?(grant: string, now?: number): { organizationId: string; branchId: string; credentialVersion: string; employeeId: string | null; issuedAt: number; expiresAt: number } | null;
   issueGrant(userId: string, branchId: string, credentialVersion: string, now?: number): string;
   verifyGrant(grant: string, userId: string, branchId: string, credentialVersion: string, now?: number): boolean;
   issueManualDailyAuditGrant?(input: { actorUserId: string; organizationId: string; originalBranchId: string; auditorId: string; auditorDisplayName: string; credentialVersion: string; now?: number }): string;
@@ -1292,6 +1409,101 @@ export function createManagementAdmin(
       }).strict()).length(1).safeParse(data);
       if (!rows.success) throw new AdminOperationError();
     },
+    async listTrainingAccountsForInternalAdmin(actorUserId, organizationId) {
+      const { data, error } = await admin.rpc("list_internal_admin_training_accounts", {
+        actor_user_id: actorUserId,
+        target_organization_id: organizationId,
+      });
+      if (error || !Array.isArray(data)) {
+        if (error?.code === "42501") throw new AdminAccessError();
+        throw new AdminOperationError();
+      }
+      const rows = z.array(z.object({
+        id: z.string().uuid(),
+        account_name: z.string(),
+        email: z.string().email(),
+        organization_id: z.string().uuid(),
+        active: z.boolean(),
+        must_change_password: z.boolean(),
+        created_at: z.string(),
+        updated_at: z.string(),
+        updated_by_name: z.string().nullable(),
+        branches: z.array(z.object({
+          id: z.string().uuid(),
+          name: z.string(),
+          name_ar: z.string().nullable().optional(),
+          code: z.string(),
+          active: z.boolean(),
+        }).strict()).min(1).max(50),
+      }).strict()).max(500).safeParse(data);
+      if (!rows.success) throw new AdminOperationError();
+      return rows.data;
+    },
+    async updateTrainingAccountForInternalAdmin(input) {
+      const { error } = await admin.rpc("update_internal_admin_training_account", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_user_id: input.userId,
+        new_account_name: input.accountName,
+        new_active: input.active,
+        target_branch_ids: input.branchIds,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "23505" || error.code === "23514" || error.code === "22023") throw new AdminConflictError();
+        throw new AdminOperationError();
+      }
+    },
+    async authorizeTrainingAccountPasswordReset(input) {
+      const { error } = await admin.rpc("authorize_training_account_password_reset", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_user_id: input.userId,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        throw new AdminOperationError();
+      }
+    },
+    async finalizeTrainingAccountPasswordReset(input) {
+      const { error } = await admin.rpc("finalize_training_account_password_reset", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_user_id: input.userId,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        throw new AdminOperationError();
+      }
+    },
+    async getTrainingAccountContext(actorUserId) {
+      const { data, error } = await admin.rpc("get_training_account_context", {
+        actor_user_id: actorUserId,
+      });
+      if (error || !Array.isArray(data)) {
+        if (error?.code === "42501") throw new AdminAccessError();
+        throw new AdminOperationError();
+      }
+      const rows = z.array(z.object({
+        user_id: z.string().uuid(),
+        account_name: z.string(),
+        email: z.string().email(),
+        organization_id: z.string().uuid(),
+        organization_name: z.string(),
+        organization_name_ar: z.string().nullable().optional(),
+        active: z.boolean(),
+        branches: z.array(z.object({
+          id: z.string().uuid(),
+          name: z.string(),
+          name_ar: z.string().nullable().optional(),
+          code: z.string(),
+          active: z.boolean(),
+        }).strict()).min(1).max(50),
+      }).strict()).length(1).safeParse(data);
+      if (!rows.success) throw new AdminOperationError();
+      return rows.data[0];
+    },
     async grantExistingMaintenanceUser(input) {
       const { data, error } = await admin.rpc("grant_existing_maintenance_user", {
         actor_user_id: input.actorUserId,
@@ -1527,6 +1739,140 @@ export function createMaintenanceAccessAdmin(url: string, secretKey: string): Ma
   };
 }
 
+export function createTrainingBranchAccessAdmin(url: string, secretKey: string): TrainingBranchAccessAdmin {
+  const admin = createClient(url, secretKey, { auth: nonPersistentAuth });
+  async function rpc(name: string, input: Record<string, unknown>) {
+    const result = await admin.rpc(name, input);
+    if (result.error) {
+      if (result.error.code === "42501") throw new AdminAccessError();
+      if (result.error.code === "P0002") throw new AdminNotFoundError();
+      if (result.error.code === "22023" || result.error.code === "23514") throw new AdminInputError();
+      throw new AdminOperationError();
+    }
+    if (!Array.isArray(result.data)) throw new AdminOperationError();
+    return result.data;
+  }
+  const status = z.object({
+    branch_id: z.string().uuid(),
+    enabled: z.boolean(),
+    pin_configured: z.boolean(),
+    updated_at: z.string().nullable(),
+  }).strict();
+  const publicBranch = z.object({
+    organization_id: z.string().uuid(),
+    organization_name: z.string(),
+    organization_name_ar: z.string().nullable().optional(),
+    branch_id: z.string().uuid(),
+    branch_name: z.string(),
+    branch_name_ar: z.string().nullable().optional(),
+  }).strict();
+  const credential = pinCredentialSchema.extend({
+    organization_id: z.string().uuid(),
+    organization_name: z.string(),
+    organization_name_ar: z.string().nullable().optional(),
+    branch_id: z.string().uuid(),
+    branch_name: z.string(),
+    branch_name_ar: z.string().nullable().optional(),
+    credential_version: z.string().uuid(),
+  }).strict();
+  const employee = z.object({
+    employee_id: z.string().uuid(),
+    display_name: z.string(),
+    employee_code: z.string().nullable(),
+  }).strict();
+  const session = z.object({
+    organization_id: z.string().uuid(),
+    organization_name: z.string(),
+    organization_name_ar: z.string().nullable().optional(),
+    branch_id: z.string().uuid(),
+    branch_name: z.string(),
+    branch_name_ar: z.string().nullable().optional(),
+  }).strict();
+  return {
+    async listForInternalAdmin(actorUserId, organizationId) {
+      return z.array(status).max(500).parse(await rpc("list_internal_admin_branch_training_access", {
+        actor_user_id: actorUserId,
+        target_organization_id: organizationId,
+      }));
+    },
+    async storeForInternalAdmin(input) {
+      const rows = z.array(status).length(1).parse(await rpc("store_internal_admin_branch_training_access", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_branch_id: input.branchId,
+        new_enabled: input.enabled,
+        new_pin_hash: input.credential?.pin_hash ?? null,
+        new_salt: input.credential?.salt ?? null,
+        new_kdf_version: input.credential?.kdf_version ?? null,
+        new_cost: input.credential?.cost ?? null,
+        new_block_size: input.credential?.block_size ?? null,
+        new_parallelization: input.credential?.parallelization ?? null,
+      }));
+      return rows[0];
+    },
+    async listPublicBranches(organizationSlug) {
+      const rows = z.array(publicBranch).max(500).parse(await rpc("list_public_training_branches", {
+        organization_slug: organizationSlug,
+      }));
+      const first = rows[0];
+      if (!first) return null;
+      return {
+        organization: {
+          id: first.organization_id,
+          name: first.organization_name,
+          name_ar: first.organization_name_ar ?? null,
+        },
+        branches: rows.map((row) => ({
+          id: row.branch_id,
+          name: row.branch_name,
+          name_ar: row.branch_name_ar ?? null,
+        })),
+      };
+    },
+    async getCredential(input) {
+      const rows = z.array(credential).max(1).parse(await rpc("get_training_branch_access_credential", {
+        organization_slug: input.organizationSlug,
+        target_branch_id: input.branchId,
+      }));
+      return rows[0] ?? null;
+    },
+    async validateSession(input) {
+      const rows = z.array(session).max(1).parse(await rpc("validate_training_branch_session", {
+        target_organization_id: input.organizationId,
+        target_branch_id: input.branchId,
+        target_credential_version: input.credentialVersion,
+      }));
+      return rows[0] ?? null;
+    },
+    async listEmployees(input) {
+      return z.array(employee).max(500).parse(await rpc("list_training_branch_employees", {
+        target_organization_id: input.organizationId,
+        target_branch_id: input.branchId,
+      }));
+    },
+    async validateEmployee(input) {
+      const rows = z.array(employee).max(1).parse(await rpc("validate_training_branch_employee", {
+        target_organization_id: input.organizationId,
+        target_branch_id: input.branchId,
+        target_employee_id: input.employeeId,
+      }));
+      return rows[0] ?? null;
+    },
+    async selectEmployeeByCode(input) {
+      const normalizedCode = input.employeeCode.trim().toLowerCase();
+      const employees = z.array(employee).max(500).parse(await rpc("list_training_branch_employees", {
+        target_organization_id: input.organizationId,
+        target_branch_id: input.branchId,
+      }));
+      const matches = employees.filter((candidate) =>
+        typeof candidate.employee_code === "string" && candidate.employee_code.trim().toLowerCase() === normalizedCode,
+      );
+      if (matches.length > 1) throw new AdminConflictError();
+      return matches[0] ?? null;
+    },
+  };
+}
+
 export function createBranchManagementAdmin(url: string, secretKey: string): BranchManagementAdmin {
   const admin = createClient(url, secretKey, { auth: nonPersistentAuth });
   async function rpc(name: string, input: Record<string, unknown>) {
@@ -1616,6 +1962,15 @@ export function createPinCrypto(signingSecret: string): PinCrypto {
     exp: z.number().int().positive(),
     ver: z.string().uuid(),
   }).strict();
+  const trainingGrantSchema = z.object({
+    aud: z.literal("branch-training-access"),
+    oid: z.string().uuid(),
+    bid: z.string().uuid(),
+    iat: z.number().int().nonnegative(),
+    exp: z.number().int().positive(),
+    ver: z.string().uuid(),
+    eid: z.string().uuid().optional(),
+  }).strict();
   function sign(payload: object) {
     const encoded = Buffer.from(JSON.stringify(payload)).toString("base64url");
     const signature = createHmac("sha256", signingSecret).update(encoded).digest("base64url");
@@ -1682,6 +2037,35 @@ export function createPinCrypto(signingSecret: string): PinCrypto {
           return null;
         }
         return { organizationId: value.oid, accessUserId: value.uid, credentialVersion: value.ver };
+      } catch { return null; }
+    },
+    issueTrainingGrant(organizationId, branchId, credentialVersion, now = Date.now(), employeeId = null, expiresAt) {
+      return sign({
+        aud: "branch-training-access",
+        oid: organizationId,
+        bid: branchId,
+        iat: now,
+        exp: expiresAt ?? now + 12 * 60 * 60_000,
+        ver: credentialVersion,
+        ...(employeeId ? { eid: employeeId } : {}),
+      });
+    },
+    verifyTrainingGrant(grant, now = Date.now()) {
+      try {
+        const parsed = trainingGrantSchema.safeParse(parseSigned(grant));
+        if (!parsed.success) return null;
+        const value = parsed.data;
+        if (value.iat > now || value.exp <= now || value.exp - value.iat <= 0 || value.exp - value.iat > 12 * 60 * 60_000) {
+          return null;
+        }
+        return {
+          organizationId: value.oid,
+          branchId: value.bid,
+          credentialVersion: value.ver,
+          employeeId: value.eid ?? null,
+          issuedAt: value.iat,
+          expiresAt: value.exp,
+        };
       } catch { return null; }
     },
     issueGrant(userId, branchId, credentialVersion, now = Date.now()) {
@@ -1831,6 +2215,21 @@ export function createProvisioningAdmin(url: string, secretKey: string): Provisi
         p_full_name_ar: input.fullNameAr ?? null,
       });
       if (error) throw new ProvisioningStageError("database_finalize", "rpc_failed");
+    },
+    async finalizeTrainingAccount(input) {
+      const { error } = await client.rpc("finalize_provisioned_training_account", {
+        p_actor_user_id: input.actorUserId,
+        p_organization_id: input.organizationId,
+        p_new_user_id: input.newUserId,
+        p_account_name: input.accountName,
+        p_branch_ids: input.branchIds,
+        p_active: input.active,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "23505" || error.code === "23514" || error.code === "22023") throw new AdminConflictError();
+        throw new ProvisioningStageError("database_finalize", "rpc_failed", null, error.code ?? null);
+      }
     },
   };
 }
