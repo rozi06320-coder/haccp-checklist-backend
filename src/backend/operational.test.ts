@@ -338,7 +338,7 @@ describe("managed maintenance operational adapter", () => {
       assert.deepEqual(result, { maintenance_issues: [{
         id: id.maintenanceIssue, branch_id: id.branch, branch_name: "Branch", title: "Freezer door", category: "refrigeration", priority: "urgent", status: "in_progress",
         description: null, location: null, reported_by: id.supervisor, reporter_name: null, created_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T01:00:00.000Z",
-        before_photo: null, after_photo: null,
+        before_photo: null, after_photo: null, before_photos: [], after_photos: [],
         updates: [{ id: id.maintenanceUpdate, status: "in_progress", note: null, updated_by: null, updated_by_access_user_id: null, updated_by_name: null, created_at: "2026-08-10T01:00:00.000Z" }],
       }] });
     } finally {
@@ -978,7 +978,7 @@ describe("Phase 3A operational API", () => {
         unit: "kg",
         notes: "Checked",
       },
-      photo: null,
+      photos: [],
     });
     const existing = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/supplier-receivings`, {
       method: "POST", headers: headers("supervisor"),
@@ -998,7 +998,7 @@ describe("Phase 3A operational API", () => {
         unit: "box",
         notes: null,
       },
-      photo: null,
+      photos: [],
     });
   });
   it("rejects Supplier Receiving auth and invalid payloads safely", async () => {
@@ -1040,7 +1040,7 @@ describe("Phase 3A operational API", () => {
       actorUserId: id.supervisor,
       branchId: id.branch,
       payload: { title: "Freezer door", category: "refrigeration", priority: "urgent", description: "Door is loose", location: "Kitchen" },
-      photo: null,
+      photos: [],
     });
 
     const withPhoto = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/maintenance-issues`, {
@@ -1052,11 +1052,11 @@ describe("Phase 3A operational API", () => {
       }),
     });
     assert.equal(withPhoto.status, 201);
-    const photoCall = calls.at(-1) as { method: string; photo?: { mimeType: string; originalName: string; bytes: Buffer } | null };
+    const photoCall = calls.at(-1) as { method: string; photos?: Array<{ mimeType: string; originalName: string; bytes: Buffer }> };
     assert.equal(photoCall.method, "createSupervisorMaintenanceIssue");
-    assert.equal(photoCall.photo?.mimeType, "image/png");
-    assert.equal(photoCall.photo?.originalName, "before.png");
-    assert.ok(Buffer.isBuffer(photoCall.photo?.bytes));
+    assert.equal(photoCall.photos?.[0]?.mimeType, "image/png");
+    assert.equal(photoCall.photos?.[0]?.originalName, "before.png");
+    assert.ok(Buffer.isBuffer(photoCall.photos?.[0]?.bytes));
   });
   it("rejects supervisor Maintenance issue auth and invalid payloads safely", async () => {
     assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/maintenance-issues`)).status, 401);
@@ -1095,7 +1095,7 @@ describe("Phase 3A operational API", () => {
       issueId: id.maintenanceIssue,
       status: "in_progress",
       note: "Started repair",
-      repairPhoto: null,
+      repairPhotos: [],
     });
 
     const beforeResolveCalls = calls.length;
@@ -1115,11 +1115,11 @@ describe("Phase 3A operational API", () => {
       }),
     });
     assert.equal(resolvedWithPhoto.status, 200);
-    const repairCall = calls.at(-1) as { method: string; repairPhoto?: { mimeType: string; originalName: string; bytes: Buffer } | null };
+    const repairCall = calls.at(-1) as { method: string; repairPhotos?: Array<{ mimeType: string; originalName: string; bytes: Buffer }> };
     assert.equal(repairCall.method, "updateMaintenanceIssue");
-    assert.equal(repairCall.repairPhoto?.mimeType, "image/jpeg");
-    assert.equal(repairCall.repairPhoto?.originalName, "after.jpg");
-    assert.ok(Buffer.isBuffer(repairCall.repairPhoto?.bytes));
+    assert.equal(repairCall.repairPhotos?.[0]?.mimeType, "image/jpeg");
+    assert.equal(repairCall.repairPhotos?.[0]?.originalName, "after.jpg");
+    assert.ok(Buffer.isBuffer(repairCall.repairPhotos?.[0]?.bytes));
   });
   it("exposes Maintenance purchase history without raw storage or membership fields", async () => {
     const history = await fetch(`${baseUrl}/api/v1/maintenance/purchases/issue`, { headers: headers("maintenance") });
@@ -1306,7 +1306,7 @@ describe("Phase 3A operational API", () => {
       actorUserId: id.manager,
       organizationId: id.organization,
       payload: { title: "Office AC", category: "equipment", priority: "high", description: "Not cooling", location: "Office" },
-      photo: null,
+      photos: [],
     });
 
     const withPhoto = await fetch(`${baseUrl}/api/v1/management/organizations/${id.organization}/maintenance-issues`, {
@@ -1318,12 +1318,12 @@ describe("Phase 3A operational API", () => {
       }),
     });
     assert.equal(withPhoto.status, 201);
-    const photoCall = calls.at(-1) as { method: string; branchId?: string; photo?: { mimeType: string; originalName: string; bytes: Buffer } | null };
+    const photoCall = calls.at(-1) as { method: string; branchId?: string; photos?: Array<{ mimeType: string; originalName: string; bytes: Buffer }> };
     assert.equal(photoCall.method, "createManagerOfficeMaintenanceIssue");
     assert.equal(photoCall.branchId, undefined);
-    assert.equal(photoCall.photo?.mimeType, "image/webp");
-    assert.equal(photoCall.photo?.originalName, "office.webp");
-    assert.ok(Buffer.isBuffer(photoCall.photo?.bytes));
+    assert.equal(photoCall.photos?.[0]?.mimeType, "image/webp");
+    assert.equal(photoCall.photos?.[0]?.originalName, "office.webp");
+    assert.ok(Buffer.isBuffer(photoCall.photos?.[0]?.bytes));
 
     const spoofed = await fetch(`${baseUrl}/api/v1/management/organizations/${id.organization}/maintenance-issues`, {
       method: "POST",

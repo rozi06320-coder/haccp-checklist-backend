@@ -237,6 +237,7 @@ export const supplierReceivingPhotoMime = z.enum(["image/jpeg", "image/png", "im
 const MAINTENANCE_ISSUE_PHOTO_BUCKET = "maintenance-issue-photos";
 const MAINTENANCE_ISSUE_PHOTO_SIGNED_URL_SECONDS = 5 * 60;
 export const MAX_MAINTENANCE_ISSUE_PHOTO_BYTES = 5 * 1024 * 1024;
+export const MAX_MAINTENANCE_ISSUE_PHOTOS = 3;
 export const maintenanceIssuePhotoMime = z.enum(["image/jpeg", "image/png", "image/webp"]);
 
 export type OperationalRole = z.infer<typeof role>;
@@ -361,6 +362,7 @@ export type OperationalAdmin = {
       location?: string | null;
     };
     photo?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
+    photos?: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> | null;
   }): Promise<unknown>;
   createManagerOfficeMaintenanceIssue?(input: {
     actorUserId: string;
@@ -373,6 +375,7 @@ export type OperationalAdmin = {
       location?: string | null;
     };
     photo?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
+    photos?: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> | null;
   }): Promise<unknown>;
   listMaintenanceIssues(input: { actorUserId?: string | null; accessUserId?: string | null; organizationId?: string | null }): Promise<unknown>;
   updateMaintenanceIssue(input: {
@@ -382,6 +385,7 @@ export type OperationalAdmin = {
     status: z.infer<typeof maintenanceIssueStatus>;
     note?: string | null;
     repairPhoto?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
+    repairPhotos?: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> | null;
   }): Promise<unknown>;
   listMaintenancePurchases(actorUserId: string, issueId: string): Promise<unknown>;
   listMaintenancePurchaseBranches?(input:{actorUserId:string}):Promise<unknown>;
@@ -554,7 +558,18 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     if(upload.error)throw new AdminOperationError();
     return{id:randomUUID(),storage_path:path,original_filename:originalName,mime_type:inspected.mime,size_bytes:photo.bytes.length};
   }
-  const maintenanceIssuePhotoRpcRow=z.object({id:uuid,maintenance_issue_id:uuid,attachment_type:z.enum(["issue","repair"]),storage_path:z.string(),original_filename:optionalStaffText,mime_type:optionalStaffText,size_bytes:z.union([z.number(),z.string()]).nullable(),created_at:z.string()}).strict();
+  async function uploadMaintenanceIssuePhotos(issueId:string,type:"issue"|"repair",photos:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenanceIssuePhotoMime>;originalName:string}>){
+    if(photos.length>MAX_MAINTENANCE_ISSUE_PHOTOS)throw new AdminOperationError();
+    const uploaded:Array<{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}>=[];
+    try{
+      for(const photo of photos)uploaded.push(await uploadMaintenanceIssuePhoto(issueId,type,photo));
+      return uploaded;
+    }catch(error){
+      if(uploaded.length>0)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path));
+      throw error;
+    }
+  }
+  const maintenanceIssuePhotoRpcRow=z.object({id:uuid,maintenance_issue_id:uuid,attachment_type:z.enum(["issue","repair"]),storage_path:z.string(),original_filename:optionalStaffText,mime_type:optionalStaffText,size_bytes:z.union([z.number(),z.string()]).nullable(),attachment_position:z.number().int().min(1).max(MAX_MAINTENANCE_ISSUE_PHOTOS).optional().default(1),created_at:z.string()}).strict();
   const maintenancePurchaseAttachmentRpcRow=z.object({id:uuid,storage_path:z.string(),original_filename:optionalStaffText,mime_type:optionalStaffText,size_bytes:z.union([z.number(),z.string()]).nullable(),position:z.number().int().min(1).max(MAX_MAINTENANCE_PURCHASE_PHOTOS)}).strict();
   const maintenancePurchaseListRpcRow=z.object({id:uuid,branch_id:uuid.nullable(),purchase_type:maintenancePurchaseType,purchase_scope:maintenancePurchaseScope,destination:optionalStaffText,category:maintenancePurchaseCategory,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnit,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:optionalStaffText,payment_status:purchaseLogPaymentStatus,reimbursement_note:optionalStaffText,reimbursed_at:z.string().nullable(),receipt_storage_path:optionalStaffText,receipt_original_name:optionalStaffText,attachments:z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
   const maintenancePurchaseMutationRpcRow=maintenancePurchaseListRpcRow.extend({organization_id:uuid,maintenance_issue_id:uuid.nullable(),maintenance_user_id:uuid}).strict();
@@ -635,26 +650,28 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     if(rows.length===0)return rows.map((row)=> {
       const { organization_id, ...safeRow } = row;
       void organization_id;
-      return {...safeRow,updates:row.updates??[],before_photo:null,after_photo:null};
+      return {...safeRow,updates:row.updates??[],before_photo:null,after_photo:null,before_photos:[],after_photos:[]};
     });
-    const attachments=z.array(maintenanceIssuePhotoRpcRow).max(rows.length*2).parse(await rpc("list_maintenance_issue_attachments",{
+    const attachments=z.array(maintenanceIssuePhotoRpcRow).max(rows.length*MAX_MAINTENANCE_ISSUE_PHOTOS*2).parse(await rpc("list_maintenance_issue_attachments",{
       actor_user_id:actorUserId??null,
       access_user_id:accessUserId??null,
       target_issue_ids:rows.map((row)=>row.id),
     }));
-    const photosByIssue=new Map<string,{before_photo:unknown|null;after_photo:unknown|null}>();
+    const photosByIssue=new Map<string,{before_photos:unknown[];after_photos:unknown[]}>();
     for(const attachment of attachments){
-      const current=photosByIssue.get(attachment.maintenance_issue_id)??{before_photo:null,after_photo:null};
+      const current=photosByIssue.get(attachment.maintenance_issue_id)??{before_photos:[],after_photos:[]};
       const safePhoto={url:await signMaintenanceIssuePhoto(attachment.storage_path),mime_type:attachment.mime_type,size_bytes:attachment.size_bytes===null?null:Number(attachment.size_bytes),original_filename:attachment.original_filename};
-      if(attachment.attachment_type==="issue")current.before_photo=safePhoto;
-      else current.after_photo=safePhoto;
+      if(attachment.attachment_type==="issue")current.before_photos.push(safePhoto);
+      else current.after_photos.push(safePhoto);
       photosByIssue.set(attachment.maintenance_issue_id,current);
     }
     return rows.map((row)=>{
       const { organization_id, ...safeRow } = row;
       void organization_id;
       const photos=photosByIssue.get(row.id);
-      return {...safeRow,updates:row.updates??[],before_photo:photos?.before_photo??null,after_photo:photos?.after_photo??null};
+      const beforePhotos=photos?.before_photos??[];
+      const afterPhotos=photos?.after_photos??[];
+      return {...safeRow,updates:row.updates??[],before_photo:beforePhotos[0]??null,after_photo:afterPhotos[0]??null,before_photos:beforePhotos,after_photos:afterPhotos};
     });
   }
   async function normalizeMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null,accessUserId?:string|null) {
@@ -1062,36 +1079,38 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       }),actorUserId,null) };
     },
     async createSupervisorMaintenanceIssue(input) {
-      let uploaded:{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}|null=null;
-      const issueId=input.photo?randomUUID():null;
+      let uploaded:Array<{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}>=[];
+      const photos=input.photos?.filter((photo)=>photo.bytes.length>0)??(input.photo?[input.photo]:[]);
+      const issueId=photos.length?randomUUID():null;
       try{
-        if(input.photo&&issueId)uploaded=await uploadMaintenanceIssuePhoto(issueId,"issue",input.photo);
-        const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded?"create_supervisor_maintenance_issue_with_photo":"create_supervisor_maintenance_issue", {
+        if(issueId)uploaded=await uploadMaintenanceIssuePhotos(issueId,"issue",photos);
+        const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded.length?"create_supervisor_maintenance_issue_with_photo":"create_supervisor_maintenance_issue", {
           actor_user_id: input.actorUserId,
           target_branch_id: input.branchId,
-          payload: uploaded?{...input.payload,issue_id:issueId,before_photo:uploaded}:input.payload,
+          payload: uploaded.length?{...input.payload,issue_id:issueId,before_photos:uploaded}:input.payload,
         }),input.actorUserId,null);
         if (rows.length !== 1) throw new AdminOperationError();
         return { maintenance_issue: rows[0] };
       }catch(error){
-        if(uploaded)await maintenanceIssuePhotoStorage.remove([uploaded.storage_path]);
+        if(uploaded.length)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path));
         throw error;
       }
     },
     async createManagerOfficeMaintenanceIssue(input) {
-      let uploaded:{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}|null=null;
-      const issueId=input.photo?randomUUID():null;
+      let uploaded:Array<{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}>=[];
+      const photos=input.photos?.filter((photo)=>photo.bytes.length>0)??(input.photo?[input.photo]:[]);
+      const issueId=photos.length?randomUUID():null;
       try{
-        if(input.photo&&issueId)uploaded=await uploadMaintenanceIssuePhoto(issueId,"issue",input.photo);
-        const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded?"create_manager_office_maintenance_issue_with_photo":"create_manager_office_maintenance_issue", {
+        if(issueId)uploaded=await uploadMaintenanceIssuePhotos(issueId,"issue",photos);
+        const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded.length?"create_manager_office_maintenance_issue_with_photo":"create_manager_office_maintenance_issue", {
           actor_user_id: input.actorUserId,
           target_organization_id: input.organizationId,
-          payload: uploaded?{...input.payload,issue_id:issueId,before_photo:uploaded}:input.payload,
+          payload: uploaded.length?{...input.payload,issue_id:issueId,before_photos:uploaded}:input.payload,
         }),input.actorUserId,null);
         if (rows.length !== 1) throw new AdminOperationError();
         return { maintenance_issue: rows[0] };
       }catch(error){
-        if(uploaded)await maintenanceIssuePhotoStorage.remove([uploaded.storage_path]);
+        if(uploaded.length)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path));
         throw error;
       }
     },
@@ -1103,21 +1122,22 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       }),input.actorUserId,input.accessUserId) };
     },
     async updateMaintenanceIssue(input) {
-      let uploaded:{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}|null=null;
+      let uploaded:Array<{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}>=[];
+      const repairPhotos=input.repairPhotos?.filter((photo)=>photo.bytes.length>0)??(input.repairPhoto?[input.repairPhoto]:[]);
       try{
-        if(input.repairPhoto)uploaded=await uploadMaintenanceIssuePhoto(input.issueId,"repair",input.repairPhoto);
-        const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded?"update_maintenance_issue_with_repair_photo":"update_maintenance_issue", {
+        if(repairPhotos.length)uploaded=await uploadMaintenanceIssuePhotos(input.issueId,"repair",repairPhotos);
+        const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded.length?"update_maintenance_issue_with_repair_photo":"update_maintenance_issue", {
           actor_user_id: input.actorUserId ?? null,
           access_user_id: input.accessUserId ?? null,
           target_issue_id: input.issueId,
           new_status: input.status,
           new_note: input.note ?? null,
-          ...(uploaded?{repair_photo:uploaded}:{}),
+          ...(uploaded.length?{repair_photo:uploaded}:{}),
         }),input.actorUserId,input.accessUserId);
         if (rows.length !== 1) throw new AdminOperationError();
         return { maintenance_issue: rows[0] };
       }catch(error){
-        if(uploaded)await maintenanceIssuePhotoStorage.remove([uploaded.storage_path]);
+        if(uploaded.length)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path));
         throw error;
       }
     },

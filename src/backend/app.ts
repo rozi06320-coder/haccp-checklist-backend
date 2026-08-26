@@ -16,7 +16,7 @@ import {
   type BackendDependencies,
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
-import { branchLocalDate, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime } from "./operational";
+import { branchLocalDate, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime } from "./operational";
 import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ManagementOverviewUnavailableError } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
@@ -331,10 +331,12 @@ const maintenanceIssuePhotoUploadSchema = z.object({
 const maintenanceIssueCreateEnvelopeSchema = z.object({
   issue: maintenanceIssueBodySchema,
   before_photo: maintenanceIssuePhotoUploadSchema.nullable().optional(),
+  before_photos: z.array(maintenanceIssuePhotoUploadSchema).max(MAX_MAINTENANCE_ISSUE_PHOTOS).optional(),
 }).strict();
 const maintenanceIssueUpdateEnvelopeSchema = z.object({
   issue: maintenanceIssueUpdateBodySchema,
   repair_photo: maintenanceIssuePhotoUploadSchema.nullable().optional(),
+  repair_photos: z.array(maintenanceIssuePhotoUploadSchema).max(MAX_MAINTENANCE_ISSUE_PHOTOS).optional(),
 }).strict();
 const maintenanceIssueUpdateResponseRowSchema = z.object({
   id: z.uuid(),
@@ -363,6 +365,8 @@ const maintenanceIssueResponseRowSchema = z.object({
   updates: z.array(maintenanceIssueUpdateResponseRowSchema).optional(),
   before_photo: maintenanceIssuePhotoResponseSchema.optional(),
   after_photo: maintenanceIssuePhotoResponseSchema.optional(),
+  before_photos: z.array(maintenanceIssuePhotoResponseSchema.unwrap()).max(MAX_MAINTENANCE_ISSUE_PHOTOS).optional().default([]),
+  after_photos: z.array(maintenanceIssuePhotoResponseSchema.unwrap()).max(MAX_MAINTENANCE_ISSUE_PHOTOS).optional().default([]),
 }).strict();
 const maintenanceIssueListResponseSchema = z.object({ maintenance_issues: z.array(maintenanceIssueResponseRowSchema).max(1000) }).strict();
 const maintenanceIssueMutationResponseSchema = z.object({ maintenance_issue: maintenanceIssueResponseRowSchema }).strict();
@@ -1690,7 +1694,7 @@ export function createApp(
   const brandingRawBody=express.raw({type:()=>true,limit:MAX_BRANDING_BYTES});
   const purchaseInvoiceRawBody=express.raw({type:()=>true,limit:MAX_PURCHASE_INVOICE_BYTES});
   const maintenanceReceiptRawBody=express.raw({type:()=>true,limit:MAX_PURCHASE_INVOICE_BYTES*MAX_MAINTENANCE_PURCHASE_PHOTOS*2});
-  const maintenanceIssuePhotoRawBody=express.raw({type:()=>true,limit:MAX_MAINTENANCE_ISSUE_PHOTO_BYTES*2});
+  const maintenanceIssuePhotoRawBody=express.raw({type:()=>true,limit:MAX_MAINTENANCE_ISSUE_PHOTO_BYTES*MAX_MAINTENANCE_ISSUE_PHOTOS*2});
   const supplierReceivingPhotoRawBody=express.raw({type:()=>true,limit:MAX_SUPPLIER_RECEIVING_PHOTO_BYTES});
   const authenticate = requireAuthentication(
     dependencies.authVerifier,
@@ -4027,7 +4031,7 @@ export function createApp(
       try {
         const issueId = z.uuid().safeParse(request.params.issueId);
         let rawPayload: unknown = request.body;
-        let repairPhoto: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null = null;
+        let repairPhotos: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> = [];
         if (Buffer.isBuffer(request.body)) {
           if (request.header("Content-Type")?.split(";")[0]?.trim().toLowerCase() !== "application/vnd.maintenance-issue+json") {
             throw new HttpError(400, "bad_request", "The request is invalid.");
@@ -4041,19 +4045,18 @@ export function createApp(
           const envelope = maintenanceIssueUpdateEnvelopeSchema.safeParse(decoded);
           if (!envelope.success) throw new HttpError(400, "bad_request", "The request is invalid.");
           rawPayload = envelope.data.issue;
-          if (envelope.data.repair_photo) {
-            repairPhoto = {
-              bytes: Buffer.from(envelope.data.repair_photo.content_base64, "base64"),
-              mimeType: envelope.data.repair_photo.mime_type,
-              originalName: envelope.data.repair_photo.original_name?.trim() || "after-repair-photo",
-            };
-          }
+          const uploadedRepairPhotos = envelope.data.repair_photos ?? (envelope.data.repair_photo ? [envelope.data.repair_photo] : []);
+          repairPhotos = uploadedRepairPhotos.map((photo, index) => ({
+            bytes: Buffer.from(photo.content_base64, "base64"),
+            mimeType: photo.mime_type,
+            originalName: photo.original_name?.trim() || `after-repair-photo-${index + 1}`,
+          }));
         }
         const body = maintenanceIssueUpdateBodySchema.safeParse(rawPayload);
         if (!issueId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
           throw new HttpError(400, "bad_request", "The request is invalid.");
         }
-        if (body.data.status === "resolved" && !repairPhoto) {
+        if (body.data.status === "resolved" && repairPhotos.length === 0) {
           throw new HttpError(422, "unprocessable_entity", "Photo required to resolve this issue.");
         }
         if (!dependencies.operationalAdmin) throw new HttpError(503, "service_unavailable", "Maintenance issues are temporarily unavailable.");
@@ -4064,7 +4067,7 @@ export function createApp(
           issueId: issueId.data,
           status: body.data.status,
           note: body.data.note,
-          repairPhoto,
+          repairPhotos,
         }));
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json(result);
@@ -4921,7 +4924,7 @@ export function createApp(
       try {
         const branchId = branchIdSchema.safeParse(request.params.branchId);
         let rawPayload: unknown = request.body;
-        let photo: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null = null;
+        let photos: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> = [];
         if (Buffer.isBuffer(request.body)) {
           if (request.header("Content-Type")?.split(";")[0]?.trim().toLowerCase() !== "application/vnd.maintenance-issue+json") {
             throw new HttpError(400, "bad_request", "The request is invalid.");
@@ -4935,13 +4938,12 @@ export function createApp(
           const envelope = maintenanceIssueCreateEnvelopeSchema.safeParse(decoded);
           if (!envelope.success) throw new HttpError(400, "bad_request", "The request is invalid.");
           rawPayload = envelope.data.issue;
-          if (envelope.data.before_photo) {
-            photo = {
-              bytes: Buffer.from(envelope.data.before_photo.content_base64, "base64"),
-              mimeType: envelope.data.before_photo.mime_type,
-              originalName: envelope.data.before_photo.original_name?.trim() || "reported-photo",
-            };
-          }
+          const uploadedBeforePhotos = envelope.data.before_photos ?? (envelope.data.before_photo ? [envelope.data.before_photo] : []);
+          photos = uploadedBeforePhotos.map((photo, index) => ({
+            bytes: Buffer.from(photo.content_base64, "base64"),
+            mimeType: photo.mime_type,
+            originalName: photo.original_name?.trim() || `reported-photo-${index + 1}`,
+          }));
         }
         const body = maintenanceIssueBodySchema.safeParse(rawPayload);
         if (!branchId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
@@ -4952,7 +4954,7 @@ export function createApp(
           actorUserId: auth.userId,
           branchId: branchId.data,
           payload: body.data,
-          photo,
+          photos,
         }));
         response.setHeader("Cache-Control", "private, no-store");
         response.status(201).json(result);
@@ -5267,7 +5269,7 @@ export function createApp(
       try{
         const organizationId=organizationIdSchema.safeParse(request.params.organizationId);
         let rawPayload: unknown = request.body;
-        let photo: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null = null;
+        let photos: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> = [];
         if (Buffer.isBuffer(request.body)) {
           if (request.header("Content-Type")?.split(";")[0]?.trim().toLowerCase() !== "application/vnd.maintenance-issue+json") {
             throw new HttpError(400, "bad_request", "The request is invalid.");
@@ -5281,19 +5283,18 @@ export function createApp(
           const envelope = maintenanceIssueCreateEnvelopeSchema.safeParse(decoded);
           if (!envelope.success) throw new HttpError(400, "bad_request", "The request is invalid.");
           rawPayload = envelope.data.issue;
-          if (envelope.data.before_photo) {
-            photo = {
-              bytes: Buffer.from(envelope.data.before_photo.content_base64, "base64"),
-              mimeType: envelope.data.before_photo.mime_type,
-              originalName: envelope.data.before_photo.original_name?.trim() || "reported-photo",
-            };
-          }
+          const uploadedBeforePhotos = envelope.data.before_photos ?? (envelope.data.before_photo ? [envelope.data.before_photo] : []);
+          photos = uploadedBeforePhotos.map((photo, index) => ({
+            bytes: Buffer.from(photo.content_base64, "base64"),
+            mimeType: photo.mime_type,
+            originalName: photo.original_name?.trim() || `reported-photo-${index + 1}`,
+          }));
         }
         const body=maintenanceIssueBodySchema.safeParse(rawPayload);
         if(!organizationId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
         const auth=requireAuthContext(request),context=await loadActiveUser(request);
         if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.createManagerOfficeMaintenanceIssue)throw new HttpError(403,"forbidden","Access is denied.");
-        const result=maintenanceIssueMutationResponseSchema.parse(await dependencies.operationalAdmin.createManagerOfficeMaintenanceIssue({actorUserId:auth.userId,organizationId:organizationId.data,payload:body.data,photo}));
+        const result=maintenanceIssueMutationResponseSchema.parse(await dependencies.operationalAdmin.createManagerOfficeMaintenanceIssue({actorUserId:auth.userId,organizationId:organizationId.data,payload:body.data,photos}));
         response.setHeader("Cache-Control","private, no-store");response.status(201).json(result);
         void dependencies.maintenancePush?.notifyMaintenanceIssueCreated({
           issueId: result.maintenance_issue.id,
