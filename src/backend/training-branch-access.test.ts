@@ -38,7 +38,7 @@ const accessCredential: TrainingBranchAccessCredential = {
 };
 const servers: ReturnType<typeof createServer>[] = [];
 
-function deps(options: { internalAdmin?: boolean; denied?: boolean; invalid?: boolean; verified?: boolean; noCredential?: boolean; noSession?: boolean; configured?: boolean; noEmployee?: boolean; duplicateEmployeeCode?: boolean; calls?: Record<string, unknown> } = {}): BackendDependencies {
+function deps(options: { internalAdmin?: boolean; denied?: boolean; invalid?: boolean; verified?: boolean; noCredential?: boolean; noSession?: boolean; configured?: boolean; noEmployee?: boolean; duplicateEmployeeCode?: boolean; emptyPublicBranches?: boolean; unknownTrainingOrganization?: boolean; calls?: Record<string, unknown> } = {}): BackendDependencies {
   const calls = options.calls ?? {};
   const crypto = createPinCrypto("test-branch-training-secret-placeholder-32-bytes");
   return {
@@ -75,9 +75,10 @@ function deps(options: { internalAdmin?: boolean; denied?: boolean; invalid?: bo
       },
       async listPublicBranches(organizationSlug) {
         calls.discoverySlug = organizationSlug;
+        if (options.unknownTrainingOrganization) return null;
         return {
           organization: { id: ids.organization, name: "Burger Hunch", name_ar: null },
-          branches: [
+          branches: options.emptyPublicBranches ? [] : [
             { id: ids.branch, name: "Burger Hunch Tarout", name_ar: null },
             { id: ids.otherBranch, name: "Burger Hunch Qatif", name_ar: null },
           ],
@@ -231,6 +232,21 @@ describe("Branch Training Access API", () => {
     assert.match(setCookie, /Max-Age=43200; Path=\/;/);
     assert.match(setCookie, /training_access=; Max-Age=0; Path=\/training/);
     assert.doesNotMatch(await verify.text(), /pin_hash|salt|credential_version|1234/i);
+  });
+
+  it("distinguishes a valid configured Training organization with zero visible branches from an unknown organization", async () => {
+    const emptyCalls: Record<string, unknown> = {};
+    const emptyOrigin = await start(deps({ emptyPublicBranches: true, calls: emptyCalls }));
+    const empty = await fetch(`${emptyOrigin}/api/v1/training/branches`);
+    assert.equal(empty.status, 200);
+    assert.deepEqual(await empty.json(), {
+      organization: { id: ids.organization, name: "Burger Hunch", name_ar: null },
+      branches: [],
+    });
+    assert.equal(emptyCalls.discoverySlug, "burger-hunch");
+
+    const unknown = await fetch(`${await start(deps({ unknownTrainingOrganization: true }))}/api/v1/training/branches`);
+    assert.equal(unknown.status, 404);
   });
 
   it("rejects wrong PINs, tampered cookies, disabled sessions, and preserves branch ID identity despite duplicate codes", async () => {

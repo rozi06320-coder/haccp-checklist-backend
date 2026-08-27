@@ -1766,6 +1766,11 @@ export function createTrainingBranchAccessAdmin(url: string, secretKey: string):
     branch_name: z.string(),
     branch_name_ar: z.string().nullable().optional(),
   }).strict();
+  const publicTrainingOrganization = z.object({
+    id: z.string().uuid(),
+    name: z.string(),
+    name_ar: z.string().nullable().optional(),
+  }).strict();
   const credential = pinCredentialSchema.extend({
     organization_id: z.string().uuid(),
     organization_name: z.string(),
@@ -1815,7 +1820,20 @@ export function createTrainingBranchAccessAdmin(url: string, secretKey: string):
         organization_slug: organizationSlug,
       }));
       const first = rows[0];
-      if (!first) return null;
+      if (!first) {
+        const result = await admin
+          .from("organizations")
+          .select("id,name,name_ar")
+          .eq("slug", organizationSlug)
+          .eq("active", true)
+          .maybeSingle();
+        if (result.error) throw new AdminOperationError();
+        if (!result.data) return null;
+        return {
+          organization: publicTrainingOrganization.parse(result.data),
+          branches: [],
+        };
+      }
       return {
         organization: {
           id: first.organization_id,
