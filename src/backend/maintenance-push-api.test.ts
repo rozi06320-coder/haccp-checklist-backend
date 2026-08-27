@@ -58,7 +58,7 @@ function baseDependencies(push: MaintenancePushService, createIssue = async () =
     updated_at: "2026-08-15T10:00:00.000Z",
     updates: [],
   },
-})) {
+}), createOfficeIssue = createIssue) {
   return {
     checkReadiness: async () => true,
     passwordChange: { verifyCurrent: async () => true, updatePassword: async () => {}, finalize: async () => {} },
@@ -75,13 +75,14 @@ function baseDependencies(push: MaintenancePushService, createIssue = async () =
     }),
     operationalAdmin: {
       createSupervisorMaintenanceIssue: createIssue,
+      createManagerOfficeMaintenanceIssue: createOfficeIssue,
     },
     maintenancePush: push,
   } as unknown as BackendDependencies;
 }
 
-async function listen(push: MaintenancePushService, createIssue?: Parameters<typeof baseDependencies>[1]) {
-  const server = createServer(createApp(config, baseDependencies(push, createIssue)));
+async function listen(push: MaintenancePushService, createIssue?: Parameters<typeof baseDependencies>[1], createOfficeIssue?: Parameters<typeof baseDependencies>[2]) {
+  const server = createServer(createApp(config, baseDependencies(push, createIssue, createOfficeIssue)));
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => resolve());
@@ -206,6 +207,128 @@ describe("Maintenance push notification API", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(notifyAttempts, 1);
     assert.deepEqual(notifyInput, { issueId: ids.issue, branchId: ids.branch, branchName: "Main Branch", priority: "urgent", title: "Freezer not cooling" });
+  });
+
+  it("treats idempotent Maintenance issue replay as success without sending another push", async () => {
+    let replayNotifyAttempts = 0;
+    let createInput: Record<string, unknown> | null = null;
+    const push: MaintenancePushService = {
+      getPublicKey: () => "test-public-key",
+      async registerSubscription() {
+        return { subscription: null };
+      },
+      async disableSubscription() {
+        return { subscription: null };
+      },
+      async registerSupervisorSubscription() {
+        return { subscription: null };
+      },
+      async disableSupervisorSubscription() {
+        return { subscription: null };
+      },
+      async notifyMaintenanceIssueCreated() {
+        replayNotifyAttempts += 1;
+      },
+    };
+    const local = await listen(push, async (input) => {
+      createInput = input as unknown as Record<string, unknown>;
+      return {
+        maintenance_issue: {
+          id: ids.issue,
+          branch_id: ids.branch,
+          branch_name: "Main Branch",
+          title: "Freezer not cooling",
+          category: "refrigeration",
+          priority: "urgent",
+          status: "new",
+          description: null,
+          location: null,
+          reported_by: ids.supervisor,
+          reporter_name: "Supervisor",
+          assigned_to: null,
+          created_at: "2026-08-15T10:00:00.000Z",
+          updated_at: "2026-08-15T10:00:00.000Z",
+          updates: [],
+        },
+        created: false,
+      };
+    });
+    try {
+      const key = "69000000-0000-4000-8000-000000000001";
+      const response = await fetch(`${local.baseUrl}/api/v1/supervisor/branches/${ids.branch}/maintenance-issues`, {
+        method: "POST",
+        headers: { ...auth("supervisor"), "Content-Type": "application/json", "Idempotency-Key": key },
+        body: JSON.stringify({ title: "Freezer not cooling", category: "refrigeration", priority: "urgent", description: null, location: null }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(createInput?.idempotencyKey, key);
+      assert.deepEqual(Object.keys(await json(response)).sort(), ["maintenance_issue"]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(replayNotifyAttempts, 0);
+    } finally {
+      await close(local.server);
+    }
+  });
+
+  it("treats idempotent Manager Office Maintenance replay as success without sending another push", async () => {
+    let replayNotifyAttempts = 0;
+    let createInput: Record<string, unknown> | null = null;
+    const push: MaintenancePushService = {
+      getPublicKey: () => "test-public-key",
+      async registerSubscription() {
+        return { subscription: null };
+      },
+      async disableSubscription() {
+        return { subscription: null };
+      },
+      async registerSupervisorSubscription() {
+        return { subscription: null };
+      },
+      async disableSupervisorSubscription() {
+        return { subscription: null };
+      },
+      async notifyMaintenanceIssueCreated() {
+        replayNotifyAttempts += 1;
+      },
+    };
+    const local = await listen(push, undefined, async (input) => {
+      createInput = input as unknown as Record<string, unknown>;
+      return {
+        maintenance_issue: {
+          id: ids.issue,
+          branch_id: null,
+          branch_name: "Office",
+          title: "Office AC",
+          category: "equipment",
+          priority: "high",
+          status: "new",
+          description: null,
+          location: "Office",
+          reported_by: ids.manager,
+          reporter_name: "Manager",
+          assigned_to: null,
+          created_at: "2026-08-15T10:00:00.000Z",
+          updated_at: "2026-08-15T10:00:00.000Z",
+          updates: [],
+        },
+        created: false,
+      };
+    });
+    try {
+      const key = "69000000-0000-4000-8000-000000000002";
+      const response = await fetch(`${local.baseUrl}/api/v1/management/organizations/29000000-0000-4000-8000-000000000001/maintenance-issues`, {
+        method: "POST",
+        headers: { ...auth("manager"), "Content-Type": "application/json", "Idempotency-Key": key },
+        body: JSON.stringify({ title: "Office AC", category: "equipment", priority: "high", description: null, location: "Office" }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(createInput?.idempotencyKey, key);
+      assert.deepEqual(Object.keys(await json(response)).sort(), ["maintenance_issue"]);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(replayNotifyAttempts, 0);
+    } finally {
+      await close(local.server);
+    }
   });
 
   it("fans out new issue pushes to every organization Maintenance subscription without branch filtering", async () => {

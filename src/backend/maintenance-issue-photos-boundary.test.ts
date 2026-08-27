@@ -70,4 +70,31 @@ describe("Maintenance issue before/after photos", () => {
     assert.match(app, /Photo required to resolve this issue\./);
     assert.doesNotMatch(app, /pin_hash|storage_path.*json|SUPABASE_SECRET_KEY/);
   });
+
+  it("adds database-backed idempotency for Branch and Office Maintenance issue creation", async () => {
+    const [migration, app, operational] = await Promise.all([
+      source("supabase/migrations/20260827100000_maintenance_issue_create_idempotency.sql"),
+      source("src/backend/app.ts"),
+      source("src/backend/operational.ts"),
+    ]);
+    assert.match(migration, /alter table public\.maintenance_issues[\s\S]*add column if not exists idempotency_key uuid/);
+    assert.match(migration, /create unique index if not exists maintenance_issues_org_idempotency_key_idx/);
+    assert.match(migration, /on public\.maintenance_issues\(organization_id, idempotency_key\)/);
+    assert.match(migration, /where idempotency_key is not null/);
+    assert.match(migration, /private\.maintenance_issue_idempotency_key\(payload\)/);
+    assert.match(migration, /on conflict \(organization_id, idempotency_key\) where idempotency_key is not null do nothing/);
+    assert.match(migration, /create_supervisor_maintenance_issue\(actor_user_id uuid, target_branch_id uuid, payload jsonb\)/);
+    assert.match(migration, /create_supervisor_maintenance_issue_with_photo/);
+    assert.match(migration, /create_manager_office_maintenance_issue\([\s\S]*actor_user_id uuid,[\s\S]*target_organization_id uuid,[\s\S]*payload jsonb[\s\S]*\)/);
+    assert.match(migration, /create_manager_office_maintenance_issue_with_photo/);
+    assert.match(migration, /if saved\.id = requested_id then[\s\S]*insert into public\.maintenance_issue_updates/);
+    assert.match(migration, /if saved\.id = requested_id then[\s\S]*insert into public\.maintenance_issue_attachments/);
+    assert.match(app, /request\.header\("Idempotency-Key"\)/);
+    assert.match(app, /response\.status\(created \? 201 : 200\)\.json\(result\)/);
+    assert.match(app, /if \(created\) void dependencies\.maintenancePush\?\.notifyMaintenanceIssueCreated/);
+    assert.match(operational, /idempotencyKey\?: string \| null/);
+    assert.match(operational, /idempotency_key:input\.idempotencyKey/);
+    assert.match(operational, /const created=issueId\?rows\[0\]\.id===issueId:true/);
+    assert.match(operational, /uploaded\.length&&!created/);
+  });
 });

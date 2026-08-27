@@ -372,6 +372,16 @@ const maintenanceIssueListResponseSchema = z.object({ maintenance_issues: z.arra
 const maintenanceIssueMutationResponseSchema = z.object({ maintenance_issue: maintenanceIssueResponseRowSchema }).strict();
 const managedMaintenanceIssueRowSchema=maintenanceIssueResponseRowSchema.omit({assigned_to:true}).strict();
 const managedMaintenanceIssueListResponseSchema=z.object({maintenance_issues:z.array(managedMaintenanceIssueRowSchema).max(1000)}).strict();
+function maintenanceIssueCreateResultWasCreated(result: unknown) {
+  return typeof result === "object" && result !== null && "created" in result
+    ? (result as { created?: unknown }).created !== false
+    : true;
+}
+function maintenanceIssueCreateResponsePayload(result: unknown) {
+  return typeof result === "object" && result !== null && "maintenance_issue" in result
+    ? { maintenance_issue: (result as { maintenance_issue?: unknown }).maintenance_issue }
+    : result;
+}
 const pushSubscriptionBodySchema = z.object({
   endpoint: z.url().max(4096),
   keys: z.object({
@@ -4950,18 +4960,25 @@ export function createApp(
         }
         const body = maintenanceIssueBodySchema.safeParse(rawPayload);
         if (!branchId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const idempotencyHeader = request.header("Idempotency-Key");
+        const idempotencyKey = idempotencyHeader ? idempotencySchema.safeParse(idempotencyHeader) : null;
+        if (idempotencyKey && !idempotencyKey.success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const parsedIdempotencyKey = idempotencyKey?.success ? idempotencyKey.data : null;
         const auth = requireAuthContext(request);
         const context = await loadActiveUser(request);
         if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin) throw new HttpError(403, "forbidden", "Access is denied.");
-        const result = maintenanceIssueMutationResponseSchema.parse(await dependencies.operationalAdmin.createSupervisorMaintenanceIssue({
+        const serviceResult = await dependencies.operationalAdmin.createSupervisorMaintenanceIssue({
           actorUserId: auth.userId,
           branchId: branchId.data,
+          idempotencyKey: parsedIdempotencyKey,
           payload: body.data,
           photos,
-        }));
+        });
+        const created = maintenanceIssueCreateResultWasCreated(serviceResult);
+        const result = maintenanceIssueMutationResponseSchema.parse(maintenanceIssueCreateResponsePayload(serviceResult));
         response.setHeader("Cache-Control", "private, no-store");
-        response.status(201).json(result);
-        void dependencies.maintenancePush?.notifyMaintenanceIssueCreated({
+        response.status(created ? 201 : 200).json(result);
+        if (created) void dependencies.maintenancePush?.notifyMaintenanceIssueCreated({
           issueId: result.maintenance_issue.id,
           branchId: result.maintenance_issue.branch_id,
           branchName: result.maintenance_issue.branch_name,
@@ -5296,11 +5313,17 @@ export function createApp(
         }
         const body=maintenanceIssueBodySchema.safeParse(rawPayload);
         if(!organizationId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const idempotencyHeader=request.header("Idempotency-Key");
+        const idempotencyKey=idempotencyHeader?idempotencySchema.safeParse(idempotencyHeader):null;
+        if(idempotencyKey&&!idempotencyKey.success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const parsedIdempotencyKey=idempotencyKey?.success?idempotencyKey.data:null;
         const auth=requireAuthContext(request),context=await loadActiveUser(request);
         if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.createManagerOfficeMaintenanceIssue)throw new HttpError(403,"forbidden","Access is denied.");
-        const result=maintenanceIssueMutationResponseSchema.parse(await dependencies.operationalAdmin.createManagerOfficeMaintenanceIssue({actorUserId:auth.userId,organizationId:organizationId.data,payload:body.data,photos}));
-        response.setHeader("Cache-Control","private, no-store");response.status(201).json(result);
-        void dependencies.maintenancePush?.notifyMaintenanceIssueCreated({
+        const serviceResult=await dependencies.operationalAdmin.createManagerOfficeMaintenanceIssue({actorUserId:auth.userId,organizationId:organizationId.data,idempotencyKey:parsedIdempotencyKey,payload:body.data,photos});
+        const created=maintenanceIssueCreateResultWasCreated(serviceResult);
+        const result=maintenanceIssueMutationResponseSchema.parse(maintenanceIssueCreateResponsePayload(serviceResult));
+        response.setHeader("Cache-Control","private, no-store");response.status(created?201:200).json(result);
+        if(created)void dependencies.maintenancePush?.notifyMaintenanceIssueCreated({
           issueId: result.maintenance_issue.id,
           branchId: result.maintenance_issue.branch_id,
           branchName: result.maintenance_issue.branch_name,

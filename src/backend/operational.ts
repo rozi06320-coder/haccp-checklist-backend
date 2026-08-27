@@ -354,6 +354,7 @@ export type OperationalAdmin = {
   createSupervisorMaintenanceIssue(input: {
     actorUserId: string;
     branchId: string;
+    idempotencyKey?: string | null;
     payload: {
       title: string;
       category: z.infer<typeof maintenanceIssueCategory>;
@@ -367,6 +368,7 @@ export type OperationalAdmin = {
   createManagerOfficeMaintenanceIssue?(input: {
     actorUserId: string;
     organizationId: string;
+    idempotencyKey?: string | null;
     payload: {
       title: string;
       category: z.infer<typeof maintenanceIssueCategory>;
@@ -1089,16 +1091,19 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     async createSupervisorMaintenanceIssue(input) {
       let uploaded:Array<{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}>=[];
       const photos=input.photos?.filter((photo)=>photo.bytes.length>0)??(input.photo?[input.photo]:[]);
-      const issueId=photos.length?randomUUID():null;
+      const issueId=(input.idempotencyKey||photos.length)?randomUUID():null;
       try{
         if(issueId)uploaded=await uploadMaintenanceIssuePhotos(issueId,"issue",photos);
+        const payload={...input.payload,...(issueId?{issue_id:issueId}:{}),...(input.idempotencyKey?{idempotency_key:input.idempotencyKey}:{}),...(uploaded.length?{before_photos:uploaded}:{})};
         const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded.length?"create_supervisor_maintenance_issue_with_photo":"create_supervisor_maintenance_issue", {
           actor_user_id: input.actorUserId,
           target_branch_id: input.branchId,
-          payload: uploaded.length?{...input.payload,issue_id:issueId,before_photos:uploaded}:input.payload,
+          payload,
         }),input.actorUserId,null);
         if (rows.length !== 1) throw new AdminOperationError();
-        return { maintenance_issue: rows[0] };
+        const created=issueId?rows[0].id===issueId:true;
+        if(uploaded.length&&!created)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path)).catch(()=>undefined);
+        return { maintenance_issue: rows[0], created };
       }catch(error){
         if(uploaded.length)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path));
         throw error;
@@ -1107,16 +1112,19 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     async createManagerOfficeMaintenanceIssue(input) {
       let uploaded:Array<{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}>=[];
       const photos=input.photos?.filter((photo)=>photo.bytes.length>0)??(input.photo?[input.photo]:[]);
-      const issueId=photos.length?randomUUID():null;
+      const issueId=(input.idempotencyKey||photos.length)?randomUUID():null;
       try{
         if(issueId)uploaded=await uploadMaintenanceIssuePhotos(issueId,"issue",photos);
+        const payload={...input.payload,...(issueId?{issue_id:issueId}:{}),...(input.idempotencyKey?{idempotency_key:input.idempotencyKey}:{}),...(uploaded.length?{before_photos:uploaded}:{})};
         const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded.length?"create_manager_office_maintenance_issue_with_photo":"create_manager_office_maintenance_issue", {
           actor_user_id: input.actorUserId,
           target_organization_id: input.organizationId,
-          payload: uploaded.length?{...input.payload,issue_id:issueId,before_photos:uploaded}:input.payload,
+          payload,
         }),input.actorUserId,null);
         if (rows.length !== 1) throw new AdminOperationError();
-        return { maintenance_issue: rows[0] };
+        const created=issueId?rows[0].id===issueId:true;
+        if(uploaded.length&&!created)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path)).catch(()=>undefined);
+        return { maintenance_issue: rows[0], created };
       }catch(error){
         if(uploaded.length)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path));
         throw error;

@@ -1051,6 +1051,7 @@ describe("Phase 3A operational API", () => {
       method: "createSupervisorMaintenanceIssue",
       actorUserId: id.supervisor,
       branchId: id.branch,
+      idempotencyKey: null,
       payload: { title: "Freezer door", category: "refrigeration", priority: "urgent", description: "Door is loose", location: "Kitchen" },
       photos: [],
     });
@@ -1317,6 +1318,7 @@ describe("Phase 3A operational API", () => {
       method: "createManagerOfficeMaintenanceIssue",
       actorUserId: id.manager,
       organizationId: id.organization,
+      idempotencyKey: null,
       payload: { title: "Office AC", category: "equipment", priority: "high", description: "Not cooling", location: "Office" },
       photos: [],
     });
