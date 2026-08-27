@@ -304,7 +304,7 @@ export type OperationalAdmin = {
     status: z.infer<typeof monthlyEvaluationStatus>;
     scores: Array<{ section: string; factor_key: string; factor_label: string; rating: number | null; comment?: string | null }>;
   }): Promise<unknown>;
-  listPurchaseLogs(actorUserId: string, branchId: string): Promise<unknown>;
+  listPurchaseLogs(actorUserId: string, branchId: string, filters?: { dateFrom?: string | null; dateTo?: string | null }): Promise<unknown>;
   createPurchaseLog(input: {
     actorUserId: string;
     branchId: string;
@@ -971,11 +971,15 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       }));
       return { evaluation: rows[0] };
     },
-    async listPurchaseLogs(actorUserId, branchId) {
-      return { purchase_logs: await normalizePurchaseRows(await rpc("list_branch_purchase_logs", {
+    async listPurchaseLogs(actorUserId, branchId, filters) {
+      const rows = await normalizePurchaseRows(await rpc("list_branch_purchase_logs", {
         actor_user_id: actorUserId,
         target_branch_id: branchId,
-      })) };
+      }));
+      return { purchase_logs: rows.filter((row) =>
+        (!filters?.dateFrom || row.purchase_date >= filters.dateFrom) &&
+        (!filters?.dateTo || row.purchase_date <= filters.dateTo),
+      ) };
     },
     async createPurchaseLog(input) {
       let invoicePath: string | null = null;

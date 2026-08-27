@@ -155,8 +155,8 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
         if (input.actorUserId !== id.supervisor || input.staffId !== id.worker) throw new Error("denied");
         return { evaluation: { id: id.monthlyEvaluation, operational_staff_id: input.staffId, evaluation_month: input.evaluationMonth, evaluator_name: input.evaluatorName, status: input.status, average_score: 5, scores: input.scores, updated_at: "2026-08-09T00:00:00.000Z" } };
       },
-      async listPurchaseLogs(actorUserId, branchId) {
-        calls.push({ method: "purchaseLogs", actorUserId, branchId });
+      async listPurchaseLogs(actorUserId, branchId, filters) {
+        calls.push({ method: "purchaseLogs", actorUserId, branchId, filters: filters ?? null });
         if (actorUserId !== id.supervisor) throw new Error("denied");
         return { purchase_logs: [] };
       },
@@ -869,7 +869,14 @@ describe("Phase 3A operational API", () => {
     const list = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs`, { headers: headers("supervisor") });
     assert.equal(list.status, 200);
     assert.deepEqual(await list.json(), { purchase_logs: [] });
-    assert.deepEqual(calls.at(-1), { method: "purchaseLogs", actorUserId: id.supervisor, branchId: id.branch });
+    assert.deepEqual(calls.at(-1), { method: "purchaseLogs", actorUserId: id.supervisor, branchId: id.branch, filters: { dateFrom: null, dateTo: null } });
+
+    const periodList = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs?date_from=2026-08-23&date_to=2026-08-29`, { headers: headers("supervisor") });
+    assert.equal(periodList.status, 200);
+    assert.deepEqual(calls.at(-1), { method: "purchaseLogs", actorUserId: id.supervisor, branchId: id.branch, filters: { dateFrom: "2026-08-23", dateTo: "2026-08-29" } });
+
+    const invalidPeriod = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs?date_from=2026-08-29&date_to=2026-08-23`, { headers: headers("supervisor") });
+    assert.equal(invalidPeriod.status, 400);
 
     const created = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs`, {
       method: "POST", headers: headers("supervisor"),

@@ -481,6 +481,7 @@ const managedEmployeeTeamQuerySchema=z.object({branch_id:z.uuid().optional(),mon
 const managedAnnualEvaluationQuerySchema=z.object({evaluation_year:z.coerce.number().int().min(2000).max(2200),branch_id:z.uuid().optional(),subject_type:annualEvaluationSubjectTypeSchema.optional(),subject_id:z.uuid().optional(),state:z.enum(["draft","submitted"]).optional()}).strict().refine(value=>(value.subject_type===undefined)===(value.subject_id===undefined));
 const managedAnnualEvaluationDraftSchema=z.object({branch_id:z.uuid(),evaluation_year:z.number().int().min(2000).max(2200),subject_type:annualEvaluationSubjectTypeSchema,subject_id:z.uuid(),expected_revision:z.number().int().nonnegative(),scores:z.array(annualEvaluationScoreSchema).max(20)}).strict();
 const managedAnnualEvaluationSubmitSchema=z.object({expected_revision:z.number().int().nonnegative()}).strict();
+const supervisorPurchaseLogQuerySchema=z.object({date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const managedPurchaseLogQuerySchema=z.object({branch_id:z.uuid().optional(),category:z.enum(["stationery","kitchen","equipment","food_item"]).optional(),payment_status:z.enum(["unpaid","reimbursed"]).optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const managedSupplierReceivingQuerySchema=z.object({branch_id:z.uuid().optional(),category:supplierReceivingCategorySchema.optional(),supplier_id:z.uuid().optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const managedMaintenanceIssueQuerySchema=z.object({branch_id:z.uuid().optional(),status:maintenanceIssueStatusSchema.optional(),priority:maintenanceIssuePrioritySchema.optional(),category:maintenanceIssueCategorySchema.optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
@@ -4974,11 +4975,12 @@ export function createApp(
     async (request, response, next) => {
       try {
         const branchId = branchIdSchema.safeParse(request.params.branchId);
-        if (!branchId.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const query = supervisorPurchaseLogQuerySchema.safeParse(request.query);
+        if (!branchId.success || !query.success) throw new HttpError(400, "bad_request", "The request is invalid.");
         const auth = requireAuthContext(request);
         const context = await loadActiveUser(request);
         if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin) throw new HttpError(403, "forbidden", "Access is denied.");
-        const result = purchaseLogListResponseSchema.parse(await dependencies.operationalAdmin.listPurchaseLogs(auth.userId, branchId.data));
+        const result = purchaseLogListResponseSchema.parse(await dependencies.operationalAdmin.listPurchaseLogs(auth.userId, branchId.data, { dateFrom: query.data.date_from ?? null, dateTo: query.data.date_to ?? null }));
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json(result);
       } catch (error) {
