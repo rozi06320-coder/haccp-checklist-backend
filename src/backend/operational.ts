@@ -328,7 +328,7 @@ export type OperationalAdmin = {
     paymentStatus: z.infer<typeof purchaseLogPaymentStatus>;
     reimbursementNote?: string | null;
   }): Promise<unknown>;
-  listSupplierReceivings(actorUserId: string, branchId: string): Promise<unknown>;
+  listSupplierReceivings(actorUserId: string, branchId: string, filters?: { dateFrom?: string | null; dateTo?: string | null }): Promise<unknown>;
   listBranchSuppliers(actorUserId: string, branchId: string): Promise<unknown>;
   createBranchSupplier(input: {
     actorUserId: string;
@@ -1023,11 +1023,15 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       }));
       return { purchase_log: rows[0] };
     },
-    async listSupplierReceivings(actorUserId, branchId) {
-      return { supplier_receivings: await normalizeSupplierReceivingRows(await rpc("list_branch_supplier_receivings", {
+    async listSupplierReceivings(actorUserId, branchId, filters) {
+      const rows = await normalizeSupplierReceivingRows(await rpc("list_branch_supplier_receivings", {
         actor_user_id: actorUserId,
         target_branch_id: branchId,
-      })) };
+      }));
+      return { supplier_receivings: rows.filter((row) => {
+        const receivingDate = supplierReceivingLocalDate(row.created_at);
+        return (!filters?.dateFrom || receivingDate >= filters.dateFrom) && (!filters?.dateTo || receivingDate <= filters.dateTo);
+      }) };
     },
     async listBranchSuppliers(actorUserId, branchId) {
       return { suppliers: normalizeBranchSupplierRows(await rpc("list_branch_suppliers", {
@@ -1337,4 +1341,9 @@ export function branchLocalDate(timezone: string, now: Date): string {
   const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   if (!values.year || !values.month || !values.day) throw new Error("Invalid timezone.");
   return `${values.year}-${values.month}-${values.day}`;
+}
+
+function supplierReceivingLocalDate(value: string): string {
+  const date = new Date(value);
+  return branchLocalDate("Asia/Riyadh", Number.isNaN(date.getTime()) ? new Date(0) : date);
 }

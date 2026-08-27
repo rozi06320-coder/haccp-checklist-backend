@@ -170,8 +170,8 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
         if (input.actorUserId !== id.supervisor || input.purchaseLogId !== id.purchaseLog) throw new Error("denied");
         return { purchase_log: { id: input.purchaseLogId, organization_id: id.organization, branch_id: input.branchId, supervisor_team_id: id.shift, branch_name: "Branch", category: "kitchen", item_name: "Receipt Book", quantity: 1, amount: 20, vendor_name: "N/A", purchase_date: "2026-08-08", notes: null, payment_status: input.paymentStatus, reimbursement_note: input.reimbursementNote ?? null, reimbursed_at: input.paymentStatus === "reimbursed" ? "2026-08-09T00:00:00.000Z" : null, reimbursed_by: input.paymentStatus === "reimbursed" ? input.actorUserId : null, invoice_storage_path: null, invoice_original_name: null, invoice_url: null, created_by: input.actorUserId, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z" } };
       },
-      async listSupplierReceivings(actorUserId, branchId) {
-        calls.push({ method: "supplierReceivings", actorUserId, branchId });
+      async listSupplierReceivings(actorUserId, branchId, filters) {
+        calls.push({ method: "supplierReceivings", actorUserId, branchId, filters: filters ?? null });
         if (actorUserId !== id.supervisor) throw new Error("denied");
         return { supplier_receivings: [] };
       },
@@ -956,7 +956,12 @@ describe("Phase 3A operational API", () => {
     const list = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/supplier-receivings`, { headers: headers("supervisor") });
     assert.equal(list.status, 200);
     assert.deepEqual(await list.json(), { supplier_receivings: [] });
-    assert.deepEqual(calls.at(-1), { method: "supplierReceivings", actorUserId: id.supervisor, branchId: id.branch });
+    assert.deepEqual(calls.at(-1), { method: "supplierReceivings", actorUserId: id.supervisor, branchId: id.branch, filters: { dateFrom: null, dateTo: null } });
+
+    const periodList = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/supplier-receivings?date_from=2026-08-23&date_to=2026-08-29`, { headers: headers("supervisor") });
+    assert.equal(periodList.status, 200);
+    assert.deepEqual(calls.at(-1), { method: "supplierReceivings", actorUserId: id.supervisor, branchId: id.branch, filters: { dateFrom: "2026-08-23", dateTo: "2026-08-29" } });
+    assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/supplier-receivings?date_from=2026-08-29&date_to=2026-08-23`, { headers: headers("supervisor") })).status, 400);
 
     const created = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/supplier-receivings`, {
       method: "POST", headers: headers("supervisor"),
@@ -985,7 +990,7 @@ describe("Phase 3A operational API", () => {
         unit: "kg",
         notes: "Checked",
       },
-      photos: [],
+      photo: null,
     });
     const existing = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/supplier-receivings`, {
       method: "POST", headers: headers("supervisor"),
@@ -1005,7 +1010,7 @@ describe("Phase 3A operational API", () => {
         unit: "box",
         notes: null,
       },
-      photos: [],
+      photo: null,
     });
   });
   it("rejects Supplier Receiving auth and invalid payloads safely", async () => {
