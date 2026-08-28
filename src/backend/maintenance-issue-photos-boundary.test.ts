@@ -104,4 +104,18 @@ describe("Maintenance issue before/after photos", () => {
     assert.match(operational, /const created=issueId\?rows\[0\]\.id===issueId:true/);
     assert.match(operational, /uploaded\.length&&!created/);
   });
+
+  it("repairs Maintenance create RPC idempotency conflict predicates without changing RPC signatures", async () => {
+    const migration = await source("supabase/migrations/20260828120000_fix_maintenance_issue_idempotency_conflict_ambiguity.sql");
+    assert.match(migration, /create or replace function public\.create_supervisor_maintenance_issue\(actor_user_id uuid, target_branch_id uuid, payload jsonb\)/);
+    assert.match(migration, /create or replace function public\.create_supervisor_maintenance_issue_with_photo\(/);
+    assert.match(migration, /create or replace function public\.create_manager_office_maintenance_issue\(/);
+    assert.match(migration, /create or replace function public\.create_manager_office_maintenance_issue_with_photo\(/);
+    assert.equal((migration.match(/insert into public\.maintenance_issues as issue\(/g) ?? []).length, 4);
+    assert.equal((migration.match(/on conflict \(\(issue\.organization_id\), \(issue\.idempotency_key\)\) where issue\.idempotency_key is not null do nothing/g) ?? []).length, 4);
+    assert.doesNotMatch(migration, /on conflict \(organization_id, idempotency_key\) where issue\.idempotency_key is not null do nothing/);
+    assert.doesNotMatch(migration, /on conflict \(organization_id, idempotency_key\) where idempotency_key is not null do nothing/);
+    assert.match(migration, /if saved\.id = requested_id then[\s\S]*insert into public\.maintenance_issue_updates/);
+    assert.match(migration, /if saved\.id = requested_id then[\s\S]*insert into public\.maintenance_issue_attachments/);
+  });
 });
