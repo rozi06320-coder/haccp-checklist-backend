@@ -205,7 +205,7 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
       async createSupplierReceiving(input) {
         calls.push({ method: "createSupplierReceiving", hasPhoto: Boolean(input.photo), ...input });
         if (input.actorUserId !== id.supervisor) throw new Error("denied");
-        return { supplier_receiving: { id: id.supplierReceiving, organization_id: id.organization, branch_id: input.branchId, supervisor_team_id: id.shift, branch_name: "Branch", supplier_id: input.payload.supplier_id ?? id.supplier, category: input.payload.category, supplier_name_en: input.payload.supplier_name_en ?? "Riyadh Supplier", supplier_name_ar: input.payload.supplier_name_ar ?? null, quantity: Number(input.payload.quantity), unit: input.payload.unit, notes: input.payload.notes ?? null, photo_storage_path: input.photo ? `branches/${input.branchId}/supplier-receivings/${id.supplierReceiving}/photo.jpg` : null, photo_original_name: input.photo?.originalName ?? null, photo_url: input.photo ? "https://storage.example.invalid/photo" : null, created_by: input.actorUserId, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z" } };
+        return { supplier_receiving: { id: id.supplierReceiving, organization_id: id.organization, branch_id: input.branchId, supervisor_team_id: id.shift, branch_name: "Branch", supplier_id: input.payload.supplier_id ?? id.supplier, category: input.payload.category, supplier_name_en: input.payload.supplier_name_en ?? "Riyadh Supplier", supplier_name_ar: input.payload.supplier_name_ar ?? null, piv_pos: input.payload.piv_pos ?? null, quantity: Number(input.payload.quantity), unit: input.payload.unit, notes: input.payload.notes ?? null, photo_storage_path: input.photo ? `branches/${input.branchId}/supplier-receivings/${id.supplierReceiving}/photo.jpg` : null, photo_original_name: input.photo?.originalName ?? null, photo_url: input.photo ? "https://storage.example.invalid/photo" : null, created_by: input.actorUserId, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z" } };
       },
       async listSupervisorMaintenanceIssues(actorUserId, branchId) {
         calls.push({ method: "supervisorMaintenanceIssues", actorUserId, branchId });
@@ -309,7 +309,7 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
       async listManagedSupplierReceivings(input) {
         calls.push({ method: "managedSupplierReceivings", ...input });
         if (input.actorUserId !== id.manager || input.organizationId !== id.organization) throw new Error("denied");
-        return { supplier_receivings: [{ id: id.supplierReceiving, branch_id: id.branch, branch_name: "Branch", supplier_id: id.supplier, category: "raw", supplier_name_en: "Riyadh Supplier", supplier_name_ar: "مورد الرياض", quantity: 12.5, unit: "kg", notes: null, photo_original_name: "photo.jpg", photo_url: "https://storage.example.invalid/signed-photo", created_by: id.supervisor, created_by_name: "Supervisor", created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z" }] };
+        return { supplier_receivings: [{ id: id.supplierReceiving, branch_id: id.branch, branch_name: "Branch", supplier_id: id.supplier, category: "raw", supplier_name_en: "Riyadh Supplier", supplier_name_ar: "مورد الرياض", piv_pos: "PIV-00123", quantity: 12.5, unit: "kg", notes: null, photo_original_name: "photo.jpg", photo_url: "https://storage.example.invalid/signed-photo", created_by: id.supervisor, created_by_name: "Supervisor", created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z" }] };
       },
       async listManagedMaintenanceIssues(input) {
         calls.push({ method: "managedMaintenanceIssues", ...input });
@@ -1076,14 +1076,15 @@ describe("Phase 3A operational API", () => {
 
     const created = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/supplier-receivings`, {
       method: "POST", headers: headers("supervisor"),
-      body: JSON.stringify({ category: "raw", supplier_name_en: "  Riyadh Supplier  ", supplier_name_ar: "   ", quantity: "12.5", unit: " kg ", notes: "  Checked  " }),
+      body: JSON.stringify({ category: "raw", supplier_name_en: "  Riyadh Supplier  ", supplier_name_ar: "   ", piv_pos: "  POS  A-44  ", quantity: "12.5", unit: " kg ", notes: "  Checked  " }),
     });
     assert.equal(created.status, 201);
-    const body = await created.json() as { supplier_receiving: { id: string; supplier_id: string | null; supplier_name_en: string; supplier_name_ar: string | null; quantity: number; photo_url?: string | null } };
+    const body = await created.json() as { supplier_receiving: { id: string; supplier_id: string | null; supplier_name_en: string; supplier_name_ar: string | null; piv_pos: string | null; quantity: number; photo_url?: string | null } };
     assert.equal(body.supplier_receiving.id, id.supplierReceiving);
     assert.equal(body.supplier_receiving.supplier_id, id.supplier);
     assert.equal(body.supplier_receiving.supplier_name_en, "Riyadh Supplier");
     assert.equal(body.supplier_receiving.supplier_name_ar, null);
+    assert.equal(body.supplier_receiving.piv_pos, "POS  A-44");
     assert.equal(body.supplier_receiving.quantity, 12.5);
     assert.equal("organization_id" in body.supplier_receiving, false);
     assert.equal("supervisor_team_id" in body.supplier_receiving, false);
@@ -1097,6 +1098,7 @@ describe("Phase 3A operational API", () => {
         category: "raw",
         supplier_name_en: "Riyadh Supplier",
         supplier_name_ar: null,
+        piv_pos: "POS  A-44",
         quantity: 12.5,
         unit: "kg",
         notes: "Checked",
@@ -1117,6 +1119,7 @@ describe("Phase 3A operational API", () => {
         category: "frozen",
         supplier_id: id.supplier,
         supplier_name_ar: null,
+        piv_pos: null,
         quantity: 2,
         unit: "box",
         notes: null,
@@ -1133,6 +1136,7 @@ describe("Phase 3A operational API", () => {
       { category: "bad", supplier_name_en: "Supplier", quantity: "1", unit: "kg" },
       { category: "raw", supplier_name_en: "", quantity: "1", unit: "kg" },
       { category: "raw", supplier_name_en: "Supplier", quantity: "0", unit: "kg" },
+      { category: "raw", supplier_name_en: "Supplier", piv_pos: "X".repeat(101), quantity: "1", unit: "kg" },
       { category: "raw", supplier_name_en: "Supplier", quantity: "1", unit: "" },
       { category: "raw", supplier_name_en: "Supplier", quantity: "1", unit: "crate" },
       { category: "raw", supplier_name_en: "Supplier", quantity: "1", unit: "kg", organization_id: id.organization },

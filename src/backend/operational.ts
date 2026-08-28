@@ -165,6 +165,7 @@ const supplierReceivingRow = z.object({
   category: supplierReceivingCategory,
   supplier_name_en: z.string(),
   supplier_name_ar: optionalStaffText,
+  piv_pos: optionalStaffText.optional().transform((value) => value ?? null),
   quantity: z.union([z.number(), z.string()]),
   unit: z.string(),
   notes: optionalStaffText,
@@ -383,6 +384,7 @@ export type OperationalAdmin = {
       supplier_name_en?: string | null;
       supplier_name_ar?: string | null;
       supplier_id?: string | null;
+      piv_pos?: string | null;
       quantity: string | number;
       unit: string;
       notes?: string | null;
