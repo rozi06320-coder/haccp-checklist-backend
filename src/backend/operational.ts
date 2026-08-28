@@ -429,9 +429,16 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   const supplierReceivingPhotoStorage = client.storage.from(SUPPLIER_RECEIVING_PHOTO_BUCKET);
   const maintenanceReceiptStorage = client.storage.from("maintenance-purchase-receipts");
   const maintenanceIssuePhotoStorage = client.storage.from(MAINTENANCE_ISSUE_PHOTO_BUCKET);
-  async function rpc(name: string, input: Record<string, unknown>) {
+  async function rpc(name: string, input: Record<string, unknown>, diagnostic?: Record<string, unknown>) {
     const result = await client.rpc(name, input);
     if (result.error) {
+      if (diagnostic) {
+        console.info("MAINTENANCE_SUBMIT_DIAGNOSTIC", {
+          ...diagnostic,
+          stage: "rpc_error",
+          supabaseErrorCode: result.error.code,
+        });
+      }
       if (result.error.code === "23505" && /employee code/i.test(result.error.message)) {
         throw new OperationalDuplicateStaffCodeError();
       }
@@ -1092,20 +1099,27 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       let uploaded:Array<{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}>=[];
       const photos=input.photos?.filter((photo)=>photo.bytes.length>0)??(input.photo?[input.photo]:[]);
       const issueId=(input.idempotencyKey||photos.length)?randomUUID():null;
+      const diagnosticBase={requestId:"unavailable",photoCount:photos.length,idempotencyPresent:Boolean(input.idempotencyKey)};
       try{
+        if(photos.length){
+          console.info("MAINTENANCE_SUBMIT_DIAGNOSTIC",{...diagnosticBase,stage:"storage_upload",photoCount:photos.length});
+        }
         if(issueId)uploaded=await uploadMaintenanceIssuePhotos(issueId,"issue",photos);
         const payload={...input.payload,...(issueId?{issue_id:issueId}:{}),...(input.idempotencyKey?{idempotency_key:input.idempotencyKey}:{}),...(uploaded.length?{before_photos:uploaded}:{})};
+        console.info("MAINTENANCE_SUBMIT_DIAGNOSTIC",{...diagnosticBase,stage:"rpc_create",photoCount:photos.length});
         const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded.length?"create_supervisor_maintenance_issue_with_photo":"create_supervisor_maintenance_issue", {
           actor_user_id: input.actorUserId,
           target_branch_id: input.branchId,
           payload,
-        }),input.actorUserId,null);
+        },diagnosticBase),input.actorUserId,null);
         if (rows.length !== 1) throw new AdminOperationError();
         const created=issueId?rows[0].id===issueId:true;
         if(uploaded.length&&!created)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path)).catch(()=>undefined);
+        console.info("MAINTENANCE_SUBMIT_DIAGNOSTIC",{...diagnosticBase,stage:"rpc_success",photoCount:photos.length,created});
         return { maintenance_issue: rows[0], created };
       }catch(error){
         if(uploaded.length)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path));
+        console.info("MAINTENANCE_SUBMIT_DIAGNOSTIC",{...diagnosticBase,stage:"exception",photoCount:photos.length,errorName:error instanceof Error?error.name:"UnknownError"});
         throw error;
       }
     },
