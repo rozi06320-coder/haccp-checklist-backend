@@ -16,6 +16,8 @@ const ids = {
   otherOrganization: "30000000-0000-4000-8000-000000000099",
   purchaseLog: "a0000000-0000-4000-8000-000000000001",
   supplierReceiving: "b0000000-0000-4000-8000-000000000001",
+  maintenancePurchase: "c0000000-0000-4000-8000-000000000001",
+  maintenancePurchaseAttachment: "d0000000-0000-4000-8000-000000000001",
 } as const;
 
 const contexts: Record<string, UserContext> = {
@@ -74,6 +76,20 @@ describe("Management receipt read URLs", () => {
     assert.deepEqual(calls.at(-1), { method: "managedSupplierReceivingPhotoReadUrl", actorUserId: ids.manager, organizationId: ids.organization, supplierReceivingId: ids.supplierReceiving });
   });
 
+  it("lets a Manager create a fresh Maintenance Purchase receipt read URL inside their organization", async () => {
+    const response = await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/maintenance-purchases/${ids.maintenancePurchase}/receipt/read-url`, { headers: headers("manager") });
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.doesNotMatch(text, /maintenance\/|receipt_storage_path|storage_path/);
+    assert.deepEqual(JSON.parse(text), { signed_url: "https://storage.example.invalid/manager-maintenance-purchase", expires_in: 300, original_name: "receipt.pdf" });
+    assert.deepEqual(calls.at(-1), { method: "managedMaintenancePurchaseReceiptReadUrl", actorUserId: ids.manager, organizationId: ids.organization, purchaseId: ids.maintenancePurchase, attachmentId: null });
+
+    const attachment = await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/maintenance-purchases/${ids.maintenancePurchase}/receipt/read-url?attachment_id=${ids.maintenancePurchaseAttachment}`, { headers: headers("manager") });
+    assert.equal(attachment.status, 200);
+    assert.deepEqual(await attachment.json(), { signed_url: "https://storage.example.invalid/manager-maintenance-purchase-attachment", expires_in: 300, original_name: "receipt-2.jpg" });
+    assert.deepEqual(calls.at(-1), { method: "managedMaintenancePurchaseReceiptReadUrl", actorUserId: ids.manager, organizationId: ids.organization, purchaseId: ids.maintenancePurchase, attachmentId: ids.maintenancePurchaseAttachment });
+  });
+
   it("rejects unauthorized, invalid, and missing management receipt access safely", async () => {
     assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/purchase-logs/${ids.purchaseLog}/receipt/read-url`, { headers: headers("supervisor") })).status, 403);
     assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/${ids.otherOrganization}/purchase-logs/${ids.purchaseLog}/receipt/read-url`, { headers: headers("manager") })).status, 403);
@@ -81,6 +97,13 @@ describe("Management receipt read URLs", () => {
     const missing = await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/purchase-logs/a0000000-0000-4000-8000-000000000099/receipt/read-url`, { headers: headers("manager") });
     assert.equal(missing.status, 404);
     assert.doesNotMatch(await missing.text(), /branches\/|storage_path|invoice_storage_path/);
+    assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/maintenance-purchases/${ids.maintenancePurchase}/receipt/read-url`, { headers: headers("supervisor") })).status, 403);
+    assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/${ids.otherOrganization}/maintenance-purchases/${ids.maintenancePurchase}/receipt/read-url`, { headers: headers("manager") })).status, 403);
+    assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/maintenance-purchases/not-a-uuid/receipt/read-url`, { headers: headers("manager") })).status, 400);
+    assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/maintenance-purchases/${ids.maintenancePurchase}/receipt/read-url?attachment_id=not-a-uuid`, { headers: headers("manager") })).status, 400);
+    const missingMaintenance = await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/maintenance-purchases/c0000000-0000-4000-8000-000000000099/receipt/read-url`, { headers: headers("manager") });
+    assert.equal(missingMaintenance.status, 404);
+    assert.doesNotMatch(await missingMaintenance.text(), /maintenance\/|storage_path|receipt_storage_path/);
   });
 
   it("keeps existing Supervisor receipt endpoints intact", async () => {
@@ -163,6 +186,13 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
         if (input.actorUserId !== ids.manager || input.organizationId !== ids.organization) throw new OperationalAccessError();
         if (input.supplierReceivingId !== ids.supplierReceiving) throw new OperationalAttachmentNotFoundError();
         return { signed_url: "https://storage.example.invalid/manager-supplier", expires_in: 300, original_name: "photo.jpg" };
+      },
+      async createManagedMaintenancePurchaseReceiptReadUrl(input) {
+        calls.push({ method: "managedMaintenancePurchaseReceiptReadUrl", ...input });
+        if (input.actorUserId !== ids.manager || input.organizationId !== ids.organization) throw new OperationalAccessError();
+        if (input.purchaseId !== ids.maintenancePurchase) throw new OperationalAttachmentNotFoundError();
+        if (input.attachmentId) return { signed_url: "https://storage.example.invalid/manager-maintenance-purchase-attachment", expires_in: 300, original_name: "receipt-2.jpg" };
+        return { signed_url: "https://storage.example.invalid/manager-maintenance-purchase", expires_in: 300, original_name: "receipt.pdf" };
       },
       async listBranchSuppliers() { return { suppliers: [] }; },
       async createBranchSupplier() { throw new Error("unused"); },

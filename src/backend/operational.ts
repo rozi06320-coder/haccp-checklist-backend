@@ -185,6 +185,16 @@ const supplierReceivingPhotoRow = z.object({
 const managedSupplierReceivingPhotoRow = supplierReceivingPhotoRow.extend({
   organization_id: uuid,
 }).strict();
+const managedMaintenancePurchaseReceiptRow = z.object({
+  organization_id: uuid,
+  branch_id: uuid.nullable(),
+  receipt_storage_path: optionalStaffText,
+  receipt_original_name: optionalStaffText,
+}).strict();
+const managedMaintenancePurchaseAttachmentReadRow = z.object({
+  storage_path: optionalStaffText,
+  original_filename: optionalStaffText,
+}).strict();
 const branchSupplierRow = z.object({
   id: uuid,
   organization_id: uuid.optional(),
@@ -416,6 +426,7 @@ export type OperationalAdmin = {
   reimburseMaintenancePurchase(input:{actorUserId:string;purchaseId:string;reimbursementNote?:string|null}):Promise<unknown>;
   listMaintenancePurchaseHistory?(input:{actorUserId:string;purchaseType:z.infer<typeof maintenancePurchaseType>}):Promise<unknown>;
   listManagedMaintenancePurchases?(input:{actorUserId:string;organizationId:string;branchId?:string;issueStatus?:z.infer<typeof maintenanceIssueStatus>;paymentStatus?:z.infer<typeof purchaseLogPaymentStatus>;vendor?:string;dateFrom?:string;dateTo?:string;purchaseType?:z.infer<typeof maintenancePurchaseType>}):Promise<unknown>;
+  createManagedMaintenancePurchaseReceiptReadUrl?(input:{actorUserId:string;organizationId:string;purchaseId:string;attachmentId?:string|null}):Promise<unknown>;
   getManagedOperationsSummary?(input:{actorUserId:string;organizationId:string;branchId?:string;month:string}):Promise<unknown>;
   listManagedStaff(input: {
     actorUserId: string; organizationId: string; page: number; pageSize: number;
@@ -1267,6 +1278,49 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     async saveSupervisorDailyAuditDraft(input){return dailyAuditCurrent.parse(await rpcObject("save_supervisor_daily_audit_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,auditor_kind:input.auditorKind,auditor_id:input.auditorId,auditor_name_snapshot:input.auditorDisplayName,access_credential_version:input.accessCredentialVersion,items:input.items}));},
     async submitSupervisorDailyAudit(input){return dailyAuditCurrent.parse(await rpcObject("submit_supervisor_daily_audit",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,auditor_kind:input.auditorKind,auditor_id:input.auditorId,auditor_name_snapshot:input.auditorDisplayName,access_credential_version:input.accessCredentialVersion,items:input.items,idempotency_key:input.idempotencyKey??null}));},
     async listManagedMaintenancePurchases(input){return{maintenance_purchases:await normalizeManagedMaintenancePurchases(await rpc("list_managed_maintenance_purchases",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,branch_filter:input.branchId??null,issue_status_filter:input.issueStatus??null,payment_status_filter:input.paymentStatus??null,vendor_filter:input.vendor??null,date_from_filter:input.dateFrom??null,date_to_filter:input.dateTo??null,purchase_type_filter:input.purchaseType??null}))};},
+    async createManagedMaintenancePurchaseReceiptReadUrl(input){
+      const purchaseResult=await client.from("maintenance_purchase_logs")
+        .select("organization_id,branch_id,receipt_storage_path,receipt_original_name")
+        .eq("id",input.purchaseId)
+        .eq("organization_id",input.organizationId)
+        .maybeSingle();
+      if(purchaseResult.error)throw new AdminOperationError();
+      const purchase=purchaseResult.data?managedMaintenancePurchaseReceiptRow.parse(purchaseResult.data):null;
+      if(!purchase)throw new OperationalAttachmentNotFoundError();
+      if(purchase.branch_id){
+        const branchResult=await client.from("branches").select("id").eq("id",purchase.branch_id).eq("organization_id",input.organizationId).maybeSingle();
+        if(branchResult.error)throw new AdminOperationError();
+        if(!branchResult.data)throw new OperationalAccessError();
+      }
+      if(input.attachmentId){
+        const attachmentResult=await client.from("maintenance_purchase_attachments")
+          .select("storage_path,original_filename")
+          .eq("id",input.attachmentId)
+          .eq("purchase_id",input.purchaseId)
+          .eq("organization_id",input.organizationId)
+          .maybeSingle();
+        if(attachmentResult.error)throw new AdminOperationError();
+        const attachment=attachmentResult.data?managedMaintenancePurchaseAttachmentReadRow.parse(attachmentResult.data):null;
+        if(!attachment?.storage_path)throw new OperationalAttachmentNotFoundError();
+        const signedUrl=await signMaintenanceReceipt(attachment.storage_path);
+        if(!signedUrl)throw new AdminOperationError();
+        return{signed_url:signedUrl,expires_in:PURCHASE_INVOICE_SIGNED_URL_SECONDS,original_name:attachment.original_filename};
+      }
+      const primaryAttachmentResult=await client.from("maintenance_purchase_attachments")
+        .select("storage_path,original_filename")
+        .eq("purchase_id",input.purchaseId)
+        .eq("organization_id",input.organizationId)
+        .order("position",{ascending:true})
+        .limit(1)
+        .maybeSingle();
+      if(primaryAttachmentResult.error)throw new AdminOperationError();
+      const primaryAttachment=primaryAttachmentResult.data?managedMaintenancePurchaseAttachmentReadRow.parse(primaryAttachmentResult.data):null;
+      const path=primaryAttachment?.storage_path??purchase.receipt_storage_path;
+      if(!path)throw new OperationalAttachmentNotFoundError();
+      const signedUrl=await signMaintenanceReceipt(path);
+      if(!signedUrl)throw new AdminOperationError();
+      return{signed_url:signedUrl,expires_in:PURCHASE_INVOICE_SIGNED_URL_SECONDS,original_name:primaryAttachment?.original_filename??purchase.receipt_original_name};
+    },
     async getManagedOperationsSummary(input) {
       return managementOperationsSummarySchema.parse(await rpcObject("get_managed_operations_summary", {
         actor_user_id: input.actorUserId,

@@ -248,6 +248,9 @@ const receiptReadUrlResponseSchema = z.object({
   expires_in: z.number().int().min(1).max(5 * 60),
   original_name: z.string().nullable(),
 }).strict();
+const maintenancePurchaseReceiptReadUrlQuerySchema = z.object({
+  attachment_id: z.uuid().optional(),
+}).strict();
 const managedPurchaseLogRowSchema = purchaseLogResponseRowSchema.extend({ created_by_name: z.string().nullable().optional() }).strict();
 const managedPurchaseLogListResponseSchema = z.object({ purchase_logs: z.array(managedPurchaseLogRowSchema).max(500) }).strict();
 const supplierReceivingCategorySchema = z.enum(["raw", "frozen", "juice"]);
@@ -5410,6 +5413,9 @@ export function createApp(
 
   app.get("/api/v1/management/organizations/:organizationId/maintenance-purchases", protectedRateLimit, authenticate,
     async(request,response,next)=>{try{const organizationId=organizationIdSchema.safeParse(request.params.organizationId),query=managedMaintenancePurchaseQuerySchema.safeParse(request.query);if(!organizationId.success||!query.success||!dependencies.operationalAdmin?.listManagedMaintenancePurchases)throw new HttpError(400,"bad_request","The request is invalid.");const auth=requireAuthContext(request),context=await loadActiveUser(request);if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data))throw new HttpError(403,"forbidden","Access is denied.");const result=managedMaintenancePurchaseListSchema.parse(await dependencies.operationalAdmin.listManagedMaintenancePurchases({actorUserId:auth.userId,organizationId:organizationId.data,branchId:query.data.branch_id,issueStatus:query.data.issue_status,paymentStatus:query.data.payment_status,vendor:query.data.vendor,dateFrom:query.data.date_from,dateTo:query.data.date_to,purchaseType:query.data.purchase_type}));response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);}catch(error){next(error instanceof HttpError?error:error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Maintenance Purchases are temporarily unavailable."));}});
+
+  app.get("/api/v1/management/organizations/:organizationId/maintenance-purchases/:purchaseId/receipt/read-url", protectedRateLimit, authenticate,
+    async(request,response,next)=>{try{const organizationId=organizationIdSchema.safeParse(request.params.organizationId),purchaseId=z.uuid().safeParse(request.params.purchaseId),query=maintenancePurchaseReceiptReadUrlQuerySchema.safeParse(request.query);if(!organizationId.success||!purchaseId.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");const auth=requireAuthContext(request),context=await loadActiveUser(request);if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.createManagedMaintenancePurchaseReceiptReadUrl)throw new HttpError(403,"forbidden","Access is denied.");const result=receiptReadUrlResponseSchema.parse(await dependencies.operationalAdmin.createManagedMaintenancePurchaseReceiptReadUrl({actorUserId:auth.userId,organizationId:organizationId.data,purchaseId:purchaseId.data,attachmentId:query.data.attachment_id??null}));response.setHeader("Cache-Control","private, no-store");response.setHeader("X-Content-Type-Options","nosniff");response.status(200).json(result);}catch(error){next(error instanceof HttpError?error:error instanceof OperationalAttachmentNotFoundError?new HttpError(404,"not_found","The receipt is unavailable."):error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","The receipt is unavailable."));}});
 
   app.get("/api/v1/management/organizations/:organizationId/supervisor-teams", protectedRateLimit, authenticate,
     async (request, response, next) => {
