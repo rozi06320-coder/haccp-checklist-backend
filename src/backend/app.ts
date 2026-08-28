@@ -5001,6 +5001,7 @@ export function createApp(
         const serviceResult = await dependencies.operationalAdmin.createSupervisorMaintenanceIssue({
           actorUserId: auth.userId,
           branchId: branchId.data,
+          requestId: request.id,
           idempotencyKey: parsedIdempotencyKey,
           payload: body.data,
           photos,
@@ -5369,7 +5370,7 @@ export function createApp(
         const parsedIdempotencyKey=idempotencyKey?.success?idempotencyKey.data:null;
         const auth=requireAuthContext(request),context=await loadActiveUser(request);
         if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.createManagerOfficeMaintenanceIssue)throw new HttpError(403,"forbidden","Access is denied.");
-        const serviceResult=await dependencies.operationalAdmin.createManagerOfficeMaintenanceIssue({actorUserId:auth.userId,organizationId:organizationId.data,idempotencyKey:parsedIdempotencyKey,payload:body.data,photos});
+        const serviceResult=await dependencies.operationalAdmin.createManagerOfficeMaintenanceIssue({actorUserId:auth.userId,organizationId:organizationId.data,requestId:request.id,idempotencyKey:parsedIdempotencyKey,payload:body.data,photos});
         const created=maintenanceIssueCreateResultWasCreated(serviceResult);
         const result=maintenanceIssueMutationResponseSchema.parse(maintenanceIssueCreateResponsePayload(serviceResult));
         response.setHeader("Cache-Control","private, no-store");response.status(created?201:200).json(result);

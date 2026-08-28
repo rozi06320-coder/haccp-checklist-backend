@@ -45,7 +45,14 @@ describe("Maintenance issue before/after photos", () => {
     assert.match(operational, /bytes\.subarray\(0, 8\)\.equals\(pngSignature\)/);
     assert.match(operational, /maintenanceIssuePhotoStorage\.createSignedUrl\(path,MAINTENANCE_ISSUE_PHOTO_SIGNED_URL_SECONDS\)/);
     assert.match(operational, /maintenanceIssuePhotoStorage\.upload/);
+    assert.match(operational, /safeMaintenanceDiagnosticError/);
+    assert.match(operational, /storageErrorCode/);
+    assert.match(operational, /storageErrorStatus/);
     assert.match(operational, /uploadMaintenanceIssuePhotos/);
+    assert.match(operational, /stage:"photo_validation"/);
+    assert.match(operational, /stage:"rpc_invocation",rpcName/);
+    assert.match(operational, /stage:"response_schema_parse",rpcName/);
+    assert.match(operational, /stage:"exception",failedStage:failedSubstage/);
     assert.match(operational, /attachment_position/);
     assert.match(operational, /maintenanceIssuePhotoStorage\.remove\(uploaded\.map\(\(photo\)=>photo\.storage_path\)\)/);
     assert.match(operational, /create_supervisor_maintenance_issue_with_photo/);

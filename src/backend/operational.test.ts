@@ -1047,10 +1047,13 @@ describe("Phase 3A operational API", () => {
     assert.equal(body.maintenance_issue.id, id.maintenanceIssue);
     assert.equal(body.maintenance_issue.title, "Freezer door");
     assert.equal(body.maintenance_issue.status, "new");
-    assert.deepEqual(calls.at(-1), {
+    const createCall = calls.at(-1) as Record<string, unknown>;
+    assert.match(String(createCall.requestId), /^[0-9a-f-]{36}$/);
+    assert.deepEqual({ ...createCall, requestId: "request-id" }, {
       method: "createSupervisorMaintenanceIssue",
       actorUserId: id.supervisor,
       branchId: id.branch,
+      requestId: "request-id",
       idempotencyKey: null,
       payload: { title: "Freezer door", category: "refrigeration", priority: "urgent", description: "Door is loose", location: "Kitchen" },
       photos: [],
@@ -1314,10 +1317,13 @@ describe("Phase 3A operational API", () => {
     assert.equal(body.maintenance_issue.branch_id, null);
     assert.equal(body.maintenance_issue.branch_name, "Office");
     assert.equal(body.maintenance_issue.title, "Office AC");
-    assert.deepEqual(calls.at(-1), {
+    const createCall = calls.at(-1) as Record<string, unknown>;
+    assert.match(String(createCall.requestId), /^[0-9a-f-]{36}$/);
+    assert.deepEqual({ ...createCall, requestId: "request-id" }, {
       method: "createManagerOfficeMaintenanceIssue",
       actorUserId: id.manager,
       organizationId: id.organization,
+      requestId: "request-id",
       idempotencyKey: null,
       payload: { title: "Office AC", category: "equipment", priority: "high", description: "Not cooling", location: "Office" },
       photos: [],
