@@ -98,21 +98,6 @@ export const errorHandler: ErrorRequestHandler = (
     });
   }
 
-  if (
-    request.method === "POST" &&
-    !request.safeFailureLogged &&
-    /^\/api\/v1\/supervisor\/branches\/[^/]+\/maintenance-issues$/u.test(request.path)
-  ) {
-    console.info("MAINTENANCE_SUBMIT_DIAGNOSTIC", {
-      requestId: request.id,
-      stage: "exception",
-      httpStatus: normalized.status,
-      backendErrorCode: normalized.code,
-      errorName: error instanceof Error ? error.name : "UnknownError",
-      diagnosticVersion: "maintenance-create-v2",
-    });
-  }
-
   response.status(normalized.status).json({
     error: {
       code: normalized.code,

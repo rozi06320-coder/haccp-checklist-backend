@@ -1387,10 +1387,6 @@ function operationalMaintenanceIssueError(error: unknown) {
   return new HttpError(503, "service_unavailable", "Maintenance issues are temporarily unavailable.");
 }
 
-function maintenanceSubmitDiagnostic(details: Record<string, unknown>) {
-  console.info("MAINTENANCE_SUBMIT_DIAGNOSTIC", { ...details, diagnosticVersion: "maintenance-create-v2" });
-}
-
 function maintenancePushError(error: unknown) {
   if (error instanceof MaintenancePushInputError) return new HttpError(422, "unprocessable_entity", "The push subscription is invalid.");
   if (error instanceof MaintenancePushConflictError) return new HttpError(409, "conflict", "This browser subscription belongs to another account.");
@@ -4938,21 +4934,11 @@ export function createApp(
 
   app.post("/api/v1/supervisor/branches/:branchId/maintenance-issues", protectedRateLimit, authenticate, maintenanceIssuePhotoRawBody,
     async (request, response, next) => {
-      let diagnosticStage = "request_received";
-      let photoCount = 0;
-      let idempotencyPresent = Boolean(request.header("Idempotency-Key"));
       try {
-        maintenanceSubmitDiagnostic({
-          requestId: request.id,
-          stage: diagnosticStage,
-          photoCount,
-          idempotencyPresent,
-        });
         const branchId = branchIdSchema.safeParse(request.params.branchId);
         let rawPayload: unknown = request.body;
         let photos: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> = [];
         if (Buffer.isBuffer(request.body)) {
-          diagnosticStage = "photo_validation";
           if (request.header("Content-Type")?.split(";")[0]?.trim().toLowerCase() !== "application/vnd.maintenance-issue+json") {
             throw new HttpError(400, "bad_request", "The request is invalid.");
           }
@@ -4966,7 +4952,6 @@ export function createApp(
           if (!envelope.success) throw new HttpError(400, "bad_request", "The request is invalid.");
           rawPayload = envelope.data.issue;
           const uploadedBeforePhotos = envelope.data.before_photos ?? (envelope.data.before_photo ? [envelope.data.before_photo] : []);
-          photoCount = uploadedBeforePhotos.length;
           photos = uploadedBeforePhotos.map((photo, index) => ({
             bytes: Buffer.from(photo.content_base64, "base64"),
             mimeType: photo.mime_type,
@@ -4976,32 +4961,15 @@ export function createApp(
         const body = maintenanceIssueBodySchema.safeParse(rawPayload);
         if (!branchId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
         const idempotencyHeader = request.header("Idempotency-Key");
-        idempotencyPresent = Boolean(idempotencyHeader);
         const idempotencyKey = idempotencyHeader ? idempotencySchema.safeParse(idempotencyHeader) : null;
         if (idempotencyKey && !idempotencyKey.success) throw new HttpError(400, "bad_request", "The request is invalid.");
         const parsedIdempotencyKey = idempotencyKey?.success ? idempotencyKey.data : null;
-        diagnosticStage = "idempotency_validated";
-        maintenanceSubmitDiagnostic({
-          requestId: request.id,
-          stage: diagnosticStage,
-          photoCount,
-          idempotencyPresent,
-        });
         const auth = requireAuthContext(request);
         const context = await loadActiveUser(request);
         if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin) throw new HttpError(403, "forbidden", "Access is denied.");
-        diagnosticStage = "auth_ok";
-        maintenanceSubmitDiagnostic({
-          requestId: request.id,
-          stage: diagnosticStage,
-          photoCount,
-          idempotencyPresent,
-        });
-        diagnosticStage = "service_create";
         const serviceResult = await dependencies.operationalAdmin.createSupervisorMaintenanceIssue({
           actorUserId: auth.userId,
           branchId: branchId.data,
-          requestId: request.id,
           idempotencyKey: parsedIdempotencyKey,
           payload: body.data,
           photos,
@@ -5010,13 +4978,6 @@ export function createApp(
         const result = maintenanceIssueMutationResponseSchema.parse(maintenanceIssueCreateResponsePayload(serviceResult));
         response.setHeader("Cache-Control", "private, no-store");
         response.status(created ? 201 : 200).json(result);
-        maintenanceSubmitDiagnostic({
-          requestId: request.id,
-          stage: "rpc_success",
-          photoCount,
-          idempotencyPresent,
-          httpStatus: created ? 201 : 200,
-        });
         if (created) void dependencies.maintenancePush?.notifyMaintenanceIssueCreated({
           issueId: result.maintenance_issue.id,
           branchId: result.maintenance_issue.branch_id,
@@ -5025,19 +4986,7 @@ export function createApp(
           title: result.maintenance_issue.title,
         }).catch(() => undefined);
       } catch (error) {
-        const failure = error instanceof HttpError ? error : operationalMaintenanceIssueError(error);
-        maintenanceSubmitDiagnostic({
-          requestId: request.id,
-          stage: "exception",
-          failedStage: diagnosticStage,
-          photoCount,
-          idempotencyPresent,
-          httpStatus: failure.status,
-          backendErrorCode: failure.code,
-          errorName: error instanceof Error ? error.name : "UnknownError",
-        });
-        request.safeFailureLogged = true;
-        next(failure);
+        next(error instanceof HttpError ? error : operationalMaintenanceIssueError(error));
       }
     });
 
@@ -5370,7 +5319,7 @@ export function createApp(
         const parsedIdempotencyKey=idempotencyKey?.success?idempotencyKey.data:null;
         const auth=requireAuthContext(request),context=await loadActiveUser(request);
         if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.createManagerOfficeMaintenanceIssue)throw new HttpError(403,"forbidden","Access is denied.");
-        const serviceResult=await dependencies.operationalAdmin.createManagerOfficeMaintenanceIssue({actorUserId:auth.userId,organizationId:organizationId.data,requestId:request.id,idempotencyKey:parsedIdempotencyKey,payload:body.data,photos});
+        const serviceResult=await dependencies.operationalAdmin.createManagerOfficeMaintenanceIssue({actorUserId:auth.userId,organizationId:organizationId.data,idempotencyKey:parsedIdempotencyKey,payload:body.data,photos});
         const created=maintenanceIssueCreateResultWasCreated(serviceResult);
         const result=maintenanceIssueMutationResponseSchema.parse(maintenanceIssueCreateResponsePayload(serviceResult));
         response.setHeader("Cache-Control","private, no-store");response.status(created?201:200).json(result);
