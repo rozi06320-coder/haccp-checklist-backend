@@ -6,7 +6,7 @@ import { after, before, describe, it } from "node:test";
 import { createApp } from "./app";
 import { loadBackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
-import { branchLocalDate, createOperationalAdmin, OperationalAccessError, OperationalConflictError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError } from "./operational";
+import { branchLocalDate, createOperationalAdmin, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError } from "./operational";
 import type { UserContext } from "./user-context";
 
 const id = {
@@ -160,6 +160,12 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
         if (actorUserId !== id.supervisor) throw new Error("denied");
         return { purchase_logs: [] };
       },
+      async createPurchaseLogReceiptReadUrl(input) {
+        calls.push({ method: "purchaseLogReceiptReadUrl", ...input });
+        if (input.actorUserId !== id.supervisor) throw new OperationalAccessError();
+        if (input.purchaseLogId !== id.purchaseLog) throw new OperationalAttachmentNotFoundError();
+        return { signed_url: "https://storage.example.invalid/signed-invoice", expires_in: 300, original_name: "invoice.pdf" };
+      },
       async createPurchaseLog(input) {
         calls.push({ method: "createPurchaseLog", hasInvoice: Boolean(input.invoice), ...input });
         if (input.actorUserId !== id.supervisor) throw new Error("denied");
@@ -174,6 +180,12 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
         calls.push({ method: "supplierReceivings", actorUserId, branchId, filters: filters ?? null });
         if (actorUserId !== id.supervisor) throw new Error("denied");
         return { supplier_receivings: [] };
+      },
+      async createSupplierReceivingPhotoReadUrl(input) {
+        calls.push({ method: "supplierReceivingPhotoReadUrl", ...input });
+        if (input.actorUserId !== id.supervisor) throw new OperationalAccessError();
+        if (input.supplierReceivingId !== id.supplierReceiving) throw new OperationalAttachmentNotFoundError();
+        return { signed_url: "https://storage.example.invalid/signed-photo", expires_in: 300, original_name: "photo.jpg" };
       },
       async listBranchSuppliers(actorUserId, branchId) {
         calls.push({ method: "branchSuppliers", actorUserId, branchId });
@@ -947,6 +959,20 @@ describe("Phase 3A operational API", () => {
       method: "PATCH", headers: headers("supervisor"), body: JSON.stringify({ payment_status: "reimbursed" }),
     })).status, 400);
   });
+  it("creates authorized short-lived Purchase Log receipt read URLs without exposing storage paths", async () => {
+    const receipt = await fetch(`${baseUrl}/api/v1/supervisor/purchase-logs/${id.purchaseLog}/receipt/read-url`, { headers: headers("supervisor") });
+    assert.equal(receipt.status, 200);
+    assert.deepEqual(await receipt.json(), { signed_url: "https://storage.example.invalid/signed-invoice", expires_in: 300, original_name: "invoice.pdf" });
+    assert.deepEqual(calls.at(-1), { method: "purchaseLogReceiptReadUrl", actorUserId: id.supervisor, purchaseLogId: id.purchaseLog });
+
+    const missingId = "a0000000-0000-4000-8000-000000000099";
+    const missing = await fetch(`${baseUrl}/api/v1/supervisor/purchase-logs/${missingId}/receipt/read-url`, { headers: headers("supervisor") });
+    assert.equal(missing.status, 404);
+    const missingText = await missing.text();
+    assert.doesNotMatch(missingText, /branches\/|invoice_storage_path|storage_path/);
+    assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/purchase-logs/${id.purchaseLog}/receipt/read-url`, { headers: headers("manager") })).status, 403);
+    assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/purchase-logs/not-a-uuid/receipt/read-url`, { headers: headers("supervisor") })).status, 400);
+  });
   it("persists Supplier Receiving entries through supervisor-only routes", async () => {
     const suppliers = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/suppliers`, { headers: headers("supervisor") });
     assert.equal(suppliers.status, 200);
@@ -1031,6 +1057,20 @@ describe("Phase 3A operational API", () => {
       });
       assert.equal(response.status, 400);
     }
+  });
+  it("creates authorized short-lived Supplier Receiving photo read URLs without exposing storage paths", async () => {
+    const photo = await fetch(`${baseUrl}/api/v1/supervisor/supplier-receivings/${id.supplierReceiving}/photo/read-url`, { headers: headers("supervisor") });
+    assert.equal(photo.status, 200);
+    assert.deepEqual(await photo.json(), { signed_url: "https://storage.example.invalid/signed-photo", expires_in: 300, original_name: "photo.jpg" });
+    assert.deepEqual(calls.at(-1), { method: "supplierReceivingPhotoReadUrl", actorUserId: id.supervisor, supplierReceivingId: id.supplierReceiving });
+
+    const missingId = "b0000000-0000-4000-8000-000000000099";
+    const missing = await fetch(`${baseUrl}/api/v1/supervisor/supplier-receivings/${missingId}/photo/read-url`, { headers: headers("supervisor") });
+    assert.equal(missing.status, 404);
+    const missingText = await missing.text();
+    assert.doesNotMatch(missingText, /branches\/|photo_storage_path|storage_path/);
+    assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/supplier-receivings/${id.supplierReceiving}/photo/read-url`, { headers: headers("manager") })).status, 403);
+    assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/supplier-receivings/not-a-uuid/photo/read-url`, { headers: headers("supervisor") })).status, 400);
   });
   it("persists supervisor Maintenance issues through supervisor-only routes", async () => {
     const list = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/maintenance-issues`, { headers: headers("supervisor") });

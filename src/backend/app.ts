@@ -16,7 +16,7 @@ import {
   type BackendDependencies,
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
-import { branchLocalDate, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime } from "./operational";
+import { branchLocalDate, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime } from "./operational";
 import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ManagementOverviewUnavailableError } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
@@ -243,6 +243,11 @@ const purchaseLogResponseRowSchema = z.object({
 });
 const purchaseLogListResponseSchema = z.object({ purchase_logs: z.array(purchaseLogResponseRowSchema).max(500) }).strict();
 const purchaseLogMutationResponseSchema = z.object({ purchase_log: purchaseLogResponseRowSchema }).strict();
+const receiptReadUrlResponseSchema = z.object({
+  signed_url: z.url(),
+  expires_in: z.number().int().min(1).max(5 * 60),
+  original_name: z.string().nullable(),
+}).strict();
 const managedPurchaseLogRowSchema = purchaseLogResponseRowSchema.extend({ created_by_name: z.string().nullable().optional() }).strict();
 const managedPurchaseLogListResponseSchema = z.object({ purchase_logs: z.array(managedPurchaseLogRowSchema).max(500) }).strict();
 const supplierReceivingCategorySchema = z.enum(["raw", "frozen", "juice"]);
@@ -1361,6 +1366,7 @@ function brandingError(error: unknown) {
 function operationalPurchaseError(error: unknown) {
   if (error instanceof OperationalInputError) return new HttpError(422, "unprocessable_entity", "The purchase log is invalid.");
   if (error instanceof OperationalConflictError) return new HttpError(409, "conflict", "The purchase log conflicts with current team data.");
+  if (error instanceof OperationalAttachmentNotFoundError) return new HttpError(404, "not_found", "The receipt is unavailable.");
   if (error instanceof OperationalAccessError) return new HttpError(403, "forbidden", "Access is denied.");
   return new HttpError(503, "service_unavailable", "Purchase Log is temporarily unavailable.");
 }
@@ -1368,6 +1374,7 @@ function operationalPurchaseError(error: unknown) {
 function operationalSupplierReceivingError(error: unknown) {
   if (error instanceof OperationalInputError) return new HttpError(422, "unprocessable_entity", "The supplier receiving entry is invalid.");
   if (error instanceof OperationalConflictError) return new HttpError(409, "conflict", "The supplier receiving entry conflicts with current team data.");
+  if (error instanceof OperationalAttachmentNotFoundError) return new HttpError(404, "not_found", "The receiving photo is unavailable.");
   if (error instanceof OperationalAccessError) return new HttpError(403, "forbidden", "Access is denied.");
   return new HttpError(503, "service_unavailable", "Supplier Receiving is temporarily unavailable.");
 }
@@ -4987,6 +4994,46 @@ export function createApp(
         }).catch(() => undefined);
       } catch (error) {
         next(error instanceof HttpError ? error : operationalMaintenanceIssueError(error));
+      }
+    });
+
+  app.get("/api/v1/supervisor/purchase-logs/:purchaseLogId/receipt/read-url", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const purchaseLogId = z.uuid().safeParse(request.params.purchaseLogId);
+        if (!purchaseLogId.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin?.createPurchaseLogReceiptReadUrl) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = receiptReadUrlResponseSchema.parse(await dependencies.operationalAdmin.createPurchaseLogReceiptReadUrl({
+          actorUserId: auth.userId,
+          purchaseLogId: purchaseLogId.data,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchaseError(error));
+      }
+    });
+
+  app.get("/api/v1/supervisor/supplier-receivings/:supplierReceivingId/photo/read-url", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const supplierReceivingId = z.uuid().safeParse(request.params.supplierReceivingId);
+        if (!supplierReceivingId.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin?.createSupplierReceivingPhotoReadUrl) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = receiptReadUrlResponseSchema.parse(await dependencies.operationalAdmin.createSupplierReceivingPhotoReadUrl({
+          actorUserId: auth.userId,
+          supplierReceivingId: supplierReceivingId.data,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalSupplierReceivingError(error));
       }
     });
 

@@ -169,6 +169,16 @@ const supplierReceivingRow = z.object({
   created_at: z.string(),
   updated_at: z.string(),
 }).strict();
+const purchaseLogReceiptRow = z.object({
+  branch_id: uuid,
+  invoice_storage_path: optionalStaffText,
+  invoice_original_name: optionalStaffText,
+}).strict();
+const supplierReceivingPhotoRow = z.object({
+  branch_id: uuid,
+  photo_storage_path: optionalStaffText,
+  photo_original_name: optionalStaffText,
+}).strict();
 const branchSupplierRow = z.object({
   id: uuid,
   organization_id: uuid.optional(),
@@ -246,6 +256,7 @@ export class OperationalDuplicateStaffCodeError extends Error {}
 export class OperationalDuplicateColdStorageEquipmentCodeError extends Error {}
 export class OperationalAccessError extends Error {}
 export class OperationalInputError extends Error {}
+export class OperationalAttachmentNotFoundError extends Error {}
 export class OperationalHygieneSubmittedError extends Error {}
 export type OperationalAdmin = {
   resolveDailyAuditGrantBranchScope?(actorUserId:string,branchId:string):Promise<{branch_id:string;organization_id:string;active:boolean;organization_active:boolean}|null>;
@@ -305,6 +316,7 @@ export type OperationalAdmin = {
     scores: Array<{ section: string; factor_key: string; factor_label: string; rating: number | null; comment?: string | null }>;
   }): Promise<unknown>;
   listPurchaseLogs(actorUserId: string, branchId: string, filters?: { dateFrom?: string | null; dateTo?: string | null }): Promise<unknown>;
+  createPurchaseLogReceiptReadUrl?(input: { actorUserId: string; purchaseLogId: string }): Promise<unknown>;
   createPurchaseLog(input: {
     actorUserId: string;
     branchId: string;
@@ -329,6 +341,7 @@ export type OperationalAdmin = {
     reimbursementNote?: string | null;
   }): Promise<unknown>;
   listSupplierReceivings(actorUserId: string, branchId: string, filters?: { dateFrom?: string | null; dateTo?: string | null }): Promise<unknown>;
+  createSupplierReceivingPhotoReadUrl?(input: { actorUserId: string; supplierReceivingId: string }): Promise<unknown>;
   listBranchSuppliers(actorUserId: string, branchId: string): Promise<unknown>;
   createBranchSupplier(input: {
     actorUserId: string;
@@ -548,6 +561,12 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     } catch {
       return null;
     }
+  }
+  async function assertSupervisorBranchAccess(actorUserId: string, branchId: string) {
+    z.array(z.object({ timezone: z.string().min(1).max(100) }).strict()).length(1).parse(await rpc("get_supervisor_branch_timezone", {
+      actor_user_id: actorUserId,
+      target_branch_id: branchId,
+    }));
   }
   async function signMaintenanceReceipt(path:string|null){if(!path)return null;try{const result=await maintenanceReceiptStorage.createSignedUrl(path,PURCHASE_INVOICE_SIGNED_URL_SECONDS);return result.error||!result.data?.signedUrl?null:result.data.signedUrl;}catch{return null;}}
   async function signMaintenanceIssuePhoto(path:string|null){if(!path)return null;try{const result=await maintenanceIssuePhotoStorage.createSignedUrl(path,MAINTENANCE_ISSUE_PHOTO_SIGNED_URL_SECONDS);return result.error||!result.data?.signedUrl?null:result.data.signedUrl;}catch{return null;}}
@@ -983,6 +1002,19 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         (!filters?.dateTo || row.purchase_date <= filters.dateTo),
       ) };
     },
+    async createPurchaseLogReceiptReadUrl(input) {
+      const result = await client.from("branch_purchase_logs")
+        .select("branch_id,invoice_storage_path,invoice_original_name")
+        .eq("id", input.purchaseLogId)
+        .maybeSingle();
+      if (result.error) throw new AdminOperationError();
+      const row = result.data ? purchaseLogReceiptRow.parse(result.data) : null;
+      if (!row?.invoice_storage_path) throw new OperationalAttachmentNotFoundError();
+      await assertSupervisorBranchAccess(input.actorUserId, row.branch_id);
+      const signedUrl = await signPurchaseInvoice(row.invoice_storage_path);
+      if (!signedUrl) throw new AdminOperationError();
+      return { signed_url: signedUrl, expires_in: PURCHASE_INVOICE_SIGNED_URL_SECONDS, original_name: row.invoice_original_name };
+    },
     async createPurchaseLog(input) {
       let invoicePath: string | null = null;
       let invoiceOriginalName: string | null = null;
@@ -1034,6 +1066,19 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         const receivingDate = supplierReceivingLocalDate(row.created_at);
         return (!filters?.dateFrom || receivingDate >= filters.dateFrom) && (!filters?.dateTo || receivingDate <= filters.dateTo);
       }) };
+    },
+    async createSupplierReceivingPhotoReadUrl(input) {
+      const result = await client.from("branch_supplier_receivings")
+        .select("branch_id,photo_storage_path,photo_original_name")
+        .eq("id", input.supplierReceivingId)
+        .maybeSingle();
+      if (result.error) throw new AdminOperationError();
+      const row = result.data ? supplierReceivingPhotoRow.parse(result.data) : null;
+      if (!row?.photo_storage_path) throw new OperationalAttachmentNotFoundError();
+      await assertSupervisorBranchAccess(input.actorUserId, row.branch_id);
+      const signedUrl = await signSupplierReceivingPhoto(row.photo_storage_path);
+      if (!signedUrl) throw new AdminOperationError();
+      return { signed_url: signedUrl, expires_in: SUPPLIER_RECEIVING_PHOTO_SIGNED_URL_SECONDS, original_name: row.photo_original_name };
     },
     async listBranchSuppliers(actorUserId, branchId) {
       return { suppliers: normalizeBranchSupplierRows(await rpc("list_branch_suppliers", {
