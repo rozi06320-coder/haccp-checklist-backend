@@ -439,6 +439,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
           ...diagnostic,
           stage: "rpc_error",
           supabaseErrorCode: result.error.code,
+          diagnosticVersion: "maintenance-create-v2",
         });
       }
       if (result.error.code === "23505" && /employee code/i.test(result.error.message)) {
@@ -571,7 +572,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     };
   }
   function maintenanceIssueServiceDiagnostic(details:Record<string,unknown>){
-    console.info("MAINTENANCE_SUBMIT_DIAGNOSTIC",details);
+    console.info("MAINTENANCE_SUBMIT_DIAGNOSTIC",{...details,diagnosticVersion:"maintenance-create-v2"});
   }
   async function uploadMaintenanceIssuePhoto(issueId:string,type:"issue"|"repair",photo:{bytes:Buffer;mimeType:z.infer<typeof maintenanceIssuePhotoMime>;originalName:string},diagnostic?:{base:Record<string,unknown>;setSubstage:(substage:string)=>void}){
     diagnostic?.setSubstage("photo_validation");

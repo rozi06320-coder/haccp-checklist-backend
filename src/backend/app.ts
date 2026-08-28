@@ -1388,7 +1388,7 @@ function operationalMaintenanceIssueError(error: unknown) {
 }
 
 function maintenanceSubmitDiagnostic(details: Record<string, unknown>) {
-  console.info("MAINTENANCE_SUBMIT_DIAGNOSTIC", details);
+  console.info("MAINTENANCE_SUBMIT_DIAGNOSTIC", { ...details, diagnosticVersion: "maintenance-create-v2" });
 }
 
 function maintenancePushError(error: unknown) {

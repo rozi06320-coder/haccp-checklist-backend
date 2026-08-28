@@ -85,6 +85,11 @@ describe("Maintenance service_create diagnostics", () => {
     assert.match(serialized, /"errorName":"StorageApiError"/);
     assert.match(serialized, /"stage":"exception"/);
     assert.match(serialized, /"failedStage":"storage_upload"/);
+    const diagnosticRecords = records.filter(([prefix]) => prefix === "MAINTENANCE_SUBMIT_DIAGNOSTIC");
+    assert.ok(diagnosticRecords.length > 0);
+    for (const [, details] of diagnosticRecords) {
+      assert.equal((details as { diagnosticVersion?: string }).diagnosticVersion, "maintenance-create-v2");
+    }
     assert.doesNotMatch(serialized, /maintenance\/|before\.png|Safe title|not logged|service-key|Bearer/i);
     assert.equal(fake.requests.some((url) => url.startsWith("/rest/v1/rpc/")), false);
   });

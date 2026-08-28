@@ -109,6 +109,7 @@ export const errorHandler: ErrorRequestHandler = (
       httpStatus: normalized.status,
       backendErrorCode: normalized.code,
       errorName: error instanceof Error ? error.name : "UnknownError",
+      diagnosticVersion: "maintenance-create-v2",
     });
   }
 
