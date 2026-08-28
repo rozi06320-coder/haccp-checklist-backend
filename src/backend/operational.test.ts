@@ -125,6 +125,11 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
         return { staff_id: input.staffId, assignment_id: id.assignment, branch_id: input.destinationBranchId, operational_team_id: input.destinationTeamId };
       },
       async leaveStaff(input) { calls.push({ method: "leave", ...input }); return { staff_id: input.staffId, assignment_id: id.assignment, employment_status: "inactive" }; },
+      async removeStaff(input) {
+        calls.push({ method: "remove", ...input });
+        if (input.actorUserId !== id.supervisor) throw new OperationalAccessError();
+        return { staff_id: input.staffId, assignment_id: input.expectedAssignmentId, employment_status: "inactive", reason_code: input.reasonCode };
+      },
       async startManagedOperationalStaffSupervisorTraining(input) { calls.push({ method: "startSupervisorTraining", ...input }); return { id: id.assignment, operational_staff_id: input.staffId, status: "training" }; },
       async cancelManagedOperationalStaffSupervisorTraining(input) { calls.push({ method: "cancelSupervisorTraining", ...input }); return { id: id.assignment, operational_staff_id: input.staffId, status: "cancelled" }; },
       async getManagedOperationalStaffSupervisorTrainingPromotionState(input) { calls.push({ method: "getSupervisorTrainingPromotionState", ...input }); return { id: id.assignment, operational_staff_id: input.staffId, status: "training" }; },
@@ -483,6 +488,64 @@ describe("cross-branch staff transfer operational adapter", () => {
       await new Promise<void>((resolve, reject) => rpc.close((error) => error ? reject(error) : resolve()));
     }
   });
+  it("uses the soft-remove RPC with reason audit arguments", async () => {
+    const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const rpc = createServer(async (request, response) => {
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      requests.push({ path: request.url ?? "", body: JSON.parse(raw) as Record<string, unknown> });
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify([{ staff_id: id.worker, assignment_id: id.assignment, employment_status: "inactive", reason_code: "added_by_mistake" }]));
+    });
+    await new Promise<void>((resolve) => rpc.listen(0, "127.0.0.1", resolve));
+    try {
+      const admin = createOperationalAdmin(`http://127.0.0.1:${(rpc.address() as AddressInfo).port}`, "service-key");
+      assert.deepEqual(await admin.removeStaff?.({ actorUserId: id.supervisor, branchId: id.branch, staffId: id.worker, expectedAssignmentId: id.assignment, reasonCode: "added_by_mistake", reasonNote: "Created twice" }), {
+        staff_id: id.worker, assignment_id: id.assignment, employment_status: "inactive", reason_code: "added_by_mistake",
+      });
+      assert.deepEqual(requests, [{
+        path: "/rest/v1/rpc/remove_operational_team_staff",
+        body: {
+          actor_user_id: id.supervisor,
+          target_branch_id: id.branch,
+          target_staff_id: id.worker,
+          expected_assignment_id: id.assignment,
+          removal_reason: "added_by_mistake",
+          removal_note: "Created twice",
+        },
+      }]);
+    } finally {
+      await new Promise<void>((resolve, reject) => rpc.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+});
+
+describe("Operational Staff removal migration", () => {
+  it("soft-deactivates staff, closes assignments, and records a durable reason audit without hard delete", () => {
+    const migration = readFileSync(
+      new URL("../../supabase/migrations/20260829100000_operational_staff_soft_remove.sql", import.meta.url),
+      "utf8",
+    );
+    assert.match(migration, /create table if not exists public\.operational_staff_removal_audits/);
+    assert.match(migration, /create unique index if not exists operational_staff_removal_audits_assignment_key/);
+    assert.match(migration, /create or replace function public\.remove_operational_team_staff/);
+    assert.match(migration, /employment_status = 'inactive'/);
+    assert.match(migration, /deactivated_at = now\(\)/);
+    assert.match(migration, /deactivated_by = actor_user_id/);
+    assert.match(migration, /active = false/);
+    assert.match(migration, /closed_at = now\(\)/);
+    assert.match(migration, /closed_by_user_id = actor_user_id/);
+    assert.match(migration, /employee_removed/);
+    assert.match(migration, /private\.actor_can_write_operational_team/);
+    for (const reason of ["duplicate", "added_by_mistake", "wrong_employee_data", "left_company", "other"]) {
+      assert.match(migration, new RegExp(reason));
+    }
+    assert.match(migration, /reason_code <> 'other' or reason_note is not null/);
+    assert.match(migration, /on conflict \(assignment_id\) do nothing/);
+    assert.match(migration, /grant execute on function public\.remove_operational_team_staff/);
+    assert.doesNotMatch(migration, /delete\s+from\s+public\.operational_staff\b/i);
+    assert.doesNotMatch(migration, /delete\s+from\s+public\.operational_staff_assignments\b/i);
+  });
 });
 
 describe("Daily Audit operational adapter", () => {
@@ -751,6 +814,28 @@ describe("Phase 3A operational API", () => {
     });
     assert.equal(response.status, 200);
     assert.deepEqual(calls.at(-1), { method: "leave", actorUserId: id.supervisor, branchId: id.branch, staffId: id.worker, expectedAssignmentId: id.assignment });
+  });
+  it("soft-removes Employee Team staff with a durable removal reason", async () => {
+    const response = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/remove`, {
+      method: "POST", headers: headers("supervisor"), body: JSON.stringify({ expected_assignment_id: id.assignment, reason_code: "duplicate" }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { staff_id: id.worker, assignment_id: id.assignment, employment_status: "inactive", reason_code: "duplicate" });
+    assert.deepEqual(calls.at(-1), {
+      method: "remove", actorUserId: id.supervisor, branchId: id.branch, staffId: id.worker,
+      expectedAssignmentId: id.assignment, reasonCode: "duplicate", reasonNote: null,
+    });
+  });
+  it("requires Other details before Employee Team removal reaches the service", async () => {
+    const response = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/remove`, {
+      method: "POST", headers: headers("supervisor"), body: JSON.stringify({ expected_assignment_id: id.assignment, reason_code: "other" }),
+    });
+    assert.equal(response.status, 400);
+  });
+  it("rejects Employee Team removal outside supervisor scope", async () => {
+    assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/remove`, {
+      method: "POST", headers: headers("manager"), body: JSON.stringify({ expected_assignment_id: id.assignment, reason_code: "duplicate" }),
+    })).status, 403);
   });
   it("does not expose Manager cross-branch employee transfer", async () => {
     const path=`${baseUrl}/api/v1/management/organizations/${id.organization}/operational-staff/${id.worker}/branch`;

@@ -93,6 +93,13 @@ const mutationRow = z.object({
   phone_number: optionalStaffText.optional(),
   email: optionalStaffText.optional(),
 }).strict();
+const staffRemovalReason = z.enum(["duplicate", "added_by_mistake", "wrong_employee_data", "left_company", "other"]);
+const staffRemovalRow = z.object({
+  staff_id: uuid,
+  assignment_id: uuid,
+  employment_status: z.literal("inactive"),
+  reason_code: staffRemovalReason,
+}).strict();
 const staffImportPreviewRpcRow = z.object({
   preview_token: uuid,
   row_number: z.number().int().nullable(),
@@ -319,6 +326,7 @@ export type OperationalAdmin = {
   listStaffTransferDestinations?(input: { actorUserId: string; sourceBranchId: string; staffId: string; expectedAssignmentId: string }): Promise<{ destinations: Array<z.infer<typeof staffTransferDestinationRow>> }>;
   transferStaffBranch?(input: { actorUserId: string; organizationId: string; sourceBranchId: string; staffId: string; expectedAssignmentId: string; destinationBranchId: string; destinationTeamId: string }): Promise<unknown>;
   leaveStaff?(input: { actorUserId: string; branchId: string; staffId: string; expectedAssignmentId: string }): Promise<unknown>;
+  removeStaff?(input: { actorUserId: string; branchId: string; staffId: string; expectedAssignmentId: string; reasonCode: z.infer<typeof staffRemovalReason>; reasonNote?: string | null }): Promise<unknown>;
   listHealthCards(actorUserId: string, branchId: string): Promise<unknown>;
   upsertHealthCard(input: {
     actorUserId: string; branchId: string; staffId: string; certificateNumber?: string | null;
@@ -961,6 +969,17 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         target_branch_id: input.branchId,
         target_staff_id: input.staffId,
         expected_assignment_id: input.expectedAssignmentId,
+      }));
+      return rows[0];
+    },
+    async removeStaff(input) {
+      const rows = z.array(staffRemovalRow).length(1).parse(await rpc("remove_operational_team_staff", {
+        actor_user_id: input.actorUserId,
+        target_branch_id: input.branchId,
+        target_staff_id: input.staffId,
+        expected_assignment_id: input.expectedAssignmentId,
+        removal_reason: input.reasonCode,
+        removal_note: input.reasonNote ?? null,
       }));
       return rows[0];
     },

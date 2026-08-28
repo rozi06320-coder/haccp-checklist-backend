@@ -164,6 +164,16 @@ const branchTransferBodySchema = z.object({
   destination_team_id: z.uuid(),
 }).strict();
 const leaveOperationalStaffBodySchema = z.object({ expected_assignment_id: z.uuid() }).strict();
+const operationalStaffRemovalReasonSchema = z.enum(["duplicate", "added_by_mistake", "wrong_employee_data", "left_company", "other"]);
+const removeOperationalStaffBodySchema = z.object({
+  expected_assignment_id: z.uuid(),
+  reason_code: operationalStaffRemovalReasonSchema,
+  reason_note: optionalStaffTextSchema(1000),
+}).strict().superRefine((value, context) => {
+  if (value.reason_code === "other" && value.reason_note === null) {
+    context.addIssue({ code: "custom", path: ["reason_note"], message: "Reason details are required." });
+  }
+});
 const promoteSupervisorTrainingBodySchema = z.object({
   full_name: normalizedNameSchema,
   full_name_ar: optionalDisplayNameSchema,
@@ -4742,6 +4752,35 @@ export function createApp(
         next(error instanceof HttpError ? error : error instanceof OperationalConflictError
           ? new HttpError(409, "conflict", "The requested change conflicts with current team data.")
           : new HttpError(403, "forbidden", "Access is denied."));
+      }
+    });
+
+  app.post("/api/v1/supervisor/branches/:branchId/operational-staff/:staffId/remove", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const staffId = staffIdSchema.safeParse(request.params.staffId);
+        const body = removeOperationalStaffBodySchema.safeParse(request.body);
+        if (!branchId.success || !staffId.success || !body.success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || !dependencies.operationalAdmin?.removeStaff) throw new HttpError(403, "forbidden", "Access is denied.");
+        response.status(200).json(await dependencies.operationalAdmin.removeStaff({
+          actorUserId: auth.userId,
+          branchId: branchId.data,
+          staffId: staffId.data,
+          expectedAssignmentId: body.data.expected_assignment_id,
+          reasonCode: body.data.reason_code,
+          reasonNote: body.data.reason_note,
+        }));
+      } catch (error) {
+        next(error instanceof HttpError ? error : error instanceof OperationalConflictError
+          ? new HttpError(409, "conflict", "The requested change conflicts with current team data.")
+          : error instanceof OperationalInputError
+            ? new HttpError(400, "bad_request", "The request is invalid.")
+            : error instanceof OperationalAccessError
+              ? new HttpError(403, "forbidden", "Access is denied.")
+              : new HttpError(503, "service_unavailable", "Unable to remove employee."));
       }
     });
 
