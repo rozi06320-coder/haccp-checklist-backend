@@ -5308,6 +5308,20 @@ export function createApp(
       } catch(error) { next(error instanceof HttpError?error:error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Purchase Logs are temporarily unavailable.")); }
     });
 
+  app.get("/api/v1/management/organizations/:organizationId/purchase-logs/:purchaseLogId/receipt/read-url", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId=organizationIdSchema.safeParse(request.params.organizationId),purchaseLogId=z.uuid().safeParse(request.params.purchaseLogId);
+        if(!organizationId.success||!purchaseLogId.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const auth=requireAuthContext(request),context=await loadActiveUser(request);
+        if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.createManagedPurchaseLogReceiptReadUrl)throw new HttpError(403,"forbidden","Access is denied.");
+        const result=receiptReadUrlResponseSchema.parse(await dependencies.operationalAdmin.createManagedPurchaseLogReceiptReadUrl({actorUserId:auth.userId,organizationId:organizationId.data,purchaseLogId:purchaseLogId.data}));
+        response.setHeader("Cache-Control","private, no-store");
+        response.setHeader("X-Content-Type-Options","nosniff");
+        response.status(200).json(result);
+      } catch(error) { next(error instanceof HttpError?error:operationalPurchaseError(error)); }
+    });
+
   app.get("/api/v1/management/organizations/:organizationId/supplier-receivings", protectedRateLimit, authenticate,
     async (request, response, next) => {
       try {
@@ -5318,6 +5332,20 @@ export function createApp(
         const result=managedSupplierReceivingListResponseSchema.parse(await dependencies.operationalAdmin.listManagedSupplierReceivings({actorUserId:auth.userId,organizationId:organizationId.data,branchId:query.data.branch_id,category:query.data.category,supplierId:query.data.supplier_id,dateFrom:query.data.date_from,dateTo:query.data.date_to}));
         response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
       } catch(error) { next(error instanceof HttpError?error:error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Supplier Receiving is temporarily unavailable.")); }
+    });
+
+  app.get("/api/v1/management/organizations/:organizationId/supplier-receivings/:supplierReceivingId/photo/read-url", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId=organizationIdSchema.safeParse(request.params.organizationId),supplierReceivingId=z.uuid().safeParse(request.params.supplierReceivingId);
+        if(!organizationId.success||!supplierReceivingId.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const auth=requireAuthContext(request),context=await loadActiveUser(request);
+        if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.createManagedSupplierReceivingPhotoReadUrl)throw new HttpError(403,"forbidden","Access is denied.");
+        const result=receiptReadUrlResponseSchema.parse(await dependencies.operationalAdmin.createManagedSupplierReceivingPhotoReadUrl({actorUserId:auth.userId,organizationId:organizationId.data,supplierReceivingId:supplierReceivingId.data}));
+        response.setHeader("Cache-Control","private, no-store");
+        response.setHeader("X-Content-Type-Options","nosniff");
+        response.status(200).json(result);
+      } catch(error) { next(error instanceof HttpError?error:operationalSupplierReceivingError(error)); }
     });
 
   app.get("/api/v1/management/organizations/:organizationId/maintenance-issues", protectedRateLimit, authenticate,

@@ -174,10 +174,16 @@ const purchaseLogReceiptRow = z.object({
   invoice_storage_path: optionalStaffText,
   invoice_original_name: optionalStaffText,
 }).strict();
+const managedPurchaseLogReceiptRow = purchaseLogReceiptRow.extend({
+  organization_id: uuid,
+}).strict();
 const supplierReceivingPhotoRow = z.object({
   branch_id: uuid,
   photo_storage_path: optionalStaffText,
   photo_original_name: optionalStaffText,
+}).strict();
+const managedSupplierReceivingPhotoRow = supplierReceivingPhotoRow.extend({
+  organization_id: uuid,
 }).strict();
 const branchSupplierRow = z.object({
   id: uuid,
@@ -317,6 +323,7 @@ export type OperationalAdmin = {
   }): Promise<unknown>;
   listPurchaseLogs(actorUserId: string, branchId: string, filters?: { dateFrom?: string | null; dateTo?: string | null }): Promise<unknown>;
   createPurchaseLogReceiptReadUrl?(input: { actorUserId: string; purchaseLogId: string }): Promise<unknown>;
+  createManagedPurchaseLogReceiptReadUrl?(input: { actorUserId: string; organizationId: string; purchaseLogId: string }): Promise<unknown>;
   createPurchaseLog(input: {
     actorUserId: string;
     branchId: string;
@@ -342,6 +349,7 @@ export type OperationalAdmin = {
   }): Promise<unknown>;
   listSupplierReceivings(actorUserId: string, branchId: string, filters?: { dateFrom?: string | null; dateTo?: string | null }): Promise<unknown>;
   createSupplierReceivingPhotoReadUrl?(input: { actorUserId: string; supplierReceivingId: string }): Promise<unknown>;
+  createManagedSupplierReceivingPhotoReadUrl?(input: { actorUserId: string; organizationId: string; supplierReceivingId: string }): Promise<unknown>;
   listBranchSuppliers(actorUserId: string, branchId: string): Promise<unknown>;
   createBranchSupplier(input: {
     actorUserId: string;
@@ -1015,6 +1023,19 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       if (!signedUrl) throw new AdminOperationError();
       return { signed_url: signedUrl, expires_in: PURCHASE_INVOICE_SIGNED_URL_SECONDS, original_name: row.invoice_original_name };
     },
+    async createManagedPurchaseLogReceiptReadUrl(input) {
+      const result = await client.from("branch_purchase_logs")
+        .select("organization_id,branch_id,invoice_storage_path,invoice_original_name")
+        .eq("id", input.purchaseLogId)
+        .eq("organization_id", input.organizationId)
+        .maybeSingle();
+      if (result.error) throw new AdminOperationError();
+      const row = result.data ? managedPurchaseLogReceiptRow.parse(result.data) : null;
+      if (!row?.invoice_storage_path) throw new OperationalAttachmentNotFoundError();
+      const signedUrl = await signPurchaseInvoice(row.invoice_storage_path);
+      if (!signedUrl) throw new AdminOperationError();
+      return { signed_url: signedUrl, expires_in: PURCHASE_INVOICE_SIGNED_URL_SECONDS, original_name: row.invoice_original_name };
+    },
     async createPurchaseLog(input) {
       let invoicePath: string | null = null;
       let invoiceOriginalName: string | null = null;
@@ -1076,6 +1097,19 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       const row = result.data ? supplierReceivingPhotoRow.parse(result.data) : null;
       if (!row?.photo_storage_path) throw new OperationalAttachmentNotFoundError();
       await assertSupervisorBranchAccess(input.actorUserId, row.branch_id);
+      const signedUrl = await signSupplierReceivingPhoto(row.photo_storage_path);
+      if (!signedUrl) throw new AdminOperationError();
+      return { signed_url: signedUrl, expires_in: SUPPLIER_RECEIVING_PHOTO_SIGNED_URL_SECONDS, original_name: row.photo_original_name };
+    },
+    async createManagedSupplierReceivingPhotoReadUrl(input) {
+      const result = await client.from("branch_supplier_receivings")
+        .select("organization_id,branch_id,photo_storage_path,photo_original_name")
+        .eq("id", input.supplierReceivingId)
+        .eq("organization_id", input.organizationId)
+        .maybeSingle();
+      if (result.error) throw new AdminOperationError();
+      const row = result.data ? managedSupplierReceivingPhotoRow.parse(result.data) : null;
+      if (!row?.photo_storage_path) throw new OperationalAttachmentNotFoundError();
       const signedUrl = await signSupplierReceivingPhoto(row.photo_storage_path);
       if (!signedUrl) throw new AdminOperationError();
       return { signed_url: signedUrl, expires_in: SUPPLIER_RECEIVING_PHOTO_SIGNED_URL_SECONDS, original_name: row.photo_original_name };
