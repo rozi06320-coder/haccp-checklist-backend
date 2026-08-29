@@ -546,6 +546,21 @@ describe("Operational Staff removal migration", () => {
     assert.doesNotMatch(migration, /delete\s+from\s+public\.operational_staff\b/i);
     assert.doesNotMatch(migration, /delete\s+from\s+public\.operational_staff_assignments\b/i);
   });
+  it("hides non-left-company soft removals only from the Manager current directory", () => {
+    const migration = readFileSync(
+      new URL("../../supabase/migrations/20260829143000_hide_removed_staff_from_manager_directory.sql", import.meta.url),
+      "utf8",
+    );
+    assert.match(migration, /create or replace function public\.list_managed_employee_team/);
+    assert.match(migration, /public\.operational_staff_removal_audits removal/);
+    assert.match(migration, /removal\.reason_code in\('duplicate','added_by_mistake','wrong_employee_data','other'\)/);
+    assert.match(migration, /staff\.employment_status='active'/);
+    assert.match(migration, /'health_cards',coalesce/);
+    assert.match(migration, /'monthly_evaluations',coalesce/);
+    assert.doesNotMatch(migration, /delete\s+from\s+public\.operational_staff\b/i);
+    assert.doesNotMatch(migration, /delete\s+from\s+public\.operational_staff_health_cards\b/i);
+    assert.doesNotMatch(migration, /delete\s+from\s+public\.operational_staff_monthly_evaluations\b/i);
+  });
 });
 
 describe("Daily Audit operational adapter", () => {

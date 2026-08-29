@@ -1,5 +1,5 @@
 begin;
-select plan(31);
+select plan(50);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000',id,'authenticated','authenticated',id||'@example.invalid','{}','{}',now(),now()
@@ -99,6 +99,44 @@ select is((select count(*) from public.operational_staff where id=current_settin
 select is((select closure_reason from public.operational_staff_assignments where id=current_setting('test.lifecycle_assignment_b')::uuid),'left_company','Leave Company records closure attribution');
 select throws_ok($$select * from public.leave_operational_staff_company('16100000-0000-4000-8000-000000000001','36100000-0000-4000-8000-000000000002',current_setting('test.lifecycle_staff')::uuid,current_setting('test.lifecycle_assignment_b')::uuid)$$,'42501','staff leave denied','unauthorized actor cannot repeat Leave Company');
 
+set local role service_role;
+select lives_ok($$select * from public.create_operational_team_staff('16100000-0000-4000-8000-000000000001','36100000-0000-4000-8000-000000000001',current_setting('test.lifecycle_team_a')::uuid,'Active Manager Directory Worker',array['kitchen'],'LC-ACTIVE','Lifecycle Org','id',null,null,null,null)$$,'active employee control is created');
+select lives_ok($$select * from public.create_operational_team_staff('16100000-0000-4000-8000-000000000001','36100000-0000-4000-8000-000000000001',current_setting('test.lifecycle_team_a')::uuid,'Removed Duplicate Worker',array['kitchen'],'LC-REM-DUP','Lifecycle Org','id',null,null,null,null)$$,'duplicate removal employee is created');
+select lives_ok($$select * from public.create_operational_team_staff('16100000-0000-4000-8000-000000000001','36100000-0000-4000-8000-000000000001',current_setting('test.lifecycle_team_a')::uuid,'Removed Mistake Worker',array['dispatcher'],'LC-REM-MISTAKE','Lifecycle Org','id',null,null,null,null)$$,'added-by-mistake removal employee is created');
+select lives_ok($$select * from public.create_operational_team_staff('16100000-0000-4000-8000-000000000001','36100000-0000-4000-8000-000000000001',current_setting('test.lifecycle_team_a')::uuid,'Removed Wrong Data Worker',array['production'],'LC-REM-WRONG','Lifecycle Org','id',null,null,null,null)$$,'wrong-data removal employee is created');
+select lives_ok($$select * from public.create_operational_team_staff('16100000-0000-4000-8000-000000000001','36100000-0000-4000-8000-000000000001',current_setting('test.lifecycle_team_a')::uuid,'Removed Other Worker',array['cashier'],'LC-REM-OTHER','Lifecycle Org','id',null,null,null,null)$$,'other removal employee is created');
+reset role;
+
+select set_config('test.active_directory_staff',(select id::text from public.operational_staff where display_name='Active Manager Directory Worker'),false);
+select set_config('test.removed_duplicate_staff',(select id::text from public.operational_staff where display_name='Removed Duplicate Worker'),false);
+select set_config('test.removed_mistake_staff',(select id::text from public.operational_staff where display_name='Removed Mistake Worker'),false);
+select set_config('test.removed_wrong_staff',(select id::text from public.operational_staff where display_name='Removed Wrong Data Worker'),false);
+select set_config('test.removed_other_staff',(select id::text from public.operational_staff where display_name='Removed Other Worker'),false);
+select set_config('test.removed_duplicate_assignment',(select id::text from public.operational_staff_assignments where operational_staff_id=current_setting('test.removed_duplicate_staff')::uuid and active),false);
+select set_config('test.removed_mistake_assignment',(select id::text from public.operational_staff_assignments where operational_staff_id=current_setting('test.removed_mistake_staff')::uuid and active),false);
+select set_config('test.removed_wrong_assignment',(select id::text from public.operational_staff_assignments where operational_staff_id=current_setting('test.removed_wrong_staff')::uuid and active),false);
+select set_config('test.removed_other_assignment',(select id::text from public.operational_staff_assignments where operational_staff_id=current_setting('test.removed_other_staff')::uuid and active),false);
+
+insert into public.operational_staff_health_cards(organization_id,branch_id,supervisor_team_id,operational_staff_id,status,certificate_number)
+values('26100000-0000-4000-8000-000000000001','36100000-0000-4000-8000-000000000001','46100000-0000-4000-8000-000000000001',current_setting('test.removed_duplicate_staff')::uuid,'passed','HC-REM-DUP');
+
+set local role service_role;
+select lives_ok($$select * from public.remove_operational_team_staff('16100000-0000-4000-8000-000000000001','36100000-0000-4000-8000-000000000001',current_setting('test.removed_duplicate_staff')::uuid,current_setting('test.removed_duplicate_assignment')::uuid,'duplicate',null)$$,'duplicate removal succeeds');
+select lives_ok($$select * from public.remove_operational_team_staff('16100000-0000-4000-8000-000000000001','36100000-0000-4000-8000-000000000001',current_setting('test.removed_mistake_staff')::uuid,current_setting('test.removed_mistake_assignment')::uuid,'added_by_mistake',null)$$,'added-by-mistake removal succeeds');
+select lives_ok($$select * from public.remove_operational_team_staff('16100000-0000-4000-8000-000000000001','36100000-0000-4000-8000-000000000001',current_setting('test.removed_wrong_staff')::uuid,current_setting('test.removed_wrong_assignment')::uuid,'wrong_employee_data',null)$$,'wrong-data removal succeeds');
+select lives_ok($$select * from public.remove_operational_team_staff('16100000-0000-4000-8000-000000000001','36100000-0000-4000-8000-000000000001',current_setting('test.removed_other_staff')::uuid,current_setting('test.removed_other_assignment')::uuid,'other','Wrong temporary row')$$,'other removal succeeds with note');
+reset role;
+
+select ok((select public.list_managed_employee_team('16100000-0000-4000-8000-000000000003','26100000-0000-4000-8000-000000000001',null,date_trunc('month',current_date)::date)->'employees') @> pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('staff_id',current_setting('test.active_directory_staff'))),'active employee appears in Manager directory');
+select ok((select public.list_managed_employee_team('16100000-0000-4000-8000-000000000003','26100000-0000-4000-8000-000000000001',null,date_trunc('month',current_date)::date)->'employees') @> pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('staff_id',current_setting('test.lifecycle_staff'))),'Left Company inactive employee remains visible to Manager');
+select ok(not ((select public.list_managed_employee_team('16100000-0000-4000-8000-000000000003','26100000-0000-4000-8000-000000000001',null,date_trunc('month',current_date)::date)->'employees') @> pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('staff_id',current_setting('test.removed_duplicate_staff')))),'duplicate removed employee is hidden from Manager directory');
+select ok(not ((select public.list_managed_employee_team('16100000-0000-4000-8000-000000000003','26100000-0000-4000-8000-000000000001',null,date_trunc('month',current_date)::date)->'employees') @> pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('staff_id',current_setting('test.removed_mistake_staff')))),'added-by-mistake removed employee is hidden from Manager directory');
+select ok(not ((select public.list_managed_employee_team('16100000-0000-4000-8000-000000000003','26100000-0000-4000-8000-000000000001',null,date_trunc('month',current_date)::date)->'employees') @> pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('staff_id',current_setting('test.removed_wrong_staff')))),'wrong-data removed employee is hidden from Manager directory');
+select ok(not ((select public.list_managed_employee_team('16100000-0000-4000-8000-000000000003','26100000-0000-4000-8000-000000000001',null,date_trunc('month',current_date)::date)->'employees') @> pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('staff_id',current_setting('test.removed_other_staff')))),'other removed employee is hidden from Manager directory');
+select is((select count(*) from public.operational_staff where id in(current_setting('test.removed_duplicate_staff')::uuid,current_setting('test.removed_mistake_staff')::uuid,current_setting('test.removed_wrong_staff')::uuid,current_setting('test.removed_other_staff')::uuid)),4::bigint,'removed staff rows are preserved');
+select is((select count(*) from public.operational_staff_removal_audits where operational_staff_id in(current_setting('test.removed_duplicate_staff')::uuid,current_setting('test.removed_mistake_staff')::uuid,current_setting('test.removed_wrong_staff')::uuid,current_setting('test.removed_other_staff')::uuid)),4::bigint,'removed staff reason audits are preserved');
+select is((select count(*) from public.operational_staff_health_cards where operational_staff_id=current_setting('test.removed_duplicate_staff')::uuid),1::bigint,'historical health card row remains after removal');
+select ok((select public.list_managed_employee_team('16100000-0000-4000-8000-000000000003','26100000-0000-4000-8000-000000000001',null,date_trunc('month',current_date)::date)->'health_cards') @> pg_catalog.jsonb_build_array(pg_catalog.jsonb_build_object('operational_staff_id',current_setting('test.removed_duplicate_staff'))),'Manager historical health-card data still includes removed employee');
 select ok((select (public.list_managed_employee_team('16100000-0000-4000-8000-000000000003','26100000-0000-4000-8000-000000000001',null,date_trunc('month',current_date)::date)->'employees'->0) ? 'employment_status'),'Manager history retains left employees');
 
 select * from finish();
