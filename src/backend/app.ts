@@ -1360,6 +1360,30 @@ function checklistError(error:unknown){
  return new HttpError(503,"service_unavailable","The service is unavailable.");
 }
 
+const oilTrackingCorrelationPrefix = "OIL_TRACKING_CORRELATION";
+function safeHeader(value: string | undefined) {
+ if(!value)return null;
+ const trimmed=value.trim();
+ return trimmed.length?trimmed.slice(0,240):null;
+}
+function oilTrackingCorrelationId(request: Request) {
+ const parsed=z.uuid().safeParse(request.header("X-Oil-Tracking-Correlation-Id"));
+ return parsed.success?parsed.data:null;
+}
+function logOilTrackingCorrelation(request:Request,details:Record<string,unknown>){
+ console.info(oilTrackingCorrelationPrefix,{
+  requestId:request.id,
+  timestamp:new Date().toISOString(),
+  correlationId:oilTrackingCorrelationId(request),
+  branchId:request.params.branchId,
+  userAgent:safeHeader(request.get("user-agent")),
+  host:safeHeader(request.get("host")),
+  origin:safeHeader(request.get("origin")),
+  referer:safeHeader(request.get("referer")),
+  ...details,
+ });
+}
+
 function dailyAuditPersistenceError(error:unknown){
  if(error instanceof OperationalConflictError)return new HttpError(409,"conflict","This Daily Audit changed or has already been submitted. Refresh and try again.");
  if(error instanceof OperationalInputError)return new HttpError(422,"unprocessable_entity","The Daily Audit is invalid or incomplete.");
@@ -5583,14 +5607,23 @@ export function createApp(
     response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
-  app.put("/api/v1/supervisor/branches/:branchId/checklists/oil_tracking/draft",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+  app.put("/api/v1/supervisor/branches/:branchId/checklists/oil_tracking/draft",protectedRateLimit,authenticate,async(request,response,next)=>{let diagnosticActorUserId:string|null=null;try{
     const branch=branchIdSchema.safeParse(request.params.branchId),body=oilTrackingBodySchema.safeParse(request.body);
-    if(!branch.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
-    const auth=requireAuthContext(request),context=await loadActiveUser(request);
-    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.saveOilTrackingDraft)throw new HttpError(403,"forbidden","Access is denied.");
-    const current=oilCurrentSchema.parse(await dependencies.checklistPersistence.saveOilTrackingDraft({actorUserId:auth.userId,branchId:branch.data,expectedRevision:body.data.expected_revision,rows:body.data.rows}));
+    if(!branch.success||!body.success){logOilTrackingCorrelation(request,{stage:"route_validation_failed",expectedRevision:body.success?body.data.expected_revision:null,status:400,safeErrorCode:"bad_request"});throw new HttpError(400,"bad_request","The request is invalid.");}
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);diagnosticActorUserId=auth.userId;
+    logOilTrackingCorrelation(request,{stage:"request_received",actorUserId:auth.userId,expectedRevision:body.data.expected_revision,status:null,safeErrorCode:null});
+    logOilTrackingCorrelation(request,{stage:"auth_ok",actorUserId:auth.userId,expectedRevision:body.data.expected_revision,status:null,safeErrorCode:null});
+    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.saveOilTrackingDraft){logOilTrackingCorrelation(request,{stage:"route_forbidden",actorUserId:auth.userId,expectedRevision:body.data.expected_revision,status:403,safeErrorCode:"forbidden"});throw new HttpError(403,"forbidden","Access is denied.");}
+    logOilTrackingCorrelation(request,{stage:"rpc_invocation",actorUserId:auth.userId,expectedRevision:body.data.expected_revision,status:null,safeErrorCode:null});
+    const current=oilCurrentSchema.parse(await dependencies.checklistPersistence.saveOilTrackingDraft({actorUserId:auth.userId,branchId:branch.data,expectedRevision:body.data.expected_revision,rows:body.data.rows,diagnostics:{requestId:request.id,correlationId:oilTrackingCorrelationId(request)}}));
+    logOilTrackingCorrelation(request,{stage:"route_response",actorUserId:auth.userId,expectedRevision:body.data.expected_revision,status:200,safeErrorCode:null});
     response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
-  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+  }catch(error){
+    const mapped=error instanceof HttpError?error:checklistError(error);
+    const parsedBody=oilTrackingBodySchema.safeParse(request.body);
+    if(mapped.status!==400)logOilTrackingCorrelation(request,{stage:"route_error",actorUserId:diagnosticActorUserId,expectedRevision:parsedBody.success?parsedBody.data.expected_revision:null,status:mapped.status,safeErrorCode:mapped.code,sqlstate:error instanceof ChecklistConflictError?error.sqlstate:null});
+    next(mapped);
+  }});
 
   app.post("/api/v1/supervisor/branches/:branchId/checklists/oil_tracking/opening/submit",protectedRateLimit,authenticate,async(request,response,next)=>{try{
     const branch=branchIdSchema.safeParse(request.params.branchId),key=idempotencySchema.safeParse(request.header("Idempotency-Key")),body=oilTrackingBodySchema.safeParse(request.body);

@@ -21,7 +21,7 @@ const persistence={
  async submitOpening(){throw new Error("unused");},async submitHygiene(){throw new Error("unused");},
  async listSupervisor(){throw new Error("unused");},async getReport(){throw new Error("unused");},async listManagedReports(){throw new Error("unused");},async listManagedIssues(){throw new Error("unused");},async getManagedIssue(){throw new Error("unused");},
  async getOilTrackingCurrentState(actorUserId:string,branchId:string){calls.push({name:"oil-current",input:{actorUserId,branchId}});if(branchId!==branch)throw new ChecklistAccessError();return current();},
- async saveOilTrackingDraft(input:{actorUserId:string;branchId:string;rows:unknown[]}){calls.push({name:"oil-draft",input});if(input.branchId!==branch)throw new ChecklistAccessError();currentRows=input.rows;return current();},
+ async saveOilTrackingDraft(input:{actorUserId:string;branchId:string;expectedRevision:number;rows:unknown[]}){calls.push({name:"oil-draft",input});if(input.branchId!==branch)throw new ChecklistAccessError();if(input.expectedRevision===99)throw new ChecklistConflictError("40001");currentRows=input.rows;return current();},
  async submitOilTrackingOpening(input:{actorUserId:string;branchId:string;idempotencyKey:string;rows:unknown[]}){calls.push({name:"oil-opening",input});if(input.branchId!==branch)throw new ChecklistAccessError();const key=`opening:${input.idempotencyKey}`,hash=digest(input.rows);const existing=replay.get(key);if(existing&&existing!==hash)throw new ChecklistConflictError();replay.set(key,hash);currentRows=input.rows;return{...current(),opening_submitted:true,issue_count:0};},
  async submitOilTrackingClosing(input:{actorUserId:string;branchId:string;idempotencyKey:string;rows:unknown[]}){calls.push({name:"oil-closing",input});if(input.branchId!==branch)throw new ChecklistAccessError();const key=`closing:${input.idempotencyKey}`,hash=digest(input.rows);const existing=replay.get(key);if(existing&&existing!==hash)throw new ChecklistConflictError();replay.set(key,hash);currentRows=input.rows;return{...current(),closing_submitted:true,issue_count:0};},
 };
@@ -56,6 +56,31 @@ describe("Oil Tracking API integration",()=>{
   assert.equal(input.rows[0].closing_tpm_percent,"20.9");
   const restored=await request(`/api/v1/supervisor/branches/${branch}/checklists/oil_tracking/current-state`,"supervisor");
   assert.equal((await restored.json()).current.rows[0].fryer_id,"fryer-1");
+ });
+ it("logs safe Oil Tracking draft correlation diagnostics on conflict",async()=>{
+  const correlationId="62000000-0000-4000-8000-000000000099";
+  const records:unknown[][]=[];
+  const originalInfo=console.info;
+  console.info=(...args:unknown[])=>{records.push(args);};
+  try{
+   const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/oil_tracking/draft`,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json","X-Oil-Tracking-Correlation-Id":correlationId,"User-Agent":"oil-test-agent","Origin":"https://app.example.test","Referer":"https://app.example.test/branch-manager"},body:JSON.stringify({expected_revision:99,rows:[{...row,openingNote:"secret note",closingNote:"secret closing note"}]})});
+   assert.equal(response.status,409);
+   const body=await response.json();
+   const backendRequestId=body.error.requestId;
+   assert.equal(response.headers.get("x-request-id"),backendRequestId);
+  }finally{console.info=originalInfo;}
+  assert.equal(calls.filter(call=>call.name==="oil-draft").length,1);
+  const serialized=JSON.stringify(records);
+  assert.match(serialized,/OIL_TRACKING_CORRELATION/);
+  assert.match(serialized,/request_received/);
+  assert.match(serialized,/auth_ok/);
+  assert.match(serialized,/rpc_invocation/);
+  assert.match(serialized,/route_error/);
+  assert.match(serialized,new RegExp(correlationId));
+  assert.match(serialized,/"expectedRevision":99/);
+  assert.match(serialized,/"sqlstate":"40001"/);
+  assert.match(serialized,/oil-test-agent/);
+  assert.doesNotMatch(serialized,/secret note|secret closing note|175\.5|20\.9|Bearer|supervisor/);
  });
  it("requires idempotency keys for submit routes",async()=>{
   for(const section of ["opening","closing"])assert.equal((await request(`/api/v1/supervisor/branches/${branch}/checklists/oil_tracking/${section}/submit`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rows:[row]})})).status,400);

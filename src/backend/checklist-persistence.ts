@@ -3,7 +3,12 @@ import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { managementSalesTrackingMonthlySummarySchema } from "../lib/contracts/management-sales-tracking-monthly";
 
-export class ChecklistConflictError extends Error {}
+export class ChecklistConflictError extends Error {
+  constructor(readonly sqlstate?: string) {
+    super("Checklist conflict.");
+    this.name = "ChecklistConflictError";
+  }
+}
 export class ChecklistInputError extends Error {}
 export class ChecklistAccessError extends Error {}
 export class ManagementOverviewUnavailableError extends Error {}
@@ -18,7 +23,7 @@ export type ChecklistPersistence = {
   submitOpening(input:{actorUserId:string;branchId:string;type:string;expectedRevision:number;idempotencyKey:string;answers:unknown[]}):Promise<unknown>;
   submitHygiene(input:{actorUserId:string;branchId:string;operationalTeamId:string;idempotencyKey:string;staff:unknown[]}):Promise<unknown>;
   getOilTrackingCurrentState?(actorUserId:string,branchId:string):Promise<unknown>;
-  saveOilTrackingDraft?(input:{actorUserId:string;branchId:string;expectedRevision:number;rows:unknown[]}):Promise<unknown>;
+  saveOilTrackingDraft?(input:{actorUserId:string;branchId:string;expectedRevision:number;rows:unknown[];diagnostics?:{requestId:string;correlationId:string|null}}):Promise<unknown>;
   submitOilTrackingOpening?(input:{actorUserId:string;branchId:string;expectedRevision:number;idempotencyKey:string;rows:unknown[]}):Promise<unknown>;
   submitOilTrackingClosing?(input:{actorUserId:string;branchId:string;expectedRevision:number;idempotencyKey:string;rows:unknown[]}):Promise<unknown>;
   getColdStorageCurrentState?(actorUserId:string,branchId:string):Promise<unknown>;
@@ -393,7 +398,7 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
  async function rpc(name:string,args:Record<string,unknown>){
   const result=await client.rpc(name,args);
   if(result.error){
-   if(result.error.code==="23505"||result.error.code==="23514"||result.error.code==="40001"||result.error.code==="55000")throw new ChecklistConflictError();
+   if(result.error.code==="23505"||result.error.code==="23514"||result.error.code==="40001"||result.error.code==="55000")throw new ChecklistConflictError(result.error.code);
    if(result.error.code==="22023")throw new ChecklistInputError();
    if(result.error.code==="42501")throw new ChecklistAccessError();
    throw new Error("Checklist persistence unavailable.");
@@ -417,7 +422,13 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   async submitOpening(input){return mutation.parse(await rpc("submit_phase4a_opening",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_checklist_type:input.type,expected_revision:input.expectedRevision,idempotency_key:input.idempotencyKey,request_hash:checklistRequestHash({type:input.type,answers:input.answers}),answers:input.answers}))[0];},
   async submitHygiene(input){return mutation.parse(await rpc("submit_operational_team_hygiene",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_operational_team_id:input.operationalTeamId,idempotency_key:input.idempotencyKey,request_hash:checklistRequestHash({type:"staff_hygiene",operational_team_id:input.operationalTeamId,staff:input.staff}),staff_answers:input.staff}))[0];},
   getOilTrackingCurrentState:(actorUserId,branchId)=>rpc("get_oil_tracking_current_state",{actor_user_id:actorUserId,target_branch_id:branchId}),
-  saveOilTrackingDraft:(input)=>rpc("save_oil_tracking_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,rows:input.rows}),
+  async saveOilTrackingDraft(input){
+   try{return await rpc("save_oil_tracking_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,rows:input.rows});}
+   catch(error){
+    if(error instanceof ChecklistConflictError)console.info("OIL_TRACKING_CORRELATION",{requestId:input.diagnostics?.requestId??null,correlationId:input.diagnostics?.correlationId??null,stage:"rpc_conflict",expectedRevision:input.expectedRevision,currentRevision:null,sqlstate:error.sqlstate??null});
+    throw error;
+   }
+  },
   submitOilTrackingOpening:(input)=>rpc("submit_oil_tracking_opening",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,idempotency_key:input.idempotencyKey,request_hash:checklistRequestHash({type:"oil_tracking",section:"opening",rows:input.rows}),rows:input.rows}),
   submitOilTrackingClosing:(input)=>rpc("submit_oil_tracking_closing",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,idempotency_key:input.idempotencyKey,request_hash:checklistRequestHash({type:"oil_tracking",section:"closing",rows:input.rows}),rows:input.rows}),
   getColdStorageCurrentState:(actorUserId,branchId)=>rpc("get_cold_storage_current_state",{actor_user_id:actorUserId,target_branch_id:branchId}),
