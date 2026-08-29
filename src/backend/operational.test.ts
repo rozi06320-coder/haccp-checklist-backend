@@ -215,22 +215,22 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
       async createSupervisorMaintenanceIssue(input) {
         calls.push({ method: "createSupervisorMaintenanceIssue", ...input });
         if (input.actorUserId !== id.supervisor) throw new Error("denied");
-        return { maintenance_issue: { id: id.maintenanceIssue, branch_id: input.branchId, branch_name: "Branch", title: input.payload.title, category: input.payload.category, priority: input.payload.priority, status: "new", description: input.payload.description ?? null, location: input.payload.location ?? null, reported_by: input.actorUserId, reporter_name: "Supervisor", assigned_to: null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", updates: [] } };
+        return { maintenance_issue: { id: id.maintenanceIssue, branch_id: input.branchId, branch_name: "Branch", title: input.payload.title, category: input.payload.category, priority: input.payload.priority, status: "new", description: input.payload.description ?? null, location: input.payload.location ?? null, reported_by: input.actorUserId, reporter_name: "Supervisor", assigned_to: null, responsible_person_name: input.payload.responsible_person_name ?? null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", updates: [] } };
       },
       async createManagerOfficeMaintenanceIssue(input) {
         calls.push({ method: "createManagerOfficeMaintenanceIssue", ...input });
         if (input.actorUserId !== id.manager) throw new OperationalAccessError();
-        return { maintenance_issue: { id: id.maintenanceIssue, branch_id: null, branch_name: "Office", title: input.payload.title, category: input.payload.category, priority: input.payload.priority, status: "new", description: input.payload.description ?? null, location: input.payload.location ?? null, reported_by: input.actorUserId, reporter_name: "Manager", assigned_to: null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", updates: [] } };
+        return { maintenance_issue: { id: id.maintenanceIssue, branch_id: null, branch_name: "Office", title: input.payload.title, category: input.payload.category, priority: input.payload.priority, status: "new", description: input.payload.description ?? null, location: input.payload.location ?? null, reported_by: input.actorUserId, reporter_name: "Manager", assigned_to: null, responsible_person_name: input.payload.responsible_person_name ?? null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", updates: [] } };
       },
       async listMaintenanceIssues(input) {
         calls.push({ method: "maintenanceIssues", ...input });
         if (input.actorUserId !== id.staffAccount && input.accessUserId !== id.maintenanceAccessUser) throw new Error("denied");
-        return { maintenance_issues: [{ id: id.maintenanceIssue, branch_id: id.branch, branch_name: "Branch", title: "Freezer door", category: "refrigeration", priority: "urgent", status: "new", description: "Door is loose", location: "Kitchen", reported_by: id.supervisor, reporter_name: "Supervisor", assigned_to: null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", updates: [{ id: id.maintenanceUpdate, status: "new", note: "Issue reported.", updated_by: id.supervisor, updated_by_access_user_id: null, updated_by_name: "Supervisor", created_at: "2026-08-09T00:00:00.000Z" }] }] };
+        return { maintenance_issues: [{ id: id.maintenanceIssue, branch_id: id.branch, branch_name: "Branch", title: "Freezer door", category: "refrigeration", priority: "urgent", status: "new", description: "Door is loose", location: "Kitchen", reported_by: id.supervisor, reporter_name: "Supervisor", assigned_to: null, responsible_person_name: "Ahmed", created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", updates: [{ id: id.maintenanceUpdate, status: "new", note: "Issue reported.", updated_by: id.supervisor, updated_by_access_user_id: null, updated_by_name: "Supervisor", created_at: "2026-08-09T00:00:00.000Z" }] }] };
       },
       async updateMaintenanceIssue(input) {
         calls.push({ method: "updateMaintenanceIssue", ...input });
         if (input.actorUserId !== id.staffAccount && input.accessUserId !== id.maintenanceAccessUser) throw new Error("denied");
-        return { maintenance_issue: { id: input.issueId, branch_id: id.branch, branch_name: "Branch", title: "Freezer door", category: "refrigeration", priority: "urgent", status: input.status, description: "Door is loose", location: "Kitchen", reported_by: id.supervisor, reporter_name: "Supervisor", assigned_to: null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T01:00:00.000Z", updates: [{ id: id.maintenanceUpdate, status: input.status, note: input.note ?? null, updated_by: input.actorUserId ?? null, updated_by_access_user_id: input.accessUserId ?? null, updated_by_name: "Maintenance", created_at: "2026-08-09T01:00:00.000Z" }] } };
+        return { maintenance_issue: { id: input.issueId, branch_id: id.branch, branch_name: "Branch", title: "Freezer door", category: "refrigeration", priority: "urgent", status: input.status, description: "Door is loose", location: "Kitchen", reported_by: id.supervisor, reporter_name: "Supervisor", assigned_to: null, responsible_person_name: input.responsiblePersonName ?? "Ahmed", created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T01:00:00.000Z", updates: [{ id: id.maintenanceUpdate, status: input.status, note: input.note ?? null, updated_by: input.actorUserId ?? null, updated_by_access_user_id: input.accessUserId ?? null, updated_by_name: "Maintenance", created_at: "2026-08-09T01:00:00.000Z" }] } };
       },
       async listMaintenancePurchases(actorUserId, issueId) {
         calls.push({ method: "maintenanceIssuePurchases", actorUserId, issueId });
@@ -245,12 +245,12 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
         calls.push({ method: "createMaintenancePurchase", hasReceipts: Boolean(input.receipts?.length), ...input });
         if (input.actorUserId !== id.staffAccount || (input.issueId !== id.maintenanceIssue && input.issueId !== null && input.issueId !== undefined)) throw new Error("denied");
         const scope = input.issueId ? "branch" : input.payload.purchase_scope ?? "branch";
-        return { maintenance_purchase: { id: id.purchaseLog, branch_id: scope === "branch" ? input.payload.branch_id ?? id.branch : null, purchase_type: input.issueId ? "issue" : "general", purchase_scope: scope, destination: scope === "office" ? "Office" : scope === "other" ? input.payload.destination ?? "CEO House" : null, category: input.payload.category, item_name: input.payload.item_name, quantity: Number(input.payload.quantity), unit: input.payload.unit, amount: Number(input.payload.amount), vendor_name: input.payload.vendor_name || "N/A", purchase_date: input.payload.purchase_date, notes: input.payload.notes ?? null, payment_status: "unpaid", reimbursement_note: null, reimbursed_at: null, receipt_original_name: "receipt.pdf", receipt_url: "https://storage.example.invalid/signed-maintenance-receipt", attachments: [{ id: "a1000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 1200, position: 1, url: "https://storage.example.invalid/signed-maintenance-receipt" }], created_at: "2026-08-12T10:00:00.000Z", updated_at: "2026-08-12T10:00:00.000Z" } };
+        return { maintenance_purchase: { id: id.purchaseLog, branch_id: scope === "branch" ? input.payload.branch_id ?? id.branch : null, purchase_type: input.issueId ? "issue" : "general", purchase_scope: scope, destination: scope === "office" ? "Office" : scope === "other" ? input.payload.destination ?? "CEO House" : null, category: input.payload.category, item_name: input.payload.item_name, quantity: Number(input.payload.quantity), unit: input.payload.unit, amount: Number(input.payload.amount), vendor_name: input.payload.vendor_name || "N/A", purchase_date: input.payload.purchase_date, notes: input.payload.notes ?? null, payment_status: "unpaid", payment_method: input.payload.payment_method ?? null, reimbursement_note: null, reimbursed_at: null, receipt_original_name: "receipt.pdf", receipt_url: "https://storage.example.invalid/signed-maintenance-receipt", attachments: [{ id: "a1000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 1200, position: 1, url: "https://storage.example.invalid/signed-maintenance-receipt" }], created_at: "2026-08-12T10:00:00.000Z", updated_at: "2026-08-12T10:00:00.000Z" } };
       },
       async reimburseMaintenancePurchase(input) {
         calls.push({ method: "reimburseMaintenancePurchase", ...input });
         if (input.actorUserId !== id.staffAccount || input.purchaseId !== id.purchaseLog) throw new Error("denied");
-        return { maintenance_purchase: { id: id.purchaseLog, branch_id: id.branch, purchase_type: "issue", purchase_scope: "branch", destination: null, category: "spare_parts", item_name: "Replacement seal", quantity: 2, unit: "meter", amount: 35.5, vendor_name: "Parts Shop", purchase_date: "2026-08-12", notes: "Urgent", payment_status: "reimbursed", reimbursement_note: input.reimbursementNote ?? null, reimbursed_at: "2026-08-12T12:00:00.000Z", receipt_original_name: "receipt.pdf", receipt_url: "https://storage.example.invalid/signed-maintenance-receipt", attachments: [{ id: "a1000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 1200, position: 1, url: "https://storage.example.invalid/signed-maintenance-receipt" }], created_at: "2026-08-12T10:00:00.000Z", updated_at: "2026-08-12T12:00:00.000Z" } };
+        return { maintenance_purchase: { id: id.purchaseLog, branch_id: id.branch, purchase_type: "issue", purchase_scope: "branch", destination: null, category: "spare_parts", item_name: "Replacement seal", quantity: 2, unit: "meter", amount: 35.5, vendor_name: "Parts Shop", purchase_date: "2026-08-12", notes: "Urgent", payment_status: "reimbursed", payment_method: null, reimbursement_note: input.reimbursementNote ?? null, reimbursed_at: "2026-08-12T12:00:00.000Z", receipt_original_name: "receipt.pdf", receipt_url: "https://storage.example.invalid/signed-maintenance-receipt", attachments: [{ id: "a1000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 1200, position: 1, url: "https://storage.example.invalid/signed-maintenance-receipt" }], created_at: "2026-08-12T10:00:00.000Z", updated_at: "2026-08-12T12:00:00.000Z" } };
       },
       async listMaintenancePurchaseHistory(input) {
         calls.push({ method: "maintenancePurchaseHistory", ...input });
@@ -354,10 +354,72 @@ describe("managed maintenance operational adapter", () => {
       const result = await admin.listManagedMaintenanceIssues?.({ actorUserId: id.manager, organizationId: id.organization });
       assert.deepEqual(result, { maintenance_issues: [{
         id: id.maintenanceIssue, branch_id: id.branch, branch_name: "Branch", title: "Freezer door", category: "refrigeration", priority: "urgent", status: "in_progress",
-        description: null, location: null, reported_by: id.supervisor, reporter_name: null, created_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T01:00:00.000Z",
+        description: null, location: null, reported_by: id.supervisor, reporter_name: null, responsible_person_name: null, created_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T01:00:00.000Z",
         before_photo: null, after_photo: null, before_photos: [], after_photos: [],
         updates: [{ id: id.maintenanceUpdate, status: "in_progress", note: null, updated_by: null, updated_by_access_user_id: null, updated_by_name: null, created_at: "2026-08-10T01:00:00.000Z" }],
       }] });
+    } finally {
+      await new Promise<void>((resolve, reject) => rpc.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("falls back to the legacy Maintenance issue update RPC before the responsible-person migration when no responsible person is present", async () => {
+    const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const rpc = createServer(async (request, response) => {
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      if (request.url === "/rest/v1/rpc/list_maintenance_issue_attachments") {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify([]));
+        return;
+      }
+      const body = JSON.parse(raw) as Record<string, unknown>;
+      requests.push({ path: request.url ?? "", body });
+      response.setHeader("content-type", "application/json");
+      if ("new_responsible_person_name" in body) {
+        response.statusCode = 404;
+        response.end(JSON.stringify({ code: "PGRST202", message: "Could not find the function public.update_maintenance_issue in the schema cache" }));
+        return;
+      }
+      response.end(JSON.stringify([{
+        id: id.maintenanceIssue, organization_id: id.organization, branch_id: id.branch, branch_name: "Branch", title: "Freezer door",
+        category: "refrigeration", priority: "urgent", status: "in_progress", description: null, location: null,
+        reported_by: id.supervisor, reporter_name: null, assigned_to: null, created_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T01:00:00.000Z",
+        updates: [{ id: id.maintenanceUpdate, status: "in_progress", note: "Started", updated_by: id.staffAccount, updated_by_access_user_id: null, updated_by_name: "Maintenance", created_at: "2026-08-10T01:00:00.000Z" }],
+      }]));
+    });
+    await new Promise<void>((resolve) => rpc.listen(0, "127.0.0.1", resolve));
+    try {
+      const admin = createOperationalAdmin(`http://127.0.0.1:${(rpc.address() as AddressInfo).port}`, "service-key");
+      const result = await admin.updateMaintenanceIssue({ actorUserId: id.staffAccount, issueId: id.maintenanceIssue, status: "in_progress", note: "Started", responsiblePersonName: null });
+      assert.equal((result as { maintenance_issue: { responsible_person_name: string | null } }).maintenance_issue.responsible_person_name, null);
+      assert.deepEqual(requests.map((request) => request.body), [
+        { actor_user_id: id.staffAccount, access_user_id: null, target_issue_id: id.maintenanceIssue, new_status: "in_progress", new_note: "Started", new_responsible_person_name: null },
+        { actor_user_id: id.staffAccount, access_user_id: null, target_issue_id: id.maintenanceIssue, new_status: "in_progress", new_note: "Started" },
+      ]);
+    } finally {
+      await new Promise<void>((resolve, reject) => rpc.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("does not silently drop a responsible person when the migrated update RPC is not available", async () => {
+    const requests: Array<Record<string, unknown>> = [];
+    const rpc = createServer(async (request, response) => {
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      requests.push(JSON.parse(raw) as Record<string, unknown>);
+      response.setHeader("content-type", "application/json");
+      response.statusCode = 404;
+      response.end(JSON.stringify({ code: "PGRST202", message: "Could not find the function public.update_maintenance_issue in the schema cache" }));
+    });
+    await new Promise<void>((resolve) => rpc.listen(0, "127.0.0.1", resolve));
+    try {
+      const admin = createOperationalAdmin(`http://127.0.0.1:${(rpc.address() as AddressInfo).port}`, "service-key");
+      await assert.rejects(
+        () => admin.updateMaintenanceIssue({ actorUserId: id.staffAccount, issueId: id.maintenanceIssue, status: "in_progress", note: "Started", responsiblePersonName: "Ahmed" }),
+      );
+      assert.equal(requests.length, 1);
+      assert.equal(requests[0]?.new_responsible_person_name, "Ahmed");
     } finally {
       await new Promise<void>((resolve, reject) => rpc.close((error) => error ? reject(error) : resolve()));
     }
@@ -1196,7 +1258,7 @@ describe("Phase 3A operational API", () => {
       actorUserId: id.supervisor,
       branchId: id.branch,
       idempotencyKey: null,
-      payload: { title: "Freezer door", category: "refrigeration", priority: "urgent", description: "Door is loose", location: "Kitchen" },
+      payload: { title: "Freezer door", category: "refrigeration", priority: "urgent", description: "Door is loose", location: "Kitchen", responsible_person_name: null },
       photos: [],
     });
 
@@ -1252,6 +1314,7 @@ describe("Phase 3A operational API", () => {
       issueId: id.maintenanceIssue,
       status: "in_progress",
       note: "Started repair",
+      responsiblePersonName: null,
       repairPhotos: [],
     });
 

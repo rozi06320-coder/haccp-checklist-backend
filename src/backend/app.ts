@@ -326,16 +326,29 @@ const maintenancePurchaseUnitSchema = z.enum(["pcs", "meter", "kg", "box", "bag"
 const maintenancePurchaseTypeSchema = z.enum(["issue", "general"]);
 const maintenancePurchaseScopeSchema = z.enum(["branch", "office", "other"]);
 const maintenancePurchaseCategorySchema = z.enum(["spare_parts", "tools_equipment", "electrical", "plumbing", "hvac_refrigeration", "kitchen_equipment", "fuel_petrol", "transportation", "technician_contractor", "building_facility", "safety_equipment", "it_network", "general_supplies", "other"]);
+const maintenancePaymentMethodSchema = z.enum(["cash", "credit_card", "pay_later"]);
+const optionalTrimmedMaintenanceTextSchema = (maxLength: number) =>
+  z.union([z.string(), z.null(), z.undefined()])
+    .transform((value) => {
+      if (typeof value !== "string") return null;
+      const trimmed = value.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    })
+    .pipe(z.string().max(maxLength).nullable())
+    .optional()
+    .transform((value) => value ?? null);
 const maintenanceIssueBodySchema = z.object({
   title: normalizedNameSchema,
   category: maintenanceIssueCategorySchema,
   priority: maintenanceIssuePrioritySchema,
   description: optionalStaffTextSchema(2000),
   location: optionalStaffTextSchema(160),
+  responsible_person_name: optionalTrimmedMaintenanceTextSchema(100),
 }).strict();
 const maintenanceIssueUpdateBodySchema = z.object({
   status: maintenanceIssueStatusSchema,
   note: optionalStaffTextSchema(2000),
+  responsible_person_name: optionalTrimmedMaintenanceTextSchema(100),
 }).strict();
 const maintenanceIssuePhotoResponseSchema = z.object({
   url: z.string().nullable(),
@@ -380,6 +393,7 @@ const maintenanceIssueResponseRowSchema = z.object({
   reported_by: z.uuid(),
   reporter_name: z.string().nullable(),
   assigned_to: z.uuid().nullable(),
+  responsible_person_name: z.string().nullable().optional().default(null),
   created_at: z.string(),
   updated_at: z.string(),
   updates: z.array(maintenanceIssueUpdateResponseRowSchema).optional(),
@@ -426,13 +440,13 @@ const supervisorPushRunResponseSchema = z.object({
   deliveries_sent: z.number().int().nonnegative(),
 }).strict();
 const maintenancePurchaseAttachmentSchema=z.object({id:z.uuid(),original_filename:z.string().nullable(),mime_type:z.string().nullable(),size_bytes:z.number().nullable(),position:z.number().int().min(1).max(MAX_MAINTENANCE_PURCHASE_PHOTOS),url:z.string().nullable()}).strict();
-const maintenancePurchaseRowSchema=z.object({id:z.uuid(),branch_id:z.uuid().nullable(),purchase_type:maintenancePurchaseTypeSchema,purchase_scope:maintenancePurchaseScopeSchema,destination:z.string().nullable(),category:maintenancePurchaseCategorySchema,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnitSchema,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:z.string().nullable(),payment_status:z.enum(["unpaid","reimbursed"]),reimbursement_note:z.string().nullable(),reimbursed_at:z.string().nullable(),receipt_original_name:z.string().nullable(),receipt_url:z.string().nullable(),attachments:z.array(maintenancePurchaseAttachmentSchema).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
+const maintenancePurchaseRowSchema=z.object({id:z.uuid(),branch_id:z.uuid().nullable(),purchase_type:maintenancePurchaseTypeSchema,purchase_scope:maintenancePurchaseScopeSchema,destination:z.string().nullable(),category:maintenancePurchaseCategorySchema,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnitSchema,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:z.string().nullable(),payment_status:z.enum(["unpaid","reimbursed"]),payment_method:maintenancePaymentMethodSchema.nullable().optional().default(null),reimbursement_note:z.string().nullable(),reimbursed_at:z.string().nullable(),receipt_original_name:z.string().nullable(),receipt_url:z.string().nullable(),attachments:z.array(maintenancePurchaseAttachmentSchema).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
 const maintenancePurchaseListSchema=z.object({maintenance_purchases:z.array(maintenancePurchaseRowSchema).max(500)}).strict();
 const maintenancePurchaseMutationSchema=z.object({maintenance_purchase:maintenancePurchaseRowSchema}).strict();
-const managedMaintenancePurchaseRowSchema=z.object({id:z.uuid(),branch_id:z.uuid().nullable(),branch_name:z.string(),maintenance_issue_id:z.uuid().nullable(),purchase_type:maintenancePurchaseTypeSchema,issue_title:z.string().nullable(),issue_category:maintenanceIssueCategorySchema.nullable(),issue_status:maintenanceIssueStatusSchema.nullable(),purchase_scope:maintenancePurchaseScopeSchema,destination:z.string().nullable(),category:maintenancePurchaseCategorySchema,maintenance_user_id:z.uuid(),maintenance_user_name:z.string().nullable(),item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnitSchema,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:z.string().nullable(),payment_status:z.enum(["unpaid","reimbursed"]),reimbursement_note:z.string().nullable(),reimbursed_at:z.string().nullable(),receipt_original_name:z.string().nullable(),receipt_url:z.string().nullable(),attachments:z.array(maintenancePurchaseAttachmentSchema).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
+const managedMaintenancePurchaseRowSchema=z.object({id:z.uuid(),branch_id:z.uuid().nullable(),branch_name:z.string(),maintenance_issue_id:z.uuid().nullable(),purchase_type:maintenancePurchaseTypeSchema,issue_title:z.string().nullable(),issue_category:maintenanceIssueCategorySchema.nullable(),issue_status:maintenanceIssueStatusSchema.nullable(),responsible_person_name:z.string().nullable().optional().default(null),purchase_scope:maintenancePurchaseScopeSchema,destination:z.string().nullable(),category:maintenancePurchaseCategorySchema,maintenance_user_id:z.uuid(),maintenance_user_name:z.string().nullable(),item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnitSchema,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:z.string().nullable(),payment_status:z.enum(["unpaid","reimbursed"]),payment_method:maintenancePaymentMethodSchema.nullable().optional().default(null),reimbursement_note:z.string().nullable(),reimbursed_at:z.string().nullable(),receipt_original_name:z.string().nullable(),receipt_url:z.string().nullable(),attachments:z.array(maintenancePurchaseAttachmentSchema).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
 const managedMaintenancePurchaseListSchema=z.object({maintenance_purchases:z.array(managedMaintenancePurchaseRowSchema).max(1000)}).strict();
 const maintenancePurchaseHistoryListSchema=z.object({maintenance_purchases:z.array(managedMaintenancePurchaseRowSchema.omit({maintenance_user_id:true})).max(1000)}).strict();
-const maintenancePurchaseBodySchema=z.object({purchase_type:maintenancePurchaseTypeSchema.optional(),purchase_scope:maintenancePurchaseScopeSchema.optional(),branch_id:z.uuid().nullable().optional(),destination:optionalStaffTextSchema(120),category:maintenancePurchaseCategorySchema,item_name:normalizedNameSchema,quantity:z.union([z.number(),z.string()]).transform(Number).pipe(z.number().positive()),unit:maintenancePurchaseUnitSchema,amount:z.union([z.number(),z.string()]).transform(Number).pipe(z.number().nonnegative()),vendor_name:optionalStaffTextSchema(120),purchase_date:dateOnlySchema,notes:optionalStaffTextSchema(2000)}).strict();
+const maintenancePurchaseBodySchema=z.object({purchase_type:maintenancePurchaseTypeSchema.optional(),purchase_scope:maintenancePurchaseScopeSchema.optional(),branch_id:z.uuid().nullable().optional(),destination:optionalStaffTextSchema(120),category:maintenancePurchaseCategorySchema,item_name:normalizedNameSchema,quantity:z.union([z.number(),z.string()]).transform(Number).pipe(z.number().positive()),unit:maintenancePurchaseUnitSchema,amount:z.union([z.number(),z.string()]).transform(Number).pipe(z.number().nonnegative()),vendor_name:optionalStaffTextSchema(120),purchase_date:dateOnlySchema,notes:optionalStaffTextSchema(2000),payment_method:maintenancePaymentMethodSchema.nullable().optional().default(null)}).strict();
 const maintenancePurchaseBranchListSchema=z.object({branches:z.array(z.object({id:z.uuid(),name:z.string(),name_ar:z.string().nullable()}).strict()).max(500)}).strict();
 const maintenancePurchaseAttachmentUploadSchema=z.object({original_name:z.string().max(180).optional().nullable(),mime_type:maintenancePurchaseReceiptMime,content_base64:z.string().min(1)}).strict();
 const maintenancePurchaseUploadEnvelopeSchema=z.object({purchase:maintenancePurchaseBodySchema,attachments:z.array(maintenancePurchaseAttachmentUploadSchema).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([])}).strict();
@@ -4166,6 +4180,7 @@ export function createApp(
           issueId: issueId.data,
           status: body.data.status,
           note: body.data.note,
+          responsiblePersonName: body.data.responsible_person_name,
           repairPhotos,
         }));
         response.setHeader("Cache-Control", "private, no-store");

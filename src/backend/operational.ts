@@ -29,6 +29,7 @@ const maintenancePurchaseUnit = z.enum(["pcs", "meter", "kg", "box", "bag", "rol
 const maintenancePurchaseType = z.enum(["issue", "general"]);
 const maintenancePurchaseScope = z.enum(["branch", "office", "other"]);
 const maintenancePurchaseCategory = z.enum(["spare_parts", "tools_equipment", "electrical", "plumbing", "hvac_refrigeration", "kitchen_equipment", "fuel_petrol", "transportation", "technician_contractor", "building_facility", "safety_equipment", "it_network", "general_supplies", "other"]);
+const maintenancePaymentMethod = z.enum(["cash", "credit_card", "pay_later"]);
 const monthlyEvaluationScore = z.object({
   section: z.string(),
   factor_key: z.string(),
@@ -250,6 +251,7 @@ const maintenanceIssueRow = z.object({
   reported_by: uuid,
   reporter_name: optionalStaffText,
   assigned_to: uuid.nullable(),
+  responsible_person_name: optionalStaffText.optional().default(null),
   created_at: z.string(),
   updated_at: z.string(),
   updates: z.array(maintenanceIssueUpdateRow).optional(),
@@ -282,6 +284,7 @@ export class OperationalAccessError extends Error {}
 export class OperationalInputError extends Error {}
 export class OperationalAttachmentNotFoundError extends Error {}
 export class OperationalHygieneSubmittedError extends Error {}
+class RpcSignatureMissingError extends AdminOperationError {}
 export type OperationalAdmin = {
   resolveDailyAuditGrantBranchScope?(actorUserId:string,branchId:string):Promise<{branch_id:string;organization_id:string;active:boolean;organization_active:boolean}|null>;
   resolveDailyAuditManualAccessUser?(actorUserId:string,branchId:string,accessUserId:string):Promise<{id:string;organization_id:string;display_name:string;active:boolean;credential_version:string}|null>;
@@ -402,6 +405,7 @@ export type OperationalAdmin = {
       priority: z.infer<typeof maintenanceIssuePriority>;
       description?: string | null;
       location?: string | null;
+      responsible_person_name?: string | null;
     };
     photo?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
     photos?: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> | null;
@@ -416,6 +420,7 @@ export type OperationalAdmin = {
       priority: z.infer<typeof maintenanceIssuePriority>;
       description?: string | null;
       location?: string | null;
+      responsible_person_name?: string | null;
     };
     photo?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
     photos?: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> | null;
@@ -427,12 +432,13 @@ export type OperationalAdmin = {
     issueId: string;
     status: z.infer<typeof maintenanceIssueStatus>;
     note?: string | null;
+    responsiblePersonName?: string | null;
     repairPhoto?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
     repairPhotos?: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> | null;
   }): Promise<unknown>;
   listMaintenancePurchases(actorUserId: string, issueId: string): Promise<unknown>;
   listMaintenancePurchaseBranches?(input:{actorUserId:string}):Promise<unknown>;
-  createMaintenancePurchase(input: { actorUserId:string; issueId?:string|null; payload:{purchase_type?:z.infer<typeof maintenancePurchaseType>;purchase_scope?:z.infer<typeof maintenancePurchaseScope>;branch_id?:string|null;destination?:string|null;category:z.infer<typeof maintenancePurchaseCategory>;item_name:string;quantity:string|number;unit:"pcs"|"meter"|"kg"|"box"|"bag"|"roll"|"set"|"liter"|"other";amount:string|number;vendor_name?:string|null;purchase_date:string;notes?:string|null}; receipts?:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>|null }): Promise<unknown>;
+  createMaintenancePurchase(input: { actorUserId:string; issueId?:string|null; payload:{purchase_type?:z.infer<typeof maintenancePurchaseType>;purchase_scope?:z.infer<typeof maintenancePurchaseScope>;branch_id?:string|null;destination?:string|null;category:z.infer<typeof maintenancePurchaseCategory>;item_name:string;quantity:string|number;unit:"pcs"|"meter"|"kg"|"box"|"bag"|"roll"|"set"|"liter"|"other";amount:string|number;vendor_name?:string|null;purchase_date:string;notes?:string|null;payment_method?:z.infer<typeof maintenancePaymentMethod>|null}; receipts?:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>|null }): Promise<unknown>;
   reimburseMaintenancePurchase(input:{actorUserId:string;purchaseId:string;reimbursementNote?:string|null}):Promise<unknown>;
   listMaintenancePurchaseHistory?(input:{actorUserId:string;purchaseType:z.infer<typeof maintenancePurchaseType>}):Promise<unknown>;
   listManagedMaintenancePurchases?(input:{actorUserId:string;organizationId:string;branchId?:string;issueStatus?:z.infer<typeof maintenanceIssueStatus>;paymentStatus?:z.infer<typeof purchaseLogPaymentStatus>;vendor?:string;dateFrom?:string;dateTo?:string;purchaseType?:z.infer<typeof maintenancePurchaseType>}):Promise<unknown>;
@@ -487,6 +493,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       }
       if (result.error.code === "22023") throw new OperationalInputError();
       if (result.error.code === "42501") throw new OperationalAccessError();
+      if (result.error.code === "PGRST202" || /could not find the function|schema cache/i.test(result.error.message)) throw new RpcSignatureMissingError();
       throw new AdminOperationError();
     }
     if (!Array.isArray(result.data)) throw new AdminOperationError();
@@ -621,12 +628,12 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   }
   const maintenanceIssuePhotoRpcRow=z.object({id:uuid,maintenance_issue_id:uuid,attachment_type:z.enum(["issue","repair"]),storage_path:z.string(),original_filename:optionalStaffText,mime_type:optionalStaffText,size_bytes:z.union([z.number(),z.string()]).nullable(),attachment_position:z.number().int().min(1).max(MAX_MAINTENANCE_ISSUE_PHOTOS).optional().default(1),created_at:z.string()}).strict();
   const maintenancePurchaseAttachmentRpcRow=z.object({id:uuid,storage_path:z.string(),original_filename:optionalStaffText,mime_type:optionalStaffText,size_bytes:z.union([z.number(),z.string()]).nullable(),position:z.number().int().min(1).max(MAX_MAINTENANCE_PURCHASE_PHOTOS)}).strict();
-  const maintenancePurchaseListRpcRow=z.object({id:uuid,branch_id:uuid.nullable(),purchase_type:maintenancePurchaseType,purchase_scope:maintenancePurchaseScope,destination:optionalStaffText,category:maintenancePurchaseCategory,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnit,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:optionalStaffText,payment_status:purchaseLogPaymentStatus,reimbursement_note:optionalStaffText,reimbursed_at:z.string().nullable(),receipt_storage_path:optionalStaffText,receipt_original_name:optionalStaffText,attachments:z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
+  const maintenancePurchaseListRpcRow=z.object({id:uuid,branch_id:uuid.nullable(),purchase_type:maintenancePurchaseType,purchase_scope:maintenancePurchaseScope,destination:optionalStaffText,category:maintenancePurchaseCategory,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnit,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:optionalStaffText,payment_status:purchaseLogPaymentStatus,payment_method:maintenancePaymentMethod.nullable().optional().default(null),reimbursement_note:optionalStaffText,reimbursed_at:z.string().nullable(),receipt_storage_path:optionalStaffText,receipt_original_name:optionalStaffText,attachments:z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
   const maintenancePurchaseMutationRpcRow=maintenancePurchaseListRpcRow.extend({organization_id:uuid,maintenance_issue_id:uuid.nullable(),maintenance_user_id:uuid}).strict();
   async function normalizeMaintenancePurchaseRows(rows:z.infer<typeof maintenancePurchaseListRpcRow>[]){return Promise.all(rows.map(async row=>{const attachments=await Promise.all(row.attachments.map(async attachment=>({id:attachment.id,original_filename:attachment.original_filename,mime_type:attachment.mime_type,size_bytes:attachment.size_bytes===null?null:Number(attachment.size_bytes),position:attachment.position,url:await signMaintenanceReceipt(attachment.storage_path)})));const first=attachments[0];const{receipt_storage_path,...safe}=row;return{...safe,attachments,quantity:Number(row.quantity),amount:Number(row.amount),receipt_url:first?.url??await signMaintenanceReceipt(receipt_storage_path),receipt_original_name:first?.original_filename??row.receipt_original_name};}));}
   async function normalizeMaintenancePurchases(rows:unknown[]){return normalizeMaintenancePurchaseRows(z.array(maintenancePurchaseListRpcRow).max(500).parse(rows));}
   async function normalizeMaintenancePurchaseMutations(rows:unknown[]){const parsed=z.array(maintenancePurchaseMutationRpcRow).length(1).parse(rows);return normalizeMaintenancePurchaseRows(parsed.map(({organization_id,maintenance_issue_id,maintenance_user_id,...row})=>{void organization_id;void maintenance_issue_id;void maintenance_user_id;return row;}));}
-  async function normalizeManagedMaintenancePurchases(rows:unknown[]){return Promise.all(z.array(z.object({id:uuid,organization_id:uuid,branch_id:uuid.nullable(),branch_name:z.string(),maintenance_issue_id:uuid.nullable(),purchase_type:maintenancePurchaseType,issue_title:optionalStaffText,issue_category:maintenanceIssueCategory.nullable(),issue_status:maintenanceIssueStatus.nullable(),purchase_scope:maintenancePurchaseScope,destination:optionalStaffText,category:maintenancePurchaseCategory,maintenance_user_id:uuid,maintenance_user_name:optionalStaffText,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnit,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:optionalStaffText,payment_status:purchaseLogPaymentStatus,reimbursement_note:optionalStaffText,reimbursed_at:z.string().nullable(),receipt_storage_path:optionalStaffText,receipt_original_name:optionalStaffText,attachments:z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict()).max(1000).parse(rows).map(async row=>{const attachments=await Promise.all(row.attachments.map(async attachment=>({id:attachment.id,original_filename:attachment.original_filename,mime_type:attachment.mime_type,size_bytes:attachment.size_bytes===null?null:Number(attachment.size_bytes),position:attachment.position,url:await signMaintenanceReceipt(attachment.storage_path)})));const{organization_id,receipt_storage_path,...safe}=row;void organization_id;return{...safe,attachments,quantity:Number(row.quantity),amount:Number(row.amount),receipt_url:attachments[0]?.url??await signMaintenanceReceipt(receipt_storage_path),receipt_original_name:attachments[0]?.original_filename??row.receipt_original_name};}));}
+  async function normalizeManagedMaintenancePurchases(rows:unknown[]){return Promise.all(z.array(z.object({id:uuid,organization_id:uuid,branch_id:uuid.nullable(),branch_name:z.string(),maintenance_issue_id:uuid.nullable(),purchase_type:maintenancePurchaseType,issue_title:optionalStaffText,issue_category:maintenanceIssueCategory.nullable(),issue_status:maintenanceIssueStatus.nullable(),responsible_person_name:optionalStaffText.optional().default(null),purchase_scope:maintenancePurchaseScope,destination:optionalStaffText,category:maintenancePurchaseCategory,maintenance_user_id:uuid,maintenance_user_name:optionalStaffText,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnit,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:optionalStaffText,payment_status:purchaseLogPaymentStatus,payment_method:maintenancePaymentMethod.nullable().optional().default(null),reimbursement_note:optionalStaffText,reimbursed_at:z.string().nullable(),receipt_storage_path:optionalStaffText,receipt_original_name:optionalStaffText,attachments:z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict()).max(1000).parse(rows).map(async row=>{const attachments=await Promise.all(row.attachments.map(async attachment=>({id:attachment.id,original_filename:attachment.original_filename,mime_type:attachment.mime_type,size_bytes:attachment.size_bytes===null?null:Number(attachment.size_bytes),position:attachment.position,url:await signMaintenanceReceipt(attachment.storage_path)})));const{organization_id,receipt_storage_path,...safe}=row;void organization_id;return{...safe,attachments,quantity:Number(row.quantity),amount:Number(row.amount),receipt_url:attachments[0]?.url??await signMaintenanceReceipt(receipt_storage_path),receipt_original_name:attachments[0]?.original_filename??row.receipt_original_name};}));}
   async function normalizePurchaseRows(rows: unknown[]) {
     return Promise.all(z.array(purchaseLogRow.omit({ invoice_url: true })).max(500).parse(rows).map(async (row) => {
       const { organization_id, supervisor_team_id, invoice_storage_path, ...safeRow } = row;
@@ -1253,14 +1260,24 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       const repairPhotos=input.repairPhotos?.filter((photo)=>photo.bytes.length>0)??(input.repairPhoto?[input.repairPhoto]:[]);
       try{
         if(repairPhotos.length)uploaded=await uploadMaintenanceIssuePhotos(input.issueId,"repair",repairPhotos);
-        const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded.length?"update_maintenance_issue_with_repair_photo":"update_maintenance_issue", {
+        const functionName=uploaded.length?"update_maintenance_issue_with_repair_photo":"update_maintenance_issue";
+        const legacyInput={
           actor_user_id: input.actorUserId ?? null,
           access_user_id: input.accessUserId ?? null,
           target_issue_id: input.issueId,
           new_status: input.status,
           new_note: input.note ?? null,
           ...(uploaded.length?{repair_photo:uploaded}:{}),
-        }),input.actorUserId,input.accessUserId);
+        };
+        const hasResponsible=typeof input.responsiblePersonName==="string"&&input.responsiblePersonName.trim().length>0;
+        let rawRows:unknown[];
+        try{
+          rawRows=await rpc(functionName,{...legacyInput,new_responsible_person_name:input.responsiblePersonName??null});
+        }catch(error){
+          if(!(error instanceof RpcSignatureMissingError)||hasResponsible)throw error;
+          rawRows=await rpc(functionName,legacyInput);
+        }
+        const rows = await normalizeMaintenanceIssueRows(rawRows,input.actorUserId,input.accessUserId);
         if (rows.length !== 1) throw new AdminOperationError();
         return { maintenance_issue: rows[0] };
       }catch(error){
