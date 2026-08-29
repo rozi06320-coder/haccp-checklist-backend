@@ -696,6 +696,10 @@ const supervisorProfileBodySchema = z.object({
   iqama_number: optionalStaffTextSchema(80),
   iqama_expiry_date: optionalDateOnlySchema,
 }).strict();
+const supervisorAccessTransferBodySchema = z.object({
+  expected_branch_id: z.uuid(),
+  target_branch_id: z.uuid(),
+}).strict();
 const maintenanceUserBodySchema = z
   .object({
     full_name: normalizedNameSchema,
@@ -3729,6 +3733,43 @@ export function createApp(
         else if (error instanceof AdminConflictError) next(new HttpError(422, "invalid_profile", "The Supervisor profile is invalid."));
         else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
         else next(new HttpError(503, "service_unavailable", "Supervisors are unavailable."));
+      }
+    },
+  );
+  app.patch(
+    "/api/v1/internal-admin/organizations/:organizationId/supervisors/:userId/access",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        const body = supervisorAccessTransferBodySchema.safeParse(request.body);
+        if (!organizationId.success || !userId.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        if (!body.success) {
+          throw new HttpError(422, "unprocessable_entity", "Select a valid target branch.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.transferSupervisorAccessForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Supervisor access is unavailable.");
+        }
+        const supervisor = await dependencies.managementAdmin.transferSupervisorAccessForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          supervisorUserId: userId.data,
+          expectedFromBranchId: body.data.expected_branch_id,
+          targetBranchId: body.data.target_branch_id,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ supervisor });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Select a valid target branch."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "The Supervisor or branch is unavailable."));
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Supervisor access changed. Refresh and try again."));
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Supervisor access is unavailable."));
       }
     },
   );

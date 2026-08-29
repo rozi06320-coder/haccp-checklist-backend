@@ -150,6 +150,13 @@ export type UpdateInternalAdminSupervisorProfileInput = {
   iqamaNumber?: string | null;
   iqamaExpiryDate?: string | null;
 };
+export type TransferBranchSupervisorAccessInput = {
+  actorUserId: string;
+  organizationId: string;
+  supervisorUserId: string;
+  expectedFromBranchId: string;
+  targetBranchId: string;
+};
 export type InternalAdminSupervisorProfile = {
   id: string;
   full_name: string;
@@ -160,6 +167,9 @@ export type InternalAdminSupervisorProfile = {
   iqama_number?: string | null;
   iqama_expiry_date?: string | null;
   email: string;
+  updated_at: string;
+};
+export type InternalAdminSupervisorAccessSummary = Omit<InternalAdminSupervisor, "created_at"> & {
   updated_at: string;
 };
 export type InternalAdminBranchTeam = {
@@ -382,6 +392,7 @@ export type ManagementAdmin = {
   }): Promise<void>;
   listSupervisorsForInternalAdmin?(actorUserId: string, organizationId: string): Promise<InternalAdminSupervisor[]>;
   updateSupervisorProfileForInternalAdmin?(input: UpdateInternalAdminSupervisorProfileInput): Promise<InternalAdminSupervisorProfile>;
+  transferSupervisorAccessForInternalAdmin?(input: TransferBranchSupervisorAccessInput): Promise<InternalAdminSupervisorAccessSummary>;
   deactivateSupervisorForInternalAdmin?(input: {
     actorUserId: string;
     organizationId: string;
@@ -954,6 +965,49 @@ export function createManagementAdmin(
         iqama_number: z.string().nullable().optional(),
         iqama_expiry_date: z.string().nullable().optional(),
         email: z.string().email(),
+        updated_at: z.string(),
+      }).strict()).length(1).safeParse(data);
+      if (!rows.success) throw new AdminOperationError();
+      return rows.data[0];
+    },
+    async transferSupervisorAccessForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("transfer_branch_supervisor_access", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_supervisor_user_id: input.supervisorUserId,
+        expected_from_branch_id: input.expectedFromBranchId,
+        target_branch_id: input.targetBranchId,
+      });
+      if (error || !Array.isArray(data)) {
+        if (error?.code === "42501") throw new AdminAccessError();
+        if (error?.code === "P0002") throw new AdminNotFoundError();
+        if (error?.code === "22023") throw new AdminInputError();
+        if (error?.code === "40001" || error?.code === "23505" || error?.code === "23514") throw new AdminConflictError();
+        throw new AdminOperationError();
+      }
+      const rows = z.array(z.object({
+        id: z.string().uuid(),
+        full_name: z.string().nullable(),
+        email: z.string().email(),
+        branches: z.array(z.object({
+          id: z.string().uuid(),
+          name: z.string(),
+          name_ar: z.string().nullable().optional(),
+          code: z.string(),
+          active: z.boolean().optional(),
+        }).strict()).max(50),
+        team_assignments: z.array(z.object({
+          team_id: z.string().uuid(),
+          team_name: z.string(),
+          branch_id: z.string().uuid(),
+          branch_name: z.string(),
+          branch_name_ar: z.string().nullable().optional(),
+          assignment_role: z.enum(["primary", "backup"]),
+          active: z.boolean(),
+        }).strict()).max(100),
+        active: z.boolean(),
+        disabled: z.boolean(),
+        must_change_password: z.boolean(),
         updated_at: z.string(),
       }).strict()).length(1).safeParse(data);
       if (!rows.success) throw new AdminOperationError();
