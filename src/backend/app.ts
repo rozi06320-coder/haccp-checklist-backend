@@ -451,6 +451,18 @@ const maintenancePurchaseBranchListSchema=z.object({branches:z.array(z.object({i
 const maintenancePurchaseAttachmentUploadSchema=z.object({original_name:z.string().max(180).optional().nullable(),mime_type:maintenancePurchaseReceiptMime,content_base64:z.string().min(1)}).strict();
 const maintenancePurchaseUploadEnvelopeSchema=z.object({purchase:maintenancePurchaseBodySchema,attachments:z.array(maintenancePurchaseAttachmentUploadSchema).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([])}).strict();
 const maintenancePurchasePaymentBodySchema=z.object({reimbursement_note:optionalStaffTextSchema(500)}).strict();
+type MaintenancePurchaseDiagnosticPayload={hasCategory:boolean;category:string|null;hasPaymentMethod:boolean;paymentMethod:string|null;unit:string|null;hasPurchaseDate:boolean;hasItemName:boolean;attachmentCount:number};
+type MaintenancePurchaseDiagnosticEvent={requestId?:string|null;stage:"request_validation"|"receipt_validation"|"receipt_upload"|"rpc_create"|"rpc_parse";status:"start"|"ok"|"error";errorClass?:string;errorCode?:string|null;payload?:MaintenancePurchaseDiagnosticPayload};
+const MAINTENANCE_PURCHASE_DIAGNOSTIC_PREFIX="MAINTENANCE_PURCHASE_DIAGNOSTIC";
+function summarizeMaintenancePurchasePayload(raw:unknown,attachmentCount:number):MaintenancePurchaseDiagnosticPayload{
+  const payload=typeof raw==="object"&&raw!==null?"purchase"in raw&&typeof (raw as{purchase?:unknown}).purchase==="object"&&(raw as{purchase?:unknown}).purchase!==null?(raw as{purchase:Record<string,unknown>}).purchase:raw as Record<string,unknown>:null;
+  const value=(key:string)=>payload&&Object.prototype.hasOwnProperty.call(payload,key)?payload[key]:undefined;
+  const category=value("category"),paymentMethod=value("payment_method"),unit=value("unit"),purchaseDate=value("purchase_date"),itemName=value("item_name");
+  return{hasCategory:typeof category==="string"&&category.length>0,category:typeof category==="string"?category:null,hasPaymentMethod:typeof paymentMethod==="string"&&paymentMethod.length>0,paymentMethod:typeof paymentMethod==="string"?paymentMethod:null,unit:typeof unit==="string"?unit:null,hasPurchaseDate:typeof purchaseDate==="string"&&purchaseDate.length>0,hasItemName:typeof itemName==="string"&&itemName.length>0,attachmentCount};
+}
+function logMaintenancePurchaseDiagnostic(event:MaintenancePurchaseDiagnosticEvent){
+  console.info(MAINTENANCE_PURCHASE_DIAGNOSTIC_PREFIX,{requestId:event.requestId??null,stage:event.stage,status:event.status,errorClass:event.errorClass,errorCode:event.errorCode,payload:event.payload});
+}
 const dailyAuditItemApiSchema=z.object({item_id:z.string().min(1).max(80),answer:z.enum(["not_checked","compliant","non_compliant"]),remark:z.string().max(4000)}).strict();
 const dailyAuditBodySchema=z.object({business_date:dateOnlySchema,expected_revision:z.number().int().nonnegative().default(0),items:z.array(dailyAuditItemApiSchema).max(13)}).strict();
 const dailyAuditResponseSchema=z.object({submission_id:z.uuid().nullable().optional(),branch_id:z.uuid(),business_date:dateOnlySchema,state:z.enum(["empty","draft","submitted"]).nullable(),revision:z.number().int().nonnegative().default(0),auditor_display_name:z.string().nullable().optional(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),submitted_at:z.string().nullable().optional(),updated_at:z.string().nullable().optional(),items:z.array(z.object({item_id:z.string(),item_number:z.number().int().optional(),answer:z.enum(["not_checked","compliant","non_compliant"]),remark:z.string()}).strict()).length(13)}).strict();
@@ -2950,7 +2962,74 @@ export function createApp(
     },
   );
   app.get("/api/v1/maintenance/issues/:issueId/purchases",protectedRateLimit,authenticate,async(request,response,next)=>{try{const issue=z.uuid().safeParse(request.params.issueId);if(!issue.success||!emptyQuerySchema.safeParse(request.query).success||!dependencies.operationalAdmin)throw new HttpError(issue.success?503:400,issue.success?"service_unavailable":"bad_request",issue.success?"Maintenance purchases are temporarily unavailable.":"The request is invalid.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=maintenancePurchaseListSchema.parse(await dependencies.operationalAdmin.listMaintenancePurchases(actorUserId,issue.data));response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);}catch(error){next(error instanceof HttpError?error:operationalMaintenanceIssueError(error));}});
-  app.post("/api/v1/maintenance/issues/:issueId/purchases",protectedRateLimit,authenticate,maintenanceReceiptRawBody,async(request,response,next)=>{try{const issue=z.uuid().safeParse(request.params.issueId);let raw:unknown=request.body;let receipts:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>=[];if(Buffer.isBuffer(request.body)){const contentType=request.header("Content-Type")?.split(";")[0]?.trim().toLowerCase();if(contentType==="application/vnd.maintenance-purchase+json"){let decoded:unknown;try{decoded=JSON.parse(request.body.toString("utf8"));}catch{throw new HttpError(400,"bad_request","The request is invalid.");}const envelope=maintenancePurchaseUploadEnvelopeSchema.safeParse(decoded);if(!envelope.success)throw new HttpError(400,"bad_request","The request is invalid.");raw=envelope.data.purchase;receipts=envelope.data.attachments.map((attachment)=>({bytes:Buffer.from(attachment.content_base64,"base64"),mimeType:attachment.mime_type,originalName:attachment.original_name?.trim()||"receipt"}));}else{const encoded=request.header("X-Maintenance-Purchase-Payload"),name=decodeUploadFilename(request.header("X-Maintenance-Purchase-Filename-B64"))??"receipt";if(!encoded)throw new HttpError(400,"bad_request","The request is invalid.");try{raw=JSON.parse(Buffer.from(encoded,"base64url").toString("utf8"));}catch{throw new HttpError(400,"bad_request","The request is invalid.");}const mime=maintenancePurchaseReceiptMime.safeParse(contentType);if(!mime.success)throw new HttpError(400,"bad_request","The request is invalid.");receipts=[{bytes:request.body,mimeType:mime.data,originalName:name}];}}const body=maintenancePurchaseBodySchema.safeParse(raw);if(!issue.success||!body.success||!emptyQuerySchema.safeParse(request.query).success||!dependencies.operationalAdmin)throw new HttpError(400,"bad_request","The request is invalid.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=maintenancePurchaseMutationSchema.parse(await dependencies.operationalAdmin.createMaintenancePurchase({actorUserId,issueId:issue.data,payload:body.data,receipts}));response.setHeader("Cache-Control","private, no-store");response.status(201).json(result);}catch(error){next(error instanceof HttpError?error:operationalMaintenanceIssueError(error));}});
+  app.post("/api/v1/maintenance/issues/:issueId/purchases",protectedRateLimit,authenticate,maintenanceReceiptRawBody,async(request,response,next)=>{
+    const requestId=request.id;
+    try{
+      const issue=z.uuid().safeParse(request.params.issueId);
+      let raw:unknown=request.body;
+      let receipts:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>=[];
+      if(Buffer.isBuffer(request.body)){
+        const contentType=request.header("Content-Type")?.split(";")[0]?.trim().toLowerCase();
+        if(contentType==="application/vnd.maintenance-purchase+json"){
+          let decoded:unknown;
+          try{
+            decoded=JSON.parse(request.body.toString("utf8"));
+          }catch{
+            logMaintenancePurchaseDiagnostic({requestId,stage:"receipt_validation",status:"error",errorClass:"SyntaxError",payload:summarizeMaintenancePurchasePayload(null,0)});
+            throw new HttpError(400,"bad_request","The request is invalid.");
+          }
+          const envelope=maintenancePurchaseUploadEnvelopeSchema.safeParse(decoded);
+          if(!envelope.success){
+            logMaintenancePurchaseDiagnostic({requestId,stage:"receipt_validation",status:"error",errorClass:"ZodError",payload:summarizeMaintenancePurchasePayload(decoded,0)});
+            throw new HttpError(400,"bad_request","The request is invalid.");
+          }
+          raw=envelope.data.purchase;
+          receipts=envelope.data.attachments.map((attachment)=>({bytes:Buffer.from(attachment.content_base64,"base64"),mimeType:attachment.mime_type,originalName:attachment.original_name?.trim()||"receipt"}));
+          logMaintenancePurchaseDiagnostic({requestId,stage:"receipt_validation",status:"ok",payload:summarizeMaintenancePurchasePayload(raw,receipts.length)});
+        }else{
+          const encoded=request.header("X-Maintenance-Purchase-Payload"),name=decodeUploadFilename(request.header("X-Maintenance-Purchase-Filename-B64"))??"receipt";
+          if(!encoded){
+            logMaintenancePurchaseDiagnostic({requestId,stage:"receipt_validation",status:"error",errorClass:"MissingPayloadHeader",payload:summarizeMaintenancePurchasePayload(null,0)});
+            throw new HttpError(400,"bad_request","The request is invalid.");
+          }
+          try{
+            raw=JSON.parse(Buffer.from(encoded,"base64url").toString("utf8"));
+          }catch{
+            logMaintenancePurchaseDiagnostic({requestId,stage:"receipt_validation",status:"error",errorClass:"SyntaxError",payload:summarizeMaintenancePurchasePayload(null,0)});
+            throw new HttpError(400,"bad_request","The request is invalid.");
+          }
+          const mime=maintenancePurchaseReceiptMime.safeParse(contentType);
+          if(!mime.success){
+            logMaintenancePurchaseDiagnostic({requestId,stage:"receipt_validation",status:"error",errorClass:"ZodError",payload:summarizeMaintenancePurchasePayload(raw,0)});
+            throw new HttpError(400,"bad_request","The request is invalid.");
+          }
+          receipts=[{bytes:request.body,mimeType:mime.data,originalName:name}];
+          logMaintenancePurchaseDiagnostic({requestId,stage:"receipt_validation",status:"ok",payload:summarizeMaintenancePurchasePayload(raw,receipts.length)});
+        }
+      }
+      const payloadDiagnostic=summarizeMaintenancePurchasePayload(raw,receipts.length);
+      const body=maintenancePurchaseBodySchema.safeParse(raw);
+      const query=emptyQuerySchema.safeParse(request.query);
+      if(!issue.success||!body.success||!query.success||!dependencies.operationalAdmin){
+        logMaintenancePurchaseDiagnostic({requestId,stage:"request_validation",status:"error",errorClass:!issue.success?"InvalidIssueId":!body.success?"ZodError":!query.success?"InvalidQuery":"MissingOperationalAdmin",payload:payloadDiagnostic});
+        throw new HttpError(400,"bad_request","The request is invalid.");
+      }
+      logMaintenancePurchaseDiagnostic({requestId,stage:"request_validation",status:"ok",payload:payloadDiagnostic});
+      const actorUserId=await loadAuthenticatedMaintenanceUser(request);
+      const operationalResult=await dependencies.operationalAdmin.createMaintenancePurchase({actorUserId,issueId:issue.data,payload:body.data,receipts,diagnostics:{requestId,payload:payloadDiagnostic,log:logMaintenancePurchaseDiagnostic}});
+      let result:z.infer<typeof maintenancePurchaseMutationSchema>;
+      try{
+        result=maintenancePurchaseMutationSchema.parse(operationalResult);
+      }catch(error){
+        logMaintenancePurchaseDiagnostic({requestId,stage:"rpc_parse",status:"error",errorClass:error instanceof Error?error.constructor.name:typeof error,payload:payloadDiagnostic});
+        throw error;
+      }
+      response.setHeader("Cache-Control","private, no-store");
+      response.status(201).json(result);
+    }catch(error){
+      next(error instanceof HttpError?error:operationalMaintenanceIssueError(error));
+    }
+  });
   app.get("/api/v1/maintenance/purchase-branches",protectedRateLimit,authenticate,async(request,response,next)=>{try{if(!emptyQuerySchema.safeParse(request.query).success||!dependencies.operationalAdmin?.listMaintenancePurchaseBranches)throw new HttpError(503,"service_unavailable","Maintenance purchase branches are temporarily unavailable.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=maintenancePurchaseBranchListSchema.parse(await dependencies.operationalAdmin.listMaintenancePurchaseBranches({actorUserId}));response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);}catch(error){next(error instanceof HttpError?error:error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Maintenance purchase branches are temporarily unavailable."));}});
   app.post("/api/v1/maintenance/purchases/general",protectedRateLimit,authenticate,maintenanceReceiptRawBody,async(request,response,next)=>{try{let raw:unknown=request.body;let receipts:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>=[];if(Buffer.isBuffer(request.body)){const contentType=request.header("Content-Type")?.split(";")[0]?.trim().toLowerCase();if(contentType==="application/vnd.maintenance-purchase+json"){let decoded:unknown;try{decoded=JSON.parse(request.body.toString("utf8"));}catch{throw new HttpError(400,"bad_request","The request is invalid.");}const envelope=maintenancePurchaseUploadEnvelopeSchema.safeParse(decoded);if(!envelope.success)throw new HttpError(400,"bad_request","The request is invalid.");raw=envelope.data.purchase;receipts=envelope.data.attachments.map((attachment)=>({bytes:Buffer.from(attachment.content_base64,"base64"),mimeType:attachment.mime_type,originalName:attachment.original_name?.trim()||"receipt"}));}else{const encoded=request.header("X-Maintenance-Purchase-Payload"),name=decodeUploadFilename(request.header("X-Maintenance-Purchase-Filename-B64"))??"receipt";if(!encoded)throw new HttpError(400,"bad_request","The request is invalid.");try{raw=JSON.parse(Buffer.from(encoded,"base64url").toString("utf8"));}catch{throw new HttpError(400,"bad_request","The request is invalid.");}const mime=maintenancePurchaseReceiptMime.safeParse(contentType);if(!mime.success)throw new HttpError(400,"bad_request","The request is invalid.");receipts=[{bytes:request.body,mimeType:mime.data,originalName:name}];}}const body=maintenancePurchaseBodySchema.safeParse(raw);if(!body.success||!emptyQuerySchema.safeParse(request.query).success||!dependencies.operationalAdmin)throw new HttpError(400,"bad_request","The request is invalid.");if(body.data.purchase_type==="issue"||body.data.branch_id||!body.data.destination)throw new HttpError(422,"unprocessable_entity","The maintenance purchase details are invalid.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=maintenancePurchaseMutationSchema.parse(await dependencies.operationalAdmin.createMaintenancePurchase({actorUserId,issueId:null,payload:{...body.data,purchase_type:"general",purchase_scope:"other",branch_id:null},receipts}));response.setHeader("Cache-Control","private, no-store");response.status(201).json(result);}catch(error){next(error instanceof HttpError?error:operationalMaintenanceIssueError(error));}});
   app.get("/api/v1/maintenance/purchases/issue",protectedRateLimit,authenticate,async(request,response,next)=>{try{if(!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");if(!dependencies.operationalAdmin?.listMaintenancePurchaseHistory)throw new HttpError(503,"service_unavailable","Maintenance purchase history is temporarily unavailable.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=managedMaintenancePurchaseListSchema.parse(await dependencies.operationalAdmin.listMaintenancePurchaseHistory({actorUserId,purchaseType:"issue"}));const safeResult=maintenancePurchaseHistoryListSchema.parse({maintenance_purchases:result.maintenance_purchases.map(({maintenance_user_id,...purchase})=>{void maintenance_user_id;return purchase;})});response.setHeader("Cache-Control","private, no-store");response.status(200).json(safeResult);}catch(error){next(error instanceof HttpError?error:error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Maintenance purchase history is temporarily unavailable."));}});

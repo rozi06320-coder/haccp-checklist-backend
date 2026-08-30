@@ -30,6 +30,29 @@ const maintenancePurchaseType = z.enum(["issue", "general"]);
 const maintenancePurchaseScope = z.enum(["branch", "office", "other"]);
 const maintenancePurchaseCategory = z.enum(["spare_parts", "tools_equipment", "electrical", "plumbing", "hvac_refrigeration", "kitchen_equipment", "fuel_petrol", "transportation", "technician_contractor", "building_facility", "safety_equipment", "it_network", "general_supplies", "other"]);
 const maintenancePaymentMethod = z.enum(["cash", "credit_card", "pay_later"]);
+type MaintenancePurchaseDiagnosticStage = "request_validation" | "receipt_validation" | "receipt_upload" | "rpc_create" | "rpc_parse";
+type MaintenancePurchaseDiagnosticPayload = {
+  hasCategory: boolean;
+  category: string | null;
+  hasPaymentMethod: boolean;
+  paymentMethod: string | null;
+  unit: string | null;
+  hasPurchaseDate: boolean;
+  hasItemName: boolean;
+  attachmentCount: number;
+};
+type MaintenancePurchaseDiagnostics = {
+  requestId?: string | null;
+  payload?: MaintenancePurchaseDiagnosticPayload;
+  log?: (event: {
+    requestId?: string | null;
+    stage: MaintenancePurchaseDiagnosticStage;
+    status: "start" | "ok" | "error";
+    errorClass?: string;
+    errorCode?: string | null;
+    payload?: MaintenancePurchaseDiagnosticPayload;
+  }) => void;
+};
 const monthlyEvaluationScore = z.object({
   section: z.string(),
   factor_key: z.string(),
@@ -438,7 +461,7 @@ export type OperationalAdmin = {
   }): Promise<unknown>;
   listMaintenancePurchases(actorUserId: string, issueId: string): Promise<unknown>;
   listMaintenancePurchaseBranches?(input:{actorUserId:string}):Promise<unknown>;
-  createMaintenancePurchase(input: { actorUserId:string; issueId?:string|null; payload:{purchase_type?:z.infer<typeof maintenancePurchaseType>;purchase_scope?:z.infer<typeof maintenancePurchaseScope>;branch_id?:string|null;destination?:string|null;category:z.infer<typeof maintenancePurchaseCategory>;item_name:string;quantity:string|number;unit:"pcs"|"meter"|"kg"|"box"|"bag"|"roll"|"set"|"liter"|"other";amount:string|number;vendor_name?:string|null;purchase_date:string;notes?:string|null;payment_method?:z.infer<typeof maintenancePaymentMethod>|null}; receipts?:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>|null }): Promise<unknown>;
+  createMaintenancePurchase(input: { actorUserId:string; issueId?:string|null; payload:{purchase_type?:z.infer<typeof maintenancePurchaseType>;purchase_scope?:z.infer<typeof maintenancePurchaseScope>;branch_id?:string|null;destination?:string|null;category:z.infer<typeof maintenancePurchaseCategory>;item_name:string;quantity:string|number;unit:"pcs"|"meter"|"kg"|"box"|"bag"|"roll"|"set"|"liter"|"other";amount:string|number;vendor_name?:string|null;purchase_date:string;notes?:string|null;payment_method?:z.infer<typeof maintenancePaymentMethod>|null}; receipts?:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>|null; diagnostics?:MaintenancePurchaseDiagnostics }): Promise<unknown>;
   reimburseMaintenancePurchase(input:{actorUserId:string;purchaseId:string;reimbursementNote?:string|null}):Promise<unknown>;
   listMaintenancePurchaseHistory?(input:{actorUserId:string;purchaseType:z.infer<typeof maintenancePurchaseType>}):Promise<unknown>;
   listManagedMaintenancePurchases?(input:{actorUserId:string;organizationId:string;branchId?:string;issueStatus?:z.infer<typeof maintenanceIssueStatus>;paymentStatus?:z.infer<typeof purchaseLogPaymentStatus>;vendor?:string;dateFrom?:string;dateTo?:string;purchaseType?:z.infer<typeof maintenancePurchaseType>}):Promise<unknown>;
@@ -477,9 +500,23 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   const supplierReceivingPhotoStorage = client.storage.from(SUPPLIER_RECEIVING_PHOTO_BUCKET);
   const maintenanceReceiptStorage = client.storage.from("maintenance-purchase-receipts");
   const maintenanceIssuePhotoStorage = client.storage.from(MAINTENANCE_ISSUE_PHOTO_BUCKET);
-  async function rpc(name: string, input: Record<string, unknown>) {
+  function emitMaintenancePurchaseDiagnostic(diagnostics: MaintenancePurchaseDiagnostics | undefined, event: { stage: MaintenancePurchaseDiagnosticStage; status: "start" | "ok" | "error"; errorClass?: string; errorCode?: string | null }) {
+    diagnostics?.log?.({
+      requestId: diagnostics.requestId ?? null,
+      stage: event.stage,
+      status: event.status,
+      errorClass: event.errorClass,
+      errorCode: event.errorCode,
+      payload: diagnostics.payload,
+    });
+  }
+  function maintenancePurchaseErrorClass(error: unknown) {
+    return error instanceof Error ? error.constructor.name : typeof error;
+  }
+  async function rpc(name: string, input: Record<string, unknown>, options?: { onError?: (error: { code?: string | null; message?: string | null }) => void }) {
     const result = await client.rpc(name, input);
     if (result.error) {
+      options?.onError?.({ code: result.error.code, message: result.error.message });
       if (result.error.code === "23505" && /employee code/i.test(result.error.message)) {
         throw new OperationalDuplicateStaffCodeError();
       }
@@ -1292,20 +1329,44 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       if(receipts.length>MAX_MAINTENANCE_PURCHASE_PHOTOS)throw new AdminOperationError();
       const purchaseId=randomUUID();
       const uploaded:Array<{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenancePurchaseReceiptMime>;size_bytes:number;position:number}>=[];
+      let uploadCompleted=false;
+      let uploadErrorLogged=false;
       try{
+        emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"receipt_upload",status:"start"});
         for(const [index,receipt]of receipts.entries()){
           const inspected=inspectPurchaseInvoice(receipt.bytes,receipt.mimeType);
           const originalName=safeOriginalFileName(receipt.originalName,`receipt-${index+1}.${inspected.extension}`);
           const storageName=`${randomUUID()}-${safeFileName(receipt.originalName,inspected.extension,`receipt-${index+1}`)}`;
           const path=`maintenance/${input.issueId??"standalone"}/purchases/${purchaseId}/${storageName}`;
           const upload=await maintenanceReceiptStorage.upload(path,receipt.bytes,{contentType:inspected.mime,upsert:false,metadata:{byteSize:String(receipt.bytes.length),mimeType:inspected.mime,originalName}});
-          if(upload.error)throw new AdminOperationError();
+          if(upload.error){uploadErrorLogged=true;emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"receipt_upload",status:"error",errorClass:"StorageUploadError",errorCode:"statusCode"in upload.error?String(upload.error.statusCode):null});throw new AdminOperationError();}
           uploaded.push({id:randomUUID(),storage_path:path,original_filename:originalName,mime_type:inspected.mime,size_bytes:receipt.bytes.length,position:index+1});
         }
+        uploadCompleted=true;
+        emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"receipt_upload",status:"ok"});
         const first=uploaded[0];
-        const rows=await normalizeMaintenancePurchaseMutations(await rpc("create_maintenance_purchase_log",{actor_user_id:input.actorUserId,target_issue_id:input.issueId??null,payload:{...input.payload,purchase_id:purchaseId,receipt_storage_path:first?.storage_path??null,receipt_original_name:first?.original_filename??null,attachments:uploaded}}));
+        emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_create",status:"start"});
+        let rpcErrorLogged=false;
+        let rawRows:unknown[];
+        try{
+          rawRows=await rpc("create_maintenance_purchase_log",{actor_user_id:input.actorUserId,target_issue_id:input.issueId??null,payload:{...input.payload,purchase_id:purchaseId,receipt_storage_path:first?.storage_path??null,receipt_original_name:first?.original_filename??null,attachments:uploaded}},{onError:(error)=>{rpcErrorLogged=true;emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_create",status:"error",errorClass:"PostgrestError",errorCode:error.code??null});}});
+          emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_create",status:"ok"});
+        }catch(error){
+          if(!rpcErrorLogged)emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_create",status:"error",errorClass:maintenancePurchaseErrorClass(error)});
+          throw error;
+        }
+        emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_parse",status:"start"});
+        let rows:Awaited<ReturnType<typeof normalizeMaintenancePurchaseMutations>>;
+        try{
+          rows=await normalizeMaintenancePurchaseMutations(rawRows);
+          emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_parse",status:"ok"});
+        }catch(error){
+          emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_parse",status:"error",errorClass:maintenancePurchaseErrorClass(error)});
+          throw error;
+        }
         return{maintenance_purchase:rows[0]};
       }catch(error){
+        if(!uploadCompleted&&!uploadErrorLogged)emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"receipt_upload",status:"error",errorClass:maintenancePurchaseErrorClass(error)});
         if(uploaded.length>0)await maintenanceReceiptStorage.remove(uploaded.map((item)=>item.storage_path));
         throw error;
       }
