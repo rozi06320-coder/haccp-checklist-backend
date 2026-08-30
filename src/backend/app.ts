@@ -1131,6 +1131,10 @@ const coldStorageCurrentSchema=z.object({
     equipment_name:z.string().max(120),
     equipment_type:z.enum(["refrigerator","freezer"]),
     active:z.boolean(),
+    created_at:z.string().nullable().optional(),
+    first_eligible_business_date:dateOnlySchema.nullable().optional(),
+    first_eligible_slot:z.enum(["12:00","20:00","02:00"]).nullable().optional(),
+    eligible_for_active_slot:z.boolean().optional(),
   }).strict()).max(100),
   readings:z.array(z.object({
     id:z.uuid().optional(),

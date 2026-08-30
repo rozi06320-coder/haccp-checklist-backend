@@ -153,6 +153,14 @@ describe("Cold Storage API integration",()=>{
   assert.equal(response.status,200);
   assert.deepEqual(await response.json(),{current:{business_date:"2026-08-01",revision:0,state:"draft",equipment:[],readings:[]}});
  });
+ it("returns effective-slot metadata from current state",async()=>{
+  currentEquipment=[{equipment_id:masterEquipmentId,equipment_code:"C1",equipment_name:"Reach-in Chiller",equipment_type:"refrigerator",active:true,created_at:"2026-08-01T10:00:00.000Z",first_eligible_business_date:"2026-08-01",first_eligible_slot:"20:00",eligible_for_active_slot:false}];
+  const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/cold_storage/current-state`,"supervisor");
+  assert.equal(response.status,200);
+  const body=await response.json();
+  assert.equal(body.current.equipment[0].first_eligible_slot,"20:00");
+  assert.equal(body.current.equipment[0].eligible_for_active_slot,false);
+ });
  it("saves and restores a normalized draft",async()=>{
   const save=await request(`/api/v1/supervisor/branches/${branch}/checklists/cold_storage/draft`,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({equipment,readings:[reading]})});
   assert.equal(save.status,200);
