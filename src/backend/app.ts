@@ -1457,7 +1457,7 @@ function createColdStorageDraftDiagnosticContext(request:Request):ColdStorageDra
  };
 }
 function logColdStorageDraftDiagnostic(event:ColdStorageDraftDiagnosticEvent){
- try{console.info(coldStorageDraftDiagnosticPrefix,event);}catch{/* Diagnostics must never affect a request. */}
+ try{console.info(`${coldStorageDraftDiagnosticPrefix} ${JSON.stringify(event)}`);}catch{/* Diagnostics must never affect a request. */}
 }
 export function attachColdStorageDraftRequestLifecycle(request:Request,response:Response,context:ColdStorageDraftDiagnosticContext,log:(event:ColdStorageDraftDiagnosticEvent)=>void=logColdStorageDraftDiagnostic){
  const emit=(event:ColdStorageDraftDiagnosticEvent["event"],status:number|null)=>{try{log({...context,event,timestamp:new Date().toISOString(),status});}catch{/* Diagnostics must never affect a request. */}};
