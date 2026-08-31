@@ -327,14 +327,28 @@ describe("Express Phase 2D API", () => {
       assert.doesNotMatch(requestId, /attacker/);
     });
 
-    it("logs temporary request-rate diagnostics without sensitive request data", async () => {
+    it("logs temporary API route-rate diagnostics without sensitive request data", async () => {
       const productionConfig: BackendConfig = { ...config, nodeEnv: "production" };
-      const isolated = await listen(dependencies(), productionConfig);
+      let userContextCalls = 0;
+      const diagnosticDependencies = dependencies();
+      diagnosticDependencies.createUserContext = (token) => {
+        const repository = repositoryFor(token);
+        return {
+          ...repository,
+          async getUserContext(userId) {
+            userContextCalls += 1;
+            return repository.getUserContext(userId);
+          },
+        };
+      };
+      const isolated = await listen(diagnosticDependencies, productionConfig);
       const originalInfo = console.info;
+      const originalReleaseSha = process.env.RELEASE_SHA;
       const records: unknown[][] = [];
       console.info = (...args: unknown[]) => {
         records.push(args);
       };
+      process.env.RELEASE_SHA = "diagnostic-test-sha";
 
       try {
         const success = await fetch(`${isolated.baseUrl}/health/live`, {
@@ -345,6 +359,18 @@ describe("Express Phase 2D API", () => {
         });
         assert.equal(success.status, 200);
         await success.text();
+        assert.equal(userContextCalls, 0);
+
+        const matched = await fetch(
+          `${isolated.baseUrl}/api/v1/management/organizations/${ids.organizationA}/overview?branch_id=${ids.branchA}`,
+          {
+            headers: {
+              Authorization: "Bearer manager-a-token",
+              Cookie: "matched-sensitive-cookie",
+            },
+          },
+        );
+        await matched.text();
 
         const failed = await fetch(
           `${isolated.baseUrl}/api/v1/not-found?access_token=query-sensitive-token`,
@@ -367,47 +393,63 @@ describe("Express Phase 2D API", () => {
         await failed.text();
       } finally {
         console.info = originalInfo;
+        if (originalReleaseSha === undefined) delete process.env.RELEASE_SHA;
+        else process.env.RELEASE_SHA = originalReleaseSha;
         await close(isolated.server);
       }
 
       const requestRateRecords = records.filter(
-        (record) => record[0] === "[request-rate]",
+        (record) =>
+          typeof record[0] === "string" &&
+          record[0].startsWith("API_ROUTE_RATE_DIAGNOSTIC "),
       );
-      assert.equal(requestRateRecords.length, 2);
+      assert.equal(requestRateRecords.length, 3);
 
-      const [successMessage, successDetails] = requestRateRecords[0] ?? [];
-      assert.equal(successMessage, "[request-rate]");
+      const parseDiagnostic = (record: unknown[]) => {
+        assert.equal(record.length, 1);
+        const line = record[0];
+        assert.equal(typeof line, "string");
+        return JSON.parse(
+          line.slice("API_ROUTE_RATE_DIAGNOSTIC ".length),
+        ) as Record<string, unknown>;
+      };
+
+      const successDetails = parseDiagnostic(requestRateRecords[0] ?? []);
       assert.deepEqual(
-        Object.keys(successDetails as Record<string, unknown>).sort(),
-        ["durationMs", "method", "requestId", "route", "status", "timestamp"],
+        Object.keys(successDetails).sort(),
+        ["durationMs", "method", "releaseSha", "requestId", "route", "status", "timestamp"],
       );
-      assert.equal((successDetails as { method: string }).method, "GET");
-      assert.equal((successDetails as { route: string }).route, "/health/live");
-      assert.equal((successDetails as { status: number }).status, 200);
+      assert.equal(successDetails.method, "GET");
+      assert.equal(successDetails.route, "/health/live");
+      assert.equal(successDetails.status, 200);
+      assert.equal(successDetails.releaseSha, "diagnostic-test-sha");
       assert.match(
-        (successDetails as { requestId: string }).requestId,
+        successDetails.requestId as string,
         /^[0-9a-f]{8}-[0-9a-f-]{27}$/,
       );
       assert.equal(
-        Number.isNaN(Date.parse((successDetails as { timestamp: string }).timestamp)),
+        Number.isNaN(Date.parse(successDetails.timestamp as string)),
         false,
       );
-      assert.equal(
-        typeof (successDetails as { durationMs: unknown }).durationMs,
-        "number",
-      );
+      assert.equal(typeof successDetails.durationMs, "number");
 
-      const [, failedDetails] = requestRateRecords[1] ?? [];
-      assert.equal((failedDetails as { method: string }).method, "POST");
-      assert.equal((failedDetails as { route: string }).route, "/api/*");
-      assert.equal((failedDetails as { status: number }).status, 404);
+      const matchedDetails = parseDiagnostic(requestRateRecords[1] ?? []);
+      assert.equal(matchedDetails.method, "GET");
+      assert.equal(matchedDetails.route, "/api/v1/management/organizations/:organizationId/overview");
+      assert.notEqual(matchedDetails.route, `/api/v1/management/organizations/${ids.organizationA}/overview`);
+      assert.equal(typeof matchedDetails.status, "number");
+
+      const failedDetails = parseDiagnostic(requestRateRecords[2] ?? []);
+      assert.equal(failedDetails.method, "POST");
+      assert.equal(failedDetails.route, "/api/*");
+      assert.equal(failedDetails.status, 404);
 
       const serialized = JSON.stringify(requestRateRecords);
       assert.doesNotMatch(
         serialized,
-        /successful-sensitive-token|failed-sensitive-token|sensitive-cookie|query-sensitive-token|private@example\.invalid|secret-password|body-sensitive-token|body-sensitive-supabase-key/i,
+        /successful-sensitive-token|manager-a-token|failed-sensitive-token|sensitive-cookie|query-sensitive-token|private@example\.invalid|secret-password|body-sensitive-token|body-sensitive-supabase-key/i,
       );
-      assert.doesNotMatch(serialized, /Authorization|Cookie|password|email|token|supabaseKey/i);
+      assert.doesNotMatch(serialized, /Authorization|Cookie|password|email|token|supabaseKey|branch_id/i);
     });
 
     it("does not trust spoofed forwarded IPs and keeps liveness live", async () => {

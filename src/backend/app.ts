@@ -1631,14 +1631,16 @@ function requestRateDiagnostic(request: Request, response: Response, next: NextF
 
   const startedAt = performance.now();
   response.once("finish", () => {
-    console.info("[request-rate]", {
+    const event = {
       timestamp: new Date().toISOString(),
-      requestId: request.id,
-      method: request.method,
       route: normalizedRequestRoute(request),
+      method: request.method,
       status: response.statusCode,
+      requestId: request.id,
       durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
-    });
+      releaseSha: deploymentReleaseSha(),
+    };
+    console.info(`API_ROUTE_RATE_DIAGNOSTIC ${JSON.stringify(event)}`);
   });
   next();
 }
