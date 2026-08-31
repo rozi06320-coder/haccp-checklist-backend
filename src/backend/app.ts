@@ -1415,6 +1415,7 @@ function logOilTrackingCorrelation(request:Request,details:Record<string,unknown
 }
 
 const coldStorageDraftDiagnosticPrefix="COLD_STORAGE_DRAFT_DIAGNOSTIC";
+const coldStorageDraftCircuitBreakerPrefix="COLD_STORAGE_DRAFT_CIRCUIT_BREAKER";
 const coldStorageDraftEventSource=z.enum(["temperature_blur","remarks_blur","equipment_fallback"]);
 function safeDiagnosticRuntimeValue(value:string|undefined){
  const normalized=value?.trim();
@@ -1458,6 +1459,9 @@ function createColdStorageDraftDiagnosticContext(request:Request):ColdStorageDra
 }
 function logColdStorageDraftDiagnostic(event:ColdStorageDraftDiagnosticEvent){
  try{console.info(`${coldStorageDraftDiagnosticPrefix} ${JSON.stringify(event)}`);}catch{/* Diagnostics must never affect a request. */}
+}
+function logColdStorageDraftCircuitBreaker(input:{requestId:string;correlationId:string|null;actorUserId:string;branchId:string;expectedRevision:number;timestamp:string}){
+ try{console.info(`${coldStorageDraftCircuitBreakerPrefix} ${JSON.stringify(input)}`);}catch{/* Diagnostics must never affect a request. */}
 }
 export function attachColdStorageDraftRequestLifecycle(request:Request,response:Response,context:ColdStorageDraftDiagnosticContext,log:(event:ColdStorageDraftDiagnosticEvent)=>void=logColdStorageDraftDiagnostic){
  const emit=(event:ColdStorageDraftDiagnosticEvent["event"],status:number|null)=>{try{log({...context,event,timestamp:new Date().toISOString(),status});}catch{/* Diagnostics must never affect a request. */}};
@@ -5850,9 +5854,9 @@ export function createApp(
     logColdStorageDraftDiagnostic({...diagnostics,event:"cold_storage_draft_received",timestamp:new Date().toISOString(),status:null});
     if(!branch.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
     const context=await loadActiveUser(request);
-    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.saveColdStorageDraft)throw new HttpError(403,"forbidden","Access is denied.");
-    const current=coldStorageCurrentSchema.parse(await dependencies.checklistPersistence.saveColdStorageDraft({actorUserId:auth.userId,branchId:branch.data,expectedRevision:body.data.expected_revision,equipment:body.data.equipment,readings:body.data.readings,diagnostics:{context:diagnostics,log:logColdStorageDraftDiagnostic}}));
-    response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
+    if(context.must_change_password||context.managed_organizations.length>0||!context.branches.some(item=>item.id===branch.data&&item.role==="branch_manager"))throw new HttpError(403,"forbidden","Access is denied.");
+    logColdStorageDraftCircuitBreaker({requestId:request.id,correlationId:diagnostics.correlationId,actorUserId:auth.userId,branchId:branch.data,expectedRevision:body.data.expected_revision,timestamp:new Date().toISOString()});
+    throw new HttpError(503,"service_unavailable","Cold Storage draft saving is temporarily unavailable. Please submit the checklist when ready.");
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
   app.get("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/current-state",protectedRateLimit,authenticate,async(request,response,next)=>{try{

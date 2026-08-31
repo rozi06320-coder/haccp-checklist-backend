@@ -161,54 +161,51 @@ describe("Cold Storage API integration",()=>{
   assert.equal(body.current.equipment[0].first_eligible_slot,"20:00");
   assert.equal(body.current.equipment[0].eligible_for_active_slot,false);
  });
- it("saves and restores a normalized draft",async()=>{
-  const save=await request(`/api/v1/supervisor/branches/${branch}/checklists/cold_storage/draft`,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({equipment,readings:[reading]})});
-  assert.equal(save.status,200);
-  const input=calls.at(-1)?.input as {equipment:Array<Record<string,unknown>>;readings:Array<Record<string,unknown>>};
-  assert.equal(input.equipment[0].equipment_id,"ref-1");
-  assert.equal(input.equipment[0].equipment_type,"refrigerator");
-  assert.equal(input.readings[0].slot,"12:00");
-  assert.equal(input.readings[0].temperature_c,"4.9");
-  const restored=await request(`/api/v1/supervisor/branches/${branch}/checklists/cold_storage/current-state`,"supervisor");
-  assert.equal((await restored.json()).current.equipment[0].equipment_id,"ref-1");
+ it("short-circuits authenticated draft requests before persistence",async()=>{
+  const save=await request(`/api/v1/supervisor/branches/${branch}/checklists/cold_storage/draft`,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_revision:7,equipment,readings:[reading]})});
+  assert.equal(save.status,503);
+  const errorBody=await save.json();
+  assert.deepEqual(pickError(errorBody),{code:"service_unavailable",message:"Cold Storage draft saving is temporarily unavailable. Please submit the checklist when ready."});
+  assert.doesNotMatch(JSON.stringify(errorBody),/ref-1|Line Refrigerator|4\.9|Supabase|database/i);
+  assert.equal(calls.some(call=>call.name==="cold-draft"),false);
  });
- it("attributes a draft request without logging Cold Storage payload content",async()=>{
+ it("keeps authentication and branch authorization ahead of the draft breaker",async()=>{
+  const path=`/api/v1/supervisor/branches/${branch}/checklists/cold_storage/draft`,body=JSON.stringify({expected_revision:7,equipment,readings:[reading]});
+  assert.equal((await request(path,undefined,{method:"PUT",headers:{"Content-Type":"application/json"},body})).status,401);
+  assert.equal((await request(path,"manager",{method:"PUT",headers:{"Content-Type":"application/json"},body})).status,403);
+  assert.equal((await request(`/api/v1/supervisor/branches/${otherBranch}/checklists/cold_storage/draft`,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body})).status,403);
+  assert.equal(calls.some(call=>call.name==="cold-draft"),false);
+ });
+ it("attributes a blocked draft request without logging Cold Storage payload content",async()=>{
   const records:unknown[][]=[],originalInfo=console.info;
   console.info=(...args:unknown[])=>{records.push(args);};
   try{
    const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/cold_storage/draft`,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json","X-Cold-Storage-Correlation-Id":"65000000-0000-4000-8000-000000000090","X-Cold-Storage-Client-Instance-Id":"65000000-0000-4000-8000-000000000091","X-Cold-Storage-Event-Source":"remarks_blur","X-Cold-Storage-Client-User-Agent":"browser-agent","X-Cold-Storage-Client-Origin":"https://app.example.test","X-Cold-Storage-Client-Referer":"https://app.example.test/branch-manager"},body:JSON.stringify({expected_revision:7,equipment,readings:[{...reading,temperatureC:"999.123",correctiveAction:"secret corrective note"}]})});
-   assert.equal(response.status,200);
+   assert.equal(response.status,503);
   }finally{console.info=originalInfo;}
-  const input=calls.at(-1)?.input as {diagnostics?:ColdStorageDraftDiagnostics};
-  assert.equal(input.diagnostics?.context.correlationId,"65000000-0000-4000-8000-000000000090");
-  assert.equal(input.diagnostics?.context.clientInstanceId,"65000000-0000-4000-8000-000000000091");
-  assert.equal(input.diagnostics?.context.eventSource,"remarks_blur");
-  assert.equal(input.diagnostics?.context.actorUserId,supervisor);
-  assert.equal(input.diagnostics?.context.branchId,branch);
-  assert.equal(input.diagnostics?.context.expectedRevision,7);
-  const prefix="COLD_STORAGE_DRAFT_DIAGNOSTIC ";
-  const diagnosticRecords=records.filter((args)=>typeof args[0]==="string"&&args[0].startsWith("COLD_STORAGE_DRAFT_DIAGNOSTIC"));
-  assert.ok(diagnosticRecords.length>=2);
-  const diagnostics=diagnosticRecords.map((args)=>{
-   assert.equal(args.length,1);
-   assert.equal(typeof args[0],"string");
-   const line=args[0] as string;
-   assert.ok(line.startsWith(prefix));
-   return JSON.parse(line.slice(prefix.length)) as Record<string,unknown>;
-  });
-  const received=diagnostics.find((event)=>event.event==="cold_storage_draft_received");
-  assert.ok(received);
-  assert.equal(typeof received.backendRequestId,"string");
-  assert.equal(received.correlationId,"65000000-0000-4000-8000-000000000090");
-  assert.equal(received.clientInstanceId,"65000000-0000-4000-8000-000000000091");
-  assert.equal(received.eventSource,"remarks_blur");
-  assert.equal(received.actorUserId,supervisor);
-  assert.equal(received.branchId,branch);
-  assert.equal(received.expectedRevision,7);
-  assert.ok(diagnostics.some((event)=>event.event==="cold_storage_response_finished"));
-  const serialized=JSON.stringify(diagnosticRecords);
-  assert.match(serialized,/browser-agent/);
-  assert.doesNotMatch(serialized,/999\.123|secret corrective note|temperature_c|corrective_action|Bearer|cookie/i);
+  assert.equal(calls.some(call=>call.name==="cold-draft"),false);
+  const prefix="COLD_STORAGE_DRAFT_CIRCUIT_BREAKER ";
+  const breakerRecords=records.filter((args)=>typeof args[0]==="string"&&args[0].startsWith(prefix));
+  assert.equal(breakerRecords.length,1);
+  assert.equal(breakerRecords[0]?.length,1);
+  const line=breakerRecords[0]![0] as string,payload=JSON.parse(line.slice(prefix.length)) as Record<string,unknown>;
+  assert.deepEqual(Object.keys(payload).sort(),["actorUserId","branchId","correlationId","expectedRevision","requestId","timestamp"].sort());
+  assert.equal(typeof payload.requestId,"string");
+  assert.equal(payload.correlationId,"65000000-0000-4000-8000-000000000090");
+  assert.equal(payload.actorUserId,supervisor);
+  assert.equal(payload.branchId,branch);
+  assert.equal(payload.expectedRevision,7);
+  assert.ok(!Number.isNaN(Date.parse(String(payload.timestamp))));
+  const serialized=JSON.stringify(breakerRecords);
+  assert.doesNotMatch(serialized,/999\.123|secret corrective note|temperature_c|corrective_action|equipment|readings|Bearer|cookie/i);
+ });
+ it("keeps Cold Storage submit persistence enabled while draft saving is blocked",async()=>{
+  const draft=await request(`/api/v1/supervisor/branches/${branch}/checklists/cold_storage/draft`,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_revision:0,equipment,readings:[reading]})});
+  assert.equal(draft.status,503);
+  assert.equal(calls.some(call=>call.name==="cold-draft"),false);
+  const submit=await request(`/api/v1/supervisor/branches/${branch}/checklists/cold_storage/slots/12/submit`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":"65000000-0000-4000-8000-000000000099"},body:JSON.stringify({expected_revision:0,equipment,readings:[reading]})});
+  assert.equal(submit.status,201);
+  assert.equal(calls.at(-1)?.name,"cold-submit");
  });
  it("requires idempotency key for submit",async()=>{
   const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/cold_storage/slots/12/submit`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({equipment,readings:[reading]})});
