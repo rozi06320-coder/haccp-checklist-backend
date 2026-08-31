@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { managementSalesTrackingMonthlySummarySchema } from "../lib/contracts/management-sales-tracking-monthly";
@@ -12,6 +13,71 @@ export class ChecklistConflictError extends Error {
 export class ChecklistInputError extends Error {}
 export class ChecklistAccessError extends Error {}
 export class ManagementOverviewUnavailableError extends Error {}
+
+export type ColdStorageDraftEventSource = "temperature_blur" | "remarks_blur" | "equipment_fallback";
+export type ColdStorageDraftDiagnosticContext = {
+  backendRequestId: string;
+  correlationId: string | null;
+  clientInstanceId: string | null;
+  eventSource: ColdStorageDraftEventSource | null;
+  actorUserId: string | null;
+  branchId: string | null;
+  expectedRevision: number | null;
+  frontendRelease: string | null;
+  backendRelease: string | null;
+  userAgent: string | null;
+  origin: string | null;
+  referer: string | null;
+  containerId: string | null;
+  processId: number;
+};
+export type ColdStorageDraftDiagnosticEvent = ColdStorageDraftDiagnosticContext & {
+  event: "cold_storage_draft_received" | "cold_storage_draft_rpc_start" | "cold_storage_draft_rpc_end" | "cold_storage_request_aborted" | "cold_storage_response_closed" | "cold_storage_response_finished";
+  timestamp: string;
+  status?: number | null;
+  durationMs?: number;
+  outcome?: "success" | "error";
+  errorCode?: string | null;
+};
+export type ColdStorageDraftDiagnostics = {
+  context: ColdStorageDraftDiagnosticContext;
+  log: (event: ColdStorageDraftDiagnosticEvent) => void;
+};
+
+function throwChecklistRpcError(code:string|undefined):never{
+ if(code==="23505"||code==="23514"||code==="40001"||code==="55000")throw new ChecklistConflictError(code);
+ if(code==="22023")throw new ChecklistInputError();
+ if(code==="42501")throw new ChecklistAccessError();
+ throw new Error("Checklist persistence unavailable.");
+}
+
+function safeColdStorageErrorCode(value:unknown){
+ return typeof value==="string"&&/^[A-Za-z0-9_-]{1,32}$/.test(value)?value:null;
+}
+
+export async function runColdStorageDraftRpc<T>(call:()=>PromiseLike<{data:T;error:{code?:string}|null}>,diagnostics?:ColdStorageDraftDiagnostics){
+ const startedAt=performance.now();
+ const log=(event:Omit<ColdStorageDraftDiagnosticEvent,keyof ColdStorageDraftDiagnosticContext>)=>{if(!diagnostics)return;try{diagnostics.log({...diagnostics.context,...event});}catch{/* Diagnostics must never affect persistence. */}};
+ log({event:"cold_storage_draft_rpc_start",timestamp:new Date().toISOString()});
+ let ended=false;
+ try{
+  const result=await call(),durationMs=Math.round((performance.now()-startedAt)*100)/100;
+  if(result.error){
+   ended=true;
+   log({event:"cold_storage_draft_rpc_end",timestamp:new Date().toISOString(),durationMs,outcome:"error",errorCode:safeColdStorageErrorCode(result.error.code)});
+   throwChecklistRpcError(result.error.code);
+  }
+  ended=true;
+  log({event:"cold_storage_draft_rpc_end",timestamp:new Date().toISOString(),durationMs,outcome:"success",errorCode:null});
+  return result.data;
+ }catch(error){
+  if(!ended){
+   const errorCode=typeof error==="object"&&error!==null&&"code" in error?safeColdStorageErrorCode(error.code):null;
+   log({event:"cold_storage_draft_rpc_end",timestamp:new Date().toISOString(),durationMs:Math.round((performance.now()-startedAt)*100)/100,outcome:"error",errorCode});
+  }
+  throw error;
+ }
+}
 
 export type ChecklistPersistence = {
   getOverview(actorUserId:string,branchId:string):Promise<unknown>;
@@ -27,7 +93,7 @@ export type ChecklistPersistence = {
   submitOilTrackingOpening?(input:{actorUserId:string;branchId:string;expectedRevision:number;idempotencyKey:string;rows:unknown[]}):Promise<unknown>;
   submitOilTrackingClosing?(input:{actorUserId:string;branchId:string;expectedRevision:number;idempotencyKey:string;rows:unknown[]}):Promise<unknown>;
   getColdStorageCurrentState?(actorUserId:string,branchId:string):Promise<unknown>;
-  saveColdStorageDraft?(input:{actorUserId:string;branchId:string;expectedRevision:number;equipment:unknown[];readings:unknown[]}):Promise<unknown>;
+  saveColdStorageDraft?(input:{actorUserId:string;branchId:string;expectedRevision:number;equipment:unknown[];readings:unknown[];diagnostics?:ColdStorageDraftDiagnostics}):Promise<unknown>;
   submitColdStorageSlot?(input:{actorUserId:string;branchId:string;expectedRevision:number;slot:string;idempotencyKey:string;equipment:unknown[];readings:unknown[]}):Promise<unknown>;
   getSalesTrackingCurrentState?(actorUserId:string,branchId:string):Promise<unknown>;
   listSalesTrackingOnlineOrderProviders?(actorUserId:string,branchId:string):Promise<unknown>;
@@ -397,13 +463,11 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
  const client=createClient(url,secretKey,{auth:nonPersistentAuth});
  async function rpc(name:string,args:Record<string,unknown>){
   const result=await client.rpc(name,args);
-  if(result.error){
-   if(result.error.code==="23505"||result.error.code==="23514"||result.error.code==="40001"||result.error.code==="55000")throw new ChecklistConflictError(result.error.code);
-   if(result.error.code==="22023")throw new ChecklistInputError();
-   if(result.error.code==="42501")throw new ChecklistAccessError();
-   throw new Error("Checklist persistence unavailable.");
-  }
+  if(result.error)throwChecklistRpcError(result.error.code);
   return result.data;
+ }
+ async function coldStorageDraftRpc(input:Parameters<NonNullable<ChecklistPersistence["saveColdStorageDraft"]>>[0]){
+  return runColdStorageDraftRpc(()=>client.rpc("save_cold_storage_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,equipment:input.equipment,readings:input.readings}),input.diagnostics);
  }
  return {
   getOverview:(actorUserId,branchId)=>rpc("get_phase4a_supervisor_overview",{actor_user_id:actorUserId,target_branch_id:branchId}),
@@ -432,7 +496,7 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   submitOilTrackingOpening:(input)=>rpc("submit_oil_tracking_opening",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,idempotency_key:input.idempotencyKey,request_hash:checklistRequestHash({type:"oil_tracking",section:"opening",rows:input.rows}),rows:input.rows}),
   submitOilTrackingClosing:(input)=>rpc("submit_oil_tracking_closing",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,idempotency_key:input.idempotencyKey,request_hash:checklistRequestHash({type:"oil_tracking",section:"closing",rows:input.rows}),rows:input.rows}),
   getColdStorageCurrentState:(actorUserId,branchId)=>rpc("get_cold_storage_current_state",{actor_user_id:actorUserId,target_branch_id:branchId}),
-  saveColdStorageDraft:(input)=>rpc("save_cold_storage_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,equipment:input.equipment,readings:input.readings}),
+  saveColdStorageDraft:coldStorageDraftRpc,
   submitColdStorageSlot:(input)=>rpc("submit_cold_storage_slot",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,slot:input.slot,idempotency_key:input.idempotencyKey,request_hash:checklistRequestHash({type:"cold_storage",slot:input.slot,equipment:input.equipment,readings:input.readings}),equipment:input.equipment,readings:input.readings}),
   async getSalesTrackingCurrentState(actorUserId,branchId){return salesTrackingCurrent.parse(await rpc("get_sales_tracking_current_state",{actor_user_id:actorUserId,target_branch_id:branchId}));},
   async listSalesTrackingOnlineOrderProviders(actorUserId,branchId){

@@ -17,7 +17,7 @@ import {
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
 import { branchLocalDate, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime } from "./operational";
-import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ManagementOverviewUnavailableError } from "./checklist-persistence";
+import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ManagementOverviewUnavailableError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
 import { MaintenancePushAccessError, MaintenancePushConflictError, MaintenancePushInputError, MaintenancePushUnavailableError } from "./maintenance-push";
@@ -1412,6 +1412,58 @@ function logOilTrackingCorrelation(request:Request,details:Record<string,unknown
   referer:safeHeader(request.get("referer")),
   ...details,
  });
+}
+
+const coldStorageDraftDiagnosticPrefix="COLD_STORAGE_DRAFT_DIAGNOSTIC";
+const coldStorageDraftEventSource=z.enum(["temperature_blur","remarks_blur","equipment_fallback"]);
+function safeDiagnosticRuntimeValue(value:string|undefined){
+ const normalized=value?.trim();
+ return normalized&&/^[A-Za-z0-9._-]{1,120}$/.test(normalized)?normalized:null;
+}
+function deploymentReleaseSha(){
+ for(const value of [process.env.RELEASE_SHA,process.env.GIT_COMMIT_SHA,process.env.SOURCE_VERSION,process.env.RAILWAY_GIT_COMMIT_SHA,process.env.VERCEL_GIT_COMMIT_SHA]){
+  const normalized=safeDiagnosticRuntimeValue(value);
+  if(normalized)return normalized;
+ }
+ return null;
+}
+function coldStorageUuidHeader(request:Request,name:string){
+ const parsed=z.uuid().safeParse(request.header(name));
+ return parsed.success?parsed.data:null;
+}
+function coldStorageEventSourceHeader(request:Request):ColdStorageDraftEventSource|null{
+ const parsed=coldStorageDraftEventSource.safeParse(request.header("X-Cold-Storage-Event-Source"));
+ return parsed.success?parsed.data:null;
+}
+function coldStorageReleaseHeader(request:Request){
+ return safeDiagnosticRuntimeValue(request.header("X-Frontend-Release"));
+}
+function createColdStorageDraftDiagnosticContext(request:Request):ColdStorageDraftDiagnosticContext{
+ return{
+  backendRequestId:request.id,
+  correlationId:coldStorageUuidHeader(request,"X-Cold-Storage-Correlation-Id"),
+  clientInstanceId:coldStorageUuidHeader(request,"X-Cold-Storage-Client-Instance-Id"),
+  eventSource:coldStorageEventSourceHeader(request),
+  actorUserId:null,
+  branchId:null,
+  expectedRevision:null,
+  frontendRelease:coldStorageReleaseHeader(request),
+  backendRelease:deploymentReleaseSha(),
+  userAgent:safeHeader(request.header("X-Cold-Storage-Client-User-Agent"))??safeHeader(request.get("user-agent")),
+  origin:safeHeader(request.header("X-Cold-Storage-Client-Origin"))??safeHeader(request.get("origin")),
+  referer:safeHeader(request.header("X-Cold-Storage-Client-Referer"))??safeHeader(request.get("referer")),
+  containerId:safeDiagnosticRuntimeValue(process.env.HOSTNAME),
+  processId:process.pid,
+ };
+}
+function logColdStorageDraftDiagnostic(event:ColdStorageDraftDiagnosticEvent){
+ try{console.info(coldStorageDraftDiagnosticPrefix,event);}catch{/* Diagnostics must never affect a request. */}
+}
+export function attachColdStorageDraftRequestLifecycle(request:Request,response:Response,context:ColdStorageDraftDiagnosticContext,log:(event:ColdStorageDraftDiagnosticEvent)=>void=logColdStorageDraftDiagnostic){
+ const emit=(event:ColdStorageDraftDiagnosticEvent["event"],status:number|null)=>{try{log({...context,event,timestamp:new Date().toISOString(),status});}catch{/* Diagnostics must never affect a request. */}};
+ request.once("aborted",()=>emit("cold_storage_request_aborted",null));
+ response.once("finish",()=>emit("cold_storage_response_finished",response.statusCode));
+ response.once("close",()=>{if(!response.writableFinished)emit("cold_storage_response_closed",response.statusCode);});
 }
 
 function dailyAuditPersistenceError(error:unknown){
@@ -5790,12 +5842,16 @@ export function createApp(
     response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
-  app.put("/api/v1/supervisor/branches/:branchId/checklists/cold_storage/draft",protectedRateLimit,authenticate,async(request,response,next)=>{try{
-    const branch=branchIdSchema.safeParse(request.params.branchId),body=coldStorageBodySchema.safeParse(request.body);
+  app.put("/api/v1/supervisor/branches/:branchId/checklists/cold_storage/draft",protectedRateLimit,authenticate,async(request,response,next)=>{const diagnostics=createColdStorageDraftDiagnosticContext(request);attachColdStorageDraftRequestLifecycle(request,response,diagnostics);try{
+    const auth=requireAuthContext(request),branch=branchIdSchema.safeParse(request.params.branchId),body=coldStorageBodySchema.safeParse(request.body);
+    diagnostics.actorUserId=auth.userId;
+    diagnostics.branchId=branch.success?branch.data:null;
+    diagnostics.expectedRevision=body.success?body.data.expected_revision:null;
+    logColdStorageDraftDiagnostic({...diagnostics,event:"cold_storage_draft_received",timestamp:new Date().toISOString(),status:null});
     if(!branch.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
-    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    const context=await loadActiveUser(request);
     if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.saveColdStorageDraft)throw new HttpError(403,"forbidden","Access is denied.");
-    const current=coldStorageCurrentSchema.parse(await dependencies.checklistPersistence.saveColdStorageDraft({actorUserId:auth.userId,branchId:branch.data,expectedRevision:body.data.expected_revision,equipment:body.data.equipment,readings:body.data.readings}));
+    const current=coldStorageCurrentSchema.parse(await dependencies.checklistPersistence.saveColdStorageDraft({actorUserId:auth.userId,branchId:branch.data,expectedRevision:body.data.expected_revision,equipment:body.data.equipment,readings:body.data.readings,diagnostics:{context:diagnostics,log:logColdStorageDraftDiagnostic}}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 

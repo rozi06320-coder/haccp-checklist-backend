@@ -6,7 +6,7 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import { createApp } from "./app";
 import type { BackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
-import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError } from "./checklist-persistence";
+import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, type ColdStorageDraftDiagnostics } from "./checklist-persistence";
 import { OperationalAccessError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError } from "./operational";
 
 const supervisor="15000000-0000-4000-8000-000000000001",manager="15000000-0000-4000-8000-000000000002",internalAdmin="15000000-0000-4000-8000-000000000003",maintenance="15000000-0000-4000-8000-000000000004";
@@ -34,7 +34,7 @@ const persistence={
  async getOilTrackingCurrentState(){throw new Error("unused");},async saveOilTrackingDraft(){throw new Error("unused");},async submitOilTrackingOpening(){throw new Error("unused");},async submitOilTrackingClosing(){throw new Error("unused");},
  async listSupervisor(){throw new Error("unused");},async getReport(){throw new Error("unused");},async listManagedReports(){throw new Error("unused");},async listManagedIssues(){throw new Error("unused");},async getManagedIssue(){throw new Error("unused");},
  async getColdStorageCurrentState(actorUserId:string,branchId:string){calls.push({name:"cold-current",input:{actorUserId,branchId}});if(branchId!==branch)throw new ChecklistAccessError();return current();},
- async saveColdStorageDraft(input:{actorUserId:string;branchId:string;equipment:unknown[];readings:unknown[]}){calls.push({name:"cold-draft",input});if(input.branchId!==branch)throw new ChecklistAccessError();currentEquipment=input.equipment;currentReadings=input.readings;return current();},
+ async saveColdStorageDraft(input:{actorUserId:string;branchId:string;expectedRevision:number;equipment:unknown[];readings:unknown[];diagnostics?:ColdStorageDraftDiagnostics}){calls.push({name:"cold-draft",input});if(input.branchId!==branch)throw new ChecklistAccessError();currentEquipment=input.equipment;currentReadings=input.readings;return current();},
  async submitColdStorageSlot(input:{actorUserId:string;branchId:string;slot:string;idempotencyKey:string;equipment:unknown[];readings:unknown[]}){calls.push({name:"cold-submit",input});if(input.branchId!==branch)throw new ChecklistAccessError();if(hasMissingCorrection(input))throw new ChecklistInputError();const key=`${input.slot}:${input.idempotencyKey}`,hash=digest({slot:input.slot,equipment:input.equipment,readings:input.readings});const existing=replay.get(key);if(existing&&existing!==hash)throw new ChecklistConflictError();replay.set(key,hash);currentEquipment=input.equipment;currentReadings=input.readings.map((row)=>({...(row as Record<string,unknown>),...((row as {slot:string}).slot===input.slot?{submitted_at:"2026-08-01T12:15:00.000Z"}:{})}));return{...current(),issue_count:currentReadings.filter((row)=>Number((row as {temperature_c:unknown}).temperature_c)>=5).length};},
 };
 const operationalAdmin={
@@ -171,6 +171,27 @@ describe("Cold Storage API integration",()=>{
   assert.equal(input.readings[0].temperature_c,"4.9");
   const restored=await request(`/api/v1/supervisor/branches/${branch}/checklists/cold_storage/current-state`,"supervisor");
   assert.equal((await restored.json()).current.equipment[0].equipment_id,"ref-1");
+ });
+ it("attributes a draft request without logging Cold Storage payload content",async()=>{
+  const records:unknown[][]=[],originalInfo=console.info;
+  console.info=(...args:unknown[])=>{records.push(args);};
+  try{
+   const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/cold_storage/draft`,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json","X-Cold-Storage-Correlation-Id":"65000000-0000-4000-8000-000000000090","X-Cold-Storage-Client-Instance-Id":"65000000-0000-4000-8000-000000000091","X-Cold-Storage-Event-Source":"remarks_blur","X-Cold-Storage-Client-User-Agent":"browser-agent","X-Cold-Storage-Client-Origin":"https://app.example.test","X-Cold-Storage-Client-Referer":"https://app.example.test/branch-manager"},body:JSON.stringify({expected_revision:7,equipment,readings:[{...reading,temperatureC:"999.123",correctiveAction:"secret corrective note"}]})});
+   assert.equal(response.status,200);
+  }finally{console.info=originalInfo;}
+  const input=calls.at(-1)?.input as {diagnostics?:ColdStorageDraftDiagnostics};
+  assert.equal(input.diagnostics?.context.correlationId,"65000000-0000-4000-8000-000000000090");
+  assert.equal(input.diagnostics?.context.clientInstanceId,"65000000-0000-4000-8000-000000000091");
+  assert.equal(input.diagnostics?.context.eventSource,"remarks_blur");
+  assert.equal(input.diagnostics?.context.actorUserId,supervisor);
+  assert.equal(input.diagnostics?.context.branchId,branch);
+  assert.equal(input.diagnostics?.context.expectedRevision,7);
+  const serialized=JSON.stringify(records);
+  assert.match(serialized,/COLD_STORAGE_DRAFT_DIAGNOSTIC/);
+  assert.match(serialized,/cold_storage_draft_received/);
+  assert.match(serialized,/cold_storage_response_finished/);
+  assert.match(serialized,/browser-agent/);
+  assert.doesNotMatch(serialized,/999\.123|secret corrective note|temperature_c|corrective_action|Bearer|cookie/i);
  });
  it("requires idempotency key for submit",async()=>{
   const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/cold_storage/slots/12/submit`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({equipment,readings:[reading]})});
