@@ -6,7 +6,7 @@ import { after, before, describe, it } from "node:test";
 import { createApp } from "./app";
 import { loadBackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
-import { branchLocalDate, createOperationalAdmin, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError } from "./operational";
+import { branchLocalDate, createOperationalAdmin, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError } from "./operational";
 import type { UserContext } from "./user-context";
 
 const id = {
@@ -22,6 +22,12 @@ const id = {
   destinationTeam: "40000000-0000-4000-8000-000000000004",
   worker: "50000000-0000-4000-8000-000000000001",
   assignment: "60000000-0000-4000-8000-000000000001",
+  scheduledMove: "61000000-0000-4000-8000-000000000001",
+  scheduledDestination: "61000000-0000-4000-8000-000000000002",
+  conflictDestination: "61000000-0000-4000-8000-000000000003",
+  deniedDestination: "61000000-0000-4000-8000-000000000004",
+  invalidDestination: "61000000-0000-4000-8000-000000000005",
+  unavailableDestination: "61000000-0000-4000-8000-000000000006",
   healthCard: "80000000-0000-4000-8000-000000000001",
   emptyHealthBranch: "20000000-0000-4000-8000-000000000002",
   nullableHealthBranch: "20000000-0000-4000-8000-000000000003",
@@ -114,7 +120,23 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
         return { staff_id: id.worker };
       },
       async setDuty(input) { calls.push({ method: "duty", ...input }); return { staff_id: id.worker, duty_status: input.status, eligible: input.status === "on_duty" }; },
-      async moveStaff(input) { calls.push({ method: "move", ...input }); return { staff_id: input.staffId, assignment_id: id.assignment, operational_team_id: input.operationalTeamId }; },
+      async moveStaff(input) {
+        calls.push({ method: "move", ...input });
+        if (input.operationalTeamId === id.scheduledDestination && input.scheduledMoveContract !== "phase1") throw new OperationalConflictError();
+        if (input.operationalTeamId === id.conflictDestination) throw new OperationalConflictError();
+        if (input.operationalTeamId === id.deniedDestination) throw new OperationalAccessError();
+        if (input.operationalTeamId === id.invalidDestination) throw new OperationalInputError();
+        if (input.operationalTeamId === id.unavailableDestination) throw new Error("database unavailable");
+        return { staff_id: input.staffId, assignment_id: id.assignment, operational_team_id: input.operationalTeamId,
+          move_status: input.operationalTeamId === id.scheduledDestination ? "scheduled" : "applied",
+          scheduled_move_id: input.operationalTeamId === id.scheduledDestination ? id.scheduledMove : null,
+          effective_business_date: "2026-08-01" };
+      },
+      async cancelScheduledStaffMove(input) {
+        calls.push({ method: "cancelScheduledMove", ...input });
+        return { staff_id: input.staffId, assignment_id: id.assignment, operational_team_id: id.shift,
+          move_status: "cancelled", scheduled_move_id: input.scheduledMoveId, effective_business_date: "2026-08-01" };
+      },
       async listStaffTransferDestinations(input) {
         calls.push({ method: "transferDestinations", ...input });
         return { destinations: [{ branch_id: id.destinationBranch, branch_name: "Destination Branch", branch_code: "DST", operational_team_id: id.destinationTeam, team_name: "Destination Team" }] };
@@ -978,10 +1000,54 @@ describe("Phase 3A operational API", () => {
       body: JSON.stringify({ expected_assignment_id: id.assignment, operational_team_id: id.shift }),
     });
     assert.equal(response.status, 200);
+    assert.equal((await response.json() as { move_status: string }).move_status, "applied");
     assert.deepEqual(calls.at(-1), {
       method: "move", actorUserId: id.supervisor, branchId: id.branch, staffId: id.worker,
-      expectedAssignmentId: id.assignment, operationalTeamId: id.shift,
+      expectedAssignmentId: id.assignment, operationalTeamId: id.shift, scheduledMoveContract: undefined,
     });
+  });
+  it("fails closed when a legacy caller would require a scheduled move", async () => {
+    const response = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/team`, {
+      method: "PUT", headers: headers("supervisor"),
+      body: JSON.stringify({ expected_assignment_id: id.assignment, operational_team_id: id.scheduledDestination }),
+    });
+    assert.equal(response.status, 409);
+  });
+  it("returns a scheduled result and cancels it without replacing the active assignment", async () => {
+    const scheduled = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/team`, {
+      method: "PUT", headers: headers("supervisor"),
+      body: JSON.stringify({ expected_assignment_id: id.assignment, operational_team_id: id.scheduledDestination, scheduled_move_contract: "phase1" }),
+    });
+    assert.equal(scheduled.status, 200);
+    assert.deepEqual(await scheduled.json(), {
+      staff_id: id.worker, assignment_id: id.assignment, operational_team_id: id.scheduledDestination,
+      move_status: "scheduled", scheduled_move_id: id.scheduledMove, effective_business_date: "2026-08-01",
+    });
+    const cancelled = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/scheduled-team-moves/${id.scheduledMove}/cancel`, {
+      method: "POST", headers: headers("supervisor"), body: JSON.stringify({ expected_assignment_id: id.assignment }),
+    });
+    assert.equal(cancelled.status, 200);
+    assert.equal((await cancelled.json() as { move_status: string }).move_status, "cancelled");
+    assert.deepEqual(calls.at(-1), {
+      method: "cancelScheduledMove", actorUserId: id.supervisor, branchId: id.branch,
+      staffId: id.worker, expectedAssignmentId: id.assignment, scheduledMoveId: id.scheduledMove,
+    });
+  });
+  it("maps Move Team failures without collapsing non-authorization errors to 403", async () => {
+    const cases = [
+      [id.conflictDestination, 409, "conflict"],
+      [id.deniedDestination, 403, "forbidden"],
+      [id.invalidDestination, 422, "unprocessable_entity"],
+      [id.unavailableDestination, 503, "service_unavailable"],
+    ] as const;
+    for (const [destination, status, code] of cases) {
+      const response = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/team`, {
+        method: "PUT", headers: headers("supervisor"),
+        body: JSON.stringify({ expected_assignment_id: id.assignment, operational_team_id: destination }),
+      });
+      assert.equal(response.status, status);
+      assert.equal((await response.json() as { error: { code: string } }).error.code, code);
+    }
   });
   it("lists only minimal cross-branch transfer destinations for the source employee", async () => {
     const response = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/transfer-destinations?expected_assignment_id=${id.assignment}`, {

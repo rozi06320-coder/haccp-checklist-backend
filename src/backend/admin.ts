@@ -681,6 +681,15 @@ export function createManagementAdmin(
   secretKey: string,
 ): ManagementAdmin {
   const admin = createClient(url, secretKey, { auth: nonPersistentAuth });
+  async function applyDueScheduledTeamMoves(organizationId: string) {
+    const { error } = await admin.rpc("apply_due_operational_staff_team_moves", {
+      target_branch_id: null,
+      target_organization_id: organizationId,
+    });
+    if (!error) return;
+    if (error.code === "PGRST202" || /could not find the function|schema cache/i.test(error.message)) return;
+    throw new AdminOperationError();
+  }
   return {
     async listOrganizationsForInternalAdmin(actorUserId) {
       const { data, error } = await admin.rpc("list_internal_admin_organizations", {
@@ -1078,6 +1087,7 @@ export function createManagementAdmin(
       if (!rows.success) throw new AdminOperationError();
     },
     async listBranchTeamsForInternalAdmin(actorUserId, organizationId) {
+      await applyDueScheduledTeamMoves(organizationId);
       const { data, error } = await admin.rpc("list_internal_admin_branch_teams", {
         actor_user_id: actorUserId,
         target_organization_id: organizationId,

@@ -154,6 +154,10 @@ const dutyStatusBodySchema = z.object({
 const moveOperationalStaffBodySchema = z.object({
   expected_assignment_id: z.uuid(),
   operational_team_id: z.uuid(),
+  scheduled_move_contract: z.literal("phase1").optional(),
+}).strict();
+const cancelScheduledTeamMoveBodySchema = z.object({
+  expected_assignment_id: z.uuid(),
 }).strict();
 const transferDestinationsQuerySchema = z.object({
   expected_assignment_id: z.uuid(),
@@ -4890,11 +4894,49 @@ export function createApp(
           staffId: staffId.data,
           expectedAssignmentId: body.data.expected_assignment_id,
           operationalTeamId: body.data.operational_team_id,
+          scheduledMoveContract: body.data.scheduled_move_contract,
         }));
       } catch (error) {
         next(error instanceof HttpError ? error : error instanceof OperationalConflictError
           ? new HttpError(409, "conflict", "The requested change conflicts with current team data.")
-          : new HttpError(403, "forbidden", "Access is denied."));
+          : error instanceof OperationalAccessError
+            ? new HttpError(403, "forbidden", "Access is denied.")
+            : error instanceof OperationalInputError
+              ? new HttpError(422, "unprocessable_entity", "The requested team move is invalid.")
+              : new HttpError(503, "service_unavailable", "Unable to move this employee right now."));
+      }
+    });
+
+  app.post("/api/v1/supervisor/branches/:branchId/operational-staff/:staffId/scheduled-team-moves/:moveId/cancel", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const staffId = staffIdSchema.safeParse(request.params.staffId);
+        const moveId = z.uuid().safeParse(request.params.moveId);
+        const body = cancelScheduledTeamMoveBodySchema.safeParse(request.body);
+        if (!branchId.success || !staffId.success || !moveId.success || !body.success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || !dependencies.operationalAdmin?.cancelScheduledStaffMove) {
+          throw new HttpError(403, "forbidden", "Access is denied.");
+        }
+        response.status(200).json(await dependencies.operationalAdmin.cancelScheduledStaffMove({
+          actorUserId: auth.userId,
+          branchId: branchId.data,
+          staffId: staffId.data,
+          expectedAssignmentId: body.data.expected_assignment_id,
+          scheduledMoveId: moveId.data,
+        }));
+      } catch (error) {
+        next(error instanceof HttpError ? error : error instanceof OperationalConflictError
+          ? new HttpError(409, "conflict", "This scheduled move is no longer pending.")
+          : error instanceof OperationalAccessError
+            ? new HttpError(403, "forbidden", "Access is denied.")
+            : error instanceof OperationalInputError
+              ? new HttpError(422, "unprocessable_entity", "The cancellation request is invalid.")
+              : new HttpError(503, "service_unavailable", "Unable to cancel this scheduled move right now."));
       }
     });
 
