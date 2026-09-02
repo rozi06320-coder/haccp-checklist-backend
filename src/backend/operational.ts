@@ -86,8 +86,9 @@ type MaintenanceIssueCreateDiagnostics = {
   requestId?: string | null;
   log?: (event: {
     requestId?: string | null;
-    stage: "create_rpc";
+    stage: "create_rpc" | "response_parse";
     outcome: MaintenancePurchaseDiagnosticOutcome;
+    safeErrorCategory?: "rpc" | "response";
     safeCode?: string | null;
     undefinedObjectKind?: "function" | "operator" | null;
     undefinedIdentity?: string | null;
@@ -647,19 +648,20 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       });
     };
   }
-  function startMaintenanceIssueCreateDiagnosticStage(diagnostics: MaintenanceIssueCreateDiagnostics | undefined) {
+  function startMaintenanceIssueCreateDiagnosticStage(diagnostics: MaintenanceIssueCreateDiagnostics | undefined, stage: "create_rpc" | "response_parse") {
     const startedAt = performance.now();
     let completed = false;
-    diagnostics?.log?.({ requestId: diagnostics.requestId ?? null, stage: "create_rpc", outcome: "start", safeCode: null, undefinedObjectKind: null, undefinedIdentity: null });
-    return (outcome: Exclude<MaintenancePurchaseDiagnosticOutcome, "start">, safeCode?: string | null, undefinedObject?: MaintenanceUndefinedObjectIdentity | null) => {
+    diagnostics?.log?.({ requestId: diagnostics.requestId ?? null, stage, outcome: "start", safeCode: null, undefinedObjectKind: null, undefinedIdentity: null });
+    return (outcome: Exclude<MaintenancePurchaseDiagnosticOutcome, "start">, safeErrorCategory?: "rpc" | "response", safeCode?: string | null, undefinedObject?: MaintenanceUndefinedObjectIdentity | null) => {
       if (completed) return;
       completed = true;
       const boundedCode = safeMaintenancePurchaseDiagnosticCode(safeCode);
       const boundedUndefinedObject = boundedCode === "42883" ? undefinedObject : null;
       diagnostics?.log?.({
         requestId: diagnostics.requestId ?? null,
-        stage: "create_rpc",
+        stage,
         outcome,
+        safeErrorCategory,
         safeCode: boundedCode,
         undefinedObjectKind: boundedUndefinedObject?.undefinedObjectKind ?? null,
         undefinedIdentity: boundedUndefinedObject?.undefinedIdentity ?? null,
@@ -1510,33 +1512,33 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         const functionName=uploaded.length
           ? phase1?"create_supervisor_maintenance_issue_with_photo_v2":"create_supervisor_maintenance_issue_with_photo"
           : phase1?"create_supervisor_maintenance_issue_v2":"create_supervisor_maintenance_issue";
+        const finishCreateRpc=startMaintenanceIssueCreateDiagnosticStage(input.diagnostics,"create_rpc");
+        let rpcErrorCode:string|null=null;
+        let undefinedObject:MaintenanceUndefinedObjectIdentity|null=null;
         let rawRows:unknown[];
-        if(phase1){
-          const finishCreateRpc=startMaintenanceIssueCreateDiagnosticStage(input.diagnostics);
-          let rpcErrorCode:string|null=null;
-          let undefinedObject:MaintenanceUndefinedObjectIdentity|null=null;
-          try{
-            rawRows=await rpc(functionName, {
-              actor_user_id: input.actorUserId,
-              target_branch_id: input.branchId,
-              payload,
-            },{onError:(error)=>{rpcErrorCode=error.code??null;undefinedObject=parseMaintenanceUndefinedObjectIdentity(error.code,error.message);}});
-            finishCreateRpc("success");
-          }catch(error){
-            finishCreateRpc("failure",rpcErrorCode,undefinedObject);
-            throw error;
-          }
-        }else{
+        try{
           rawRows=await rpc(functionName, {
             actor_user_id: input.actorUserId,
             target_branch_id: input.branchId,
             payload,
-          });
+          },{onError:(error)=>{rpcErrorCode=error.code??null;undefinedObject=parseMaintenanceUndefinedObjectIdentity(error.code,error.message);}});
+          finishCreateRpc("success");
+        }catch(error){
+          finishCreateRpc("failure","rpc",rpcErrorCode,undefinedObject);
+          throw error;
         }
-        const rows=phase1
-          ? await normalizeMaintenanceIssueRows(rawRows,input.actorUserId,null)
-          : await normalizeLegacyMaintenanceIssueRows(rawRows,input.actorUserId,null);
-        if (rows.length !== 1) throw new AdminOperationError();
+        const finishResponseParse=startMaintenanceIssueCreateDiagnosticStage(input.diagnostics,"response_parse");
+        let rows:Array<{id:string}>;
+        try{
+          rows=phase1
+            ? await normalizeMaintenanceIssueRows(rawRows,input.actorUserId,null)
+            : await normalizeLegacyMaintenanceIssueRows(rawRows,input.actorUserId,null);
+          if (rows.length !== 1) throw new AdminOperationError();
+          finishResponseParse("success");
+        }catch(error){
+          finishResponseParse("failure","response");
+          throw error;
+        }
         const created=issueId?rows[0].id===issueId:true;
         if(uploaded.length&&!created)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path)).catch(()=>undefined);
         return { maintenance_issue: rows[0], created };

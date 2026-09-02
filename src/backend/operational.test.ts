@@ -652,6 +652,82 @@ describe("managed maintenance operational adapter", () => {
     }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
   });
 
+  it("attributes unversioned Supervisor Maintenance create failures to the legacy RPC",async()=>{
+    const diagnostics:Array<Record<string,unknown>>=[];
+    const paths:string[]=[];
+    const rpc=createServer(async(request,response)=>{
+      paths.push(request.url??"");
+      response.setHeader("content-type","application/json");
+      response.statusCode=400;
+      response.end(JSON.stringify({code:"42883",message:"function pg_catalog.nullif(text, unknown) does not exist",details:"private payload",hint:"service-key"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await assert.rejects(()=>admin.createSupervisorMaintenanceIssue({actorUserId:id.supervisor,branchId:id.branch,payload:{title:"Freezer",category:"refrigeration",priority:"urgent",description:"Do not log"},contract:"legacy",diagnostics:{requestId:"legacy-request-42883",log:(event)=>diagnostics.push(event)}}));
+      assert.deepEqual(paths,["/rest/v1/rpc/create_supervisor_maintenance_issue"]);
+      assert.deepEqual(diagnostics.map((event)=>({stage:event.stage,outcome:event.outcome,safeErrorCategory:event.safeErrorCategory,safeCode:event.safeCode,undefinedObjectKind:event.undefinedObjectKind,undefinedIdentity:event.undefinedIdentity})),[
+        {stage:"create_rpc",outcome:"start",safeErrorCategory:undefined,safeCode:null,undefinedObjectKind:null,undefinedIdentity:null},
+        {stage:"create_rpc",outcome:"failure",safeErrorCategory:"rpc",safeCode:"42883",undefinedObjectKind:"function",undefinedIdentity:"pg_catalog.nullif(text,unknown)"},
+      ]);
+      assert.doesNotMatch(JSON.stringify(diagnostics),/private payload|service-key|Freezer|Do not log/);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("attributes unversioned Supervisor create-with-photo failures to the legacy photo RPC",async()=>{
+    const diagnostics:Array<Record<string,unknown>>=[];
+    const paths:string[]=[];
+    const rpc=createServer(async(request,response)=>{
+      paths.push(`${request.method} ${request.url??""}`);
+      response.setHeader("content-type","application/json");
+      if(request.method==="POST"&&request.url?.startsWith("/storage/v1/object/maintenance-issue-photos/")){
+        response.end(JSON.stringify({Key:"opaque"}));
+        return;
+      }
+      if(request.method==="DELETE"&&request.url==="/storage/v1/object/maintenance-issue-photos"){
+        response.end(JSON.stringify([]));
+        return;
+      }
+      response.statusCode=400;
+      response.end(JSON.stringify({code:"22023",message:"private invalid photo payload",details:"maintenance/private/storage/path"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await assert.rejects(()=>admin.createSupervisorMaintenanceIssue({actorUserId:id.supervisor,branchId:id.branch,payload:{title:"Sink",category:"plumbing",priority:"normal"},photos:[{bytes:Buffer.from([0xff,0xd8,0xff,0x00,0xff,0xd9]),mimeType:"image/jpeg",originalName:"private-photo.jpg"}],contract:"legacy",diagnostics:{requestId:"legacy-photo-request",log:(event)=>diagnostics.push(event)}}));
+      assert.ok(paths.includes("POST /rest/v1/rpc/create_supervisor_maintenance_issue_with_photo"));
+      const failure=diagnostics.at(-1);
+      assert.deepEqual({stage:failure?.stage,outcome:failure?.outcome,safeErrorCategory:failure?.safeErrorCategory,safeCode:failure?.safeCode,undefinedObjectKind:failure?.undefinedObjectKind,undefinedIdentity:failure?.undefinedIdentity},{stage:"create_rpc",outcome:"failure",safeErrorCategory:"rpc",safeCode:"22023",undefinedObjectKind:null,undefinedIdentity:null});
+      assert.doesNotMatch(JSON.stringify(diagnostics),/private invalid|private-photo|storage\/path|service-key|Sink/);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("keeps Phase 1 Supervisor create RPC and response parsing diagnostic stages",async()=>{
+    const diagnostics:Array<Record<string,unknown>>=[];
+    const paths:string[]=[];
+    const rpc=createServer(async(request,response)=>{
+      paths.push(request.url??"");
+      response.setHeader("content-type","application/json");
+      if(request.url==="/rest/v1/rpc/list_maintenance_issue_attachments"){
+        response.end(JSON.stringify([]));
+        return;
+      }
+      response.end(JSON.stringify([{id:id.maintenanceIssue,organization_id:id.organization,branch_id:id.branch,branch_name:"Branch",title:"Freezer",category:"refrigeration",priority:"urgent",status:"new",description:null,location:null,reported_by:id.supervisor,reporter_name:"Supervisor",assigned_to:null,responsible_person_name:null,revision:0,planned_repair_date:null,created_at:"2026-09-02T00:00:00.000Z",updated_at:"2026-09-02T00:00:00.000Z",updates:[]}]))
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await admin.createSupervisorMaintenanceIssue({actorUserId:id.supervisor,branchId:id.branch,payload:{title:"Freezer",category:"refrigeration",priority:"urgent"},contract:"phase1",diagnostics:{requestId:"phase1-create",log:(event)=>diagnostics.push(event)}});
+      assert.deepEqual(paths,["/rest/v1/rpc/create_supervisor_maintenance_issue_v2","/rest/v1/rpc/list_maintenance_issue_attachments"]);
+      assert.deepEqual(diagnostics.map((event)=>({stage:event.stage,outcome:event.outcome})),[
+        {stage:"create_rpc",outcome:"start"},
+        {stage:"create_rpc",outcome:"success"},
+        {stage:"response_parse",outcome:"start"},
+        {stage:"response_parse",outcome:"success"},
+      ]);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
   it("emits Maintenance purchase parser diagnostics when Phase 2 RPC rows are malformed",async()=>{
     const diagnostics:Array<Record<string,unknown>>=[];
     const rpc=createServer(async(_request,response)=>{
@@ -1076,12 +1152,12 @@ describe("Maintenance purchase diagnostic API", () => {
     }finally{await new Promise<void>((resolve,reject)=>server.close((error)=>error?reject(error):resolve()));}
   });
 
-  it("keeps Supervisor Maintenance create failures generic while logging only safe 42883 identity",async()=>{
+  it("keeps unversioned Supervisor Maintenance create failures generic while logging only safe 42883 identity",async()=>{
     const calls:Array<Record<string,unknown>>=[];
     const fixture=dependencies(calls);
     if(!fixture.operationalAdmin)throw new Error("missing test adapter");
     fixture.operationalAdmin.createSupervisorMaintenanceIssue=async(input)=>{
-      input.diagnostics?.log?.({requestId:input.diagnostics.requestId,stage:"create_rpc",outcome:"failure",safeCode:"42883",undefinedObjectKind:"function",undefinedIdentity:"private.create_issue(uuid,text)",durationMs:1.25});
+      input.diagnostics?.log?.({requestId:input.diagnostics.requestId,stage:"create_rpc",outcome:"failure",safeErrorCategory:"rpc",safeCode:"42883",undefinedObjectKind:"function",undefinedIdentity:"private.create_issue(uuid,text)",durationMs:1.25});
       throw new Error("raw SQL secret issue payload bearer-token");
     };
     const config=loadBackendConfig({NODE_ENV:"test",SUPABASE_URL:"http://127.0.0.1:54321",SUPABASE_PUBLISHABLE_KEY:"placeholder",DAILY_AUDIT_GRANT_SECRET:"test-daily-audit-grant-secret-placeholder-32-bytes"});
@@ -1090,7 +1166,7 @@ describe("Maintenance purchase diagnostic API", () => {
     try{
       const baseUrl=`http://127.0.0.1:${(server.address()as AddressInfo).port}`;
       const result=await captureMaintenanceIssueDiagnostics(()=>fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/maintenance-issues`,{
-        method:"POST",headers:{...headers("supervisor"),"x-maintenance-contract":"phase1"},body:JSON.stringify({title:"Private freezer issue",category:"refrigeration",priority:"urgent",description:"Do not log"}),
+        method:"POST",headers:headers("supervisor"),body:JSON.stringify({title:"Private freezer issue",category:"refrigeration",priority:"urgent",description:"Do not log"}),
       }));
       assert.equal(result.value.status,503);
       const body=await result.value.text();
@@ -1098,6 +1174,7 @@ describe("Maintenance purchase diagnostic API", () => {
       assert.doesNotMatch(body,/raw SQL|secret|payload|bearer-token|Private freezer|Do not log/);
       assert.equal(result.events.length,1);
       assert.deepEqual({stage:result.events[0]?.stage,outcome:result.events[0]?.outcome,safeCode:result.events[0]?.safeCode,undefinedObjectKind:result.events[0]?.undefinedObjectKind,undefinedIdentity:result.events[0]?.undefinedIdentity},{stage:"create_rpc",outcome:"failure",safeCode:"42883",undefinedObjectKind:"function",undefinedIdentity:"private.create_issue(uuid,text)"});
+      assert.equal(typeof result.events[0]?.requestId,"string");
       assert.ok(result.lines.every((line)=>line.argumentCount===1));
       assert.doesNotMatch(JSON.stringify({events:result.events,lines:result.lines}),/raw SQL|secret|issue payload|bearer-token|Private freezer|Do not log/);
     }finally{await new Promise<void>((resolve,reject)=>server.close((error)=>error?reject(error):resolve()));}

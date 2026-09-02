@@ -542,12 +542,12 @@ function startMaintenancePurchaseDiagnosticStage(requestId:string,stage:Maintena
     logMaintenancePurchaseDiagnostic({requestId,stage,outcome,safeErrorCategory,safeCode,durationMs:Math.round((performance.now()-startedAt)*100)/100});
   };
 }
-type MaintenanceIssueDiagnosticEvent={requestId?:string|null;stage:"create_rpc";outcome:MaintenancePurchaseDiagnosticOutcome;safeCode?:string|null;undefinedObjectKind?:"function"|"operator"|null;undefinedIdentity?:string|null;durationMs?:number};
+type MaintenanceIssueDiagnosticEvent={requestId?:string|null;stage:"create_rpc"|"response_parse";outcome:MaintenancePurchaseDiagnosticOutcome;safeErrorCategory?:"rpc"|"response";safeCode?:string|null;undefinedObjectKind?:"function"|"operator"|null;undefinedIdentity?:string|null;durationMs?:number};
 const MAINTENANCE_ISSUE_DIAGNOSTIC_PREFIX="MAINTENANCE_ISSUE_DIAGNOSTIC";
 function logMaintenanceIssueDiagnostic(event:MaintenanceIssueDiagnosticEvent){
   const safeCode=event.safeCode&&/^(?:PGRST\d{3}|[0-9A-Z]{5}|[1-5]\d{2})$/.test(event.safeCode)?event.safeCode:null;
   const undefinedObject=safeMaintenanceUndefinedObject(safeCode,event.undefinedObjectKind,event.undefinedIdentity);
-  const payload={timestamp:new Date().toISOString(),requestId:event.requestId??null,stage:event.stage,outcome:event.outcome,safeCode,undefinedObjectKind:undefinedObject?.undefinedObjectKind??null,undefinedIdentity:undefinedObject?.undefinedIdentity??null,durationMs:typeof event.durationMs==="number"&&Number.isFinite(event.durationMs)?event.durationMs:null};
+  const payload={timestamp:new Date().toISOString(),requestId:event.requestId??null,stage:event.stage,outcome:event.outcome,safeErrorCategory:event.safeErrorCategory??null,safeCode,undefinedObjectKind:undefinedObject?.undefinedObjectKind??null,undefinedIdentity:undefinedObject?.undefinedIdentity??null,durationMs:typeof event.durationMs==="number"&&Number.isFinite(event.durationMs)?event.durationMs:null};
   try{console.info(`${MAINTENANCE_ISSUE_DIAGNOSTIC_PREFIX} ${JSON.stringify(payload)}`);}catch{/* Diagnostics must never affect a request. */}
 }
 const dailyAuditItemApiSchema=z.object({item_id:z.string().min(1).max(80),answer:z.enum(["not_checked","compliant","non_compliant"]),remark:z.string().max(4000)}).strict();
