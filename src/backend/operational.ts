@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { AdminOperationError } from "./admin";
@@ -244,12 +244,6 @@ const supplierReceivingPhotoRow = z.object({
 const managedSupplierReceivingPhotoRow = supplierReceivingPhotoRow.extend({
   organization_id: uuid,
 }).strict();
-const managedMaintenancePurchaseReceiptRow = z.object({
-  organization_id: uuid,
-  branch_id: uuid.nullable(),
-  receipt_storage_path: optionalStaffText,
-  receipt_original_name: optionalStaffText,
-}).strict();
 const managedMaintenancePurchaseAttachmentReadRow = z.object({
   storage_path: optionalStaffText,
   original_filename: optionalStaffText,
@@ -285,6 +279,10 @@ const maintenanceIssueUpdateRow = z.object({
   updated_by: uuid.nullable(),
   updated_by_access_user_id: uuid.nullable().optional(),
   updated_by_name: optionalStaffText,
+  update_kind: z.enum(["status_update", "repair_schedule_change"]).optional().default("status_update"),
+  old_planned_repair_date: optionalStaffDate.optional().default(null),
+  new_planned_repair_date: optionalStaffDate.optional().default(null),
+  change_reason: optionalStaffText.optional().default(null),
   created_at: z.string(),
 }).strict();
 const maintenanceIssueRow = z.object({
@@ -302,10 +300,17 @@ const maintenanceIssueRow = z.object({
   reporter_name: optionalStaffText,
   assigned_to: uuid.nullable(),
   responsible_person_name: optionalStaffText.optional().default(null),
+  revision: z.number().int().nonnegative(),
+  planned_repair_date: optionalStaffDate,
   created_at: z.string(),
   updated_at: z.string(),
   updates: z.array(maintenanceIssueUpdateRow).optional(),
 }).strict();
+const maintenanceIssueLegacyRpcRow = maintenanceIssueRow.omit({
+  revision: true,
+  planned_repair_date: true,
+}).strict();
+const managedMaintenanceIssueLegacyRpcRow = maintenanceIssueLegacyRpcRow.omit({ assigned_to: true }).strict();
 const managedMaintenanceIssueRow = maintenanceIssueRow.extend({
   assigned_to: uuid.nullable().optional(),
 }).strict();
@@ -316,6 +321,19 @@ export const MAX_PURCHASE_INVOICE_BYTES = 5 * 1024 * 1024;
 export const MAX_MAINTENANCE_PURCHASE_PHOTOS = 3;
 export const purchaseInvoiceMime = z.enum(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
 export const maintenancePurchaseReceiptMime = purchaseInvoiceMime;
+export function inspectMaintenancePurchaseReceipt(bytes:Buffer,declaredMime:string){
+  if(bytes.length===0||bytes.length>MAX_PURCHASE_INVOICE_BYTES)throw new AdminOperationError();
+  const mime=purchaseInvoiceMime.safeParse(declaredMime.toLowerCase());
+  if(!mime.success)throw new AdminOperationError();
+  const jpeg=bytes.length>=4&&bytes[0]===0xff&&bytes[1]===0xd8&&bytes[2]===0xff&&bytes.at(-2)===0xff&&bytes.at(-1)===0xd9;
+  const pngSignature=Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]);
+  const png=bytes.length>=33&&bytes.subarray(0,8).equals(pngSignature)&&bytes.subarray(12,16).toString("ascii")==="IHDR"&&bytes.subarray(bytes.length-8,bytes.length-4).toString("ascii")==="IEND";
+  const webp=bytes.length>=20&&bytes.subarray(0,4).toString("ascii")==="RIFF"&&bytes.subarray(8,12).toString("ascii")==="WEBP"&&bytes.readUInt32LE(4)===bytes.length-8;
+  const pdf=bytes.length>=5&&bytes.subarray(0,5).toString("ascii")==="%PDF-";
+  const detected=jpeg?{mime:"image/jpeg" as const,extension:"jpg" as const}:png?{mime:"image/png" as const,extension:"png" as const}:webp?{mime:"image/webp" as const,extension:"webp" as const}:pdf?{mime:"application/pdf" as const,extension:"pdf" as const}:null;
+  if(!detected||detected.mime!==mime.data)throw new AdminOperationError();
+  return detected;
+}
 const SUPPLIER_RECEIVING_PHOTO_BUCKET = "branch-supplier-receiving-photos";
 const SUPPLIER_RECEIVING_PHOTO_SIGNED_URL_SECONDS = 5 * 60;
 export const MAX_SUPPLIER_RECEIVING_PHOTO_BYTES = 5 * 1024 * 1024;
@@ -325,6 +343,14 @@ const MAINTENANCE_ISSUE_PHOTO_SIGNED_URL_SECONDS = 5 * 60;
 export const MAX_MAINTENANCE_ISSUE_PHOTO_BYTES = 5 * 1024 * 1024;
 export const MAX_MAINTENANCE_ISSUE_PHOTOS = 3;
 export const maintenanceIssuePhotoMime = z.enum(["image/jpeg", "image/png", "image/webp"]);
+
+export function maintenancePurchaseRequestHash(input:{issueId?:string|null;payload:Record<string,unknown>;receipts:Array<{bytes:Buffer;mimeType:string}>}){
+  return createHash("sha256").update(JSON.stringify({
+    issue_id:input.issueId??null,
+    payload:input.payload,
+    receipts:input.receipts.map((receipt)=>({mime_type:receipt.mimeType,size_bytes:receipt.bytes.length,sha256:createHash("sha256").update(receipt.bytes).digest("hex")})),
+  })).digest("hex");
+}
 
 export type OperationalRole = z.infer<typeof role>;
 export class OperationalConflictError extends Error {}
@@ -445,7 +471,7 @@ export type OperationalAdmin = {
     };
     photo?: { bytes: Buffer; mimeType: z.infer<typeof supplierReceivingPhotoMime>; originalName: string } | null;
   }): Promise<unknown>;
-  listSupervisorMaintenanceIssues(actorUserId: string, branchId: string): Promise<unknown>;
+  listSupervisorMaintenanceIssues(actorUserId: string, branchId: string, contract?: "legacy" | "phase1"): Promise<unknown>;
   createSupervisorMaintenanceIssue(input: {
     actorUserId: string;
     branchId: string;
@@ -460,6 +486,7 @@ export type OperationalAdmin = {
     };
     photo?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
     photos?: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> | null;
+    contract?: "legacy" | "phase1";
   }): Promise<unknown>;
   createManagerOfficeMaintenanceIssue?(input: {
     actorUserId: string;
@@ -475,8 +502,9 @@ export type OperationalAdmin = {
     };
     photo?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
     photos?: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> | null;
+    contract?: "legacy" | "phase1";
   }): Promise<unknown>;
-  listMaintenanceIssues(input: { actorUserId?: string | null; accessUserId?: string | null; organizationId?: string | null }): Promise<unknown>;
+  listMaintenanceIssues(input: { actorUserId?: string | null; accessUserId?: string | null; organizationId?: string | null; contract?: "legacy" | "phase1" }): Promise<unknown>;
   updateMaintenanceIssue(input: {
     actorUserId?: string | null;
     accessUserId?: string | null;
@@ -486,12 +514,23 @@ export type OperationalAdmin = {
     responsiblePersonName?: string | null;
     repairPhoto?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
     repairPhotos?: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> | null;
-  }): Promise<unknown>;
+  } & ({
+    contract: "phase1";
+    expectedRevision: number;
+    plannedRepairDate?: string | null;
+    plannedRepairChangeReason?: string | null;
+  } | {
+    contract: "legacy";
+    expectedRevision?: never;
+    plannedRepairDate?: never;
+    plannedRepairChangeReason?: never;
+  })): Promise<unknown>;
   listMaintenancePurchases(actorUserId: string, issueId: string): Promise<unknown>;
   listMaintenancePurchaseBranches?(input:{actorUserId:string}):Promise<unknown>;
-  createMaintenancePurchase(input: { actorUserId:string; issueId?:string|null; payload:{purchase_type?:z.infer<typeof maintenancePurchaseType>;purchase_scope?:z.infer<typeof maintenancePurchaseScope>;branch_id?:string|null;destination?:string|null;category:z.infer<typeof maintenancePurchaseCategory>;item_name:string;quantity:string|number;unit:"pcs"|"meter"|"kg"|"box"|"bag"|"roll"|"set"|"liter"|"other";amount:string|number;vendor_name?:string|null;purchase_date:string;notes?:string|null;payment_method?:z.infer<typeof maintenancePaymentMethod>|null}; receipts?:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>|null; diagnostics?:MaintenancePurchaseDiagnostics }): Promise<unknown>;
+  createMaintenancePurchase(input: { actorUserId:string; issueId?:string|null; idempotencyKey?:string|null; payload:{purchase_type?:z.infer<typeof maintenancePurchaseType>;purchase_scope?:z.infer<typeof maintenancePurchaseScope>;branch_id?:string|null;destination?:string|null;category:z.infer<typeof maintenancePurchaseCategory>;item_name:string;quantity:string|number;unit:"pcs"|"meter"|"kg"|"box"|"bag"|"roll"|"set"|"liter"|"other";amount:string|number;vendor_name?:string|null;purchase_date:string;notes?:string|null;payment_method?:z.infer<typeof maintenancePaymentMethod>|null}; receipts?:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>|null; diagnostics?:MaintenancePurchaseDiagnostics }): Promise<unknown>;
   reimburseMaintenancePurchase(input:{actorUserId:string;purchaseId:string;reimbursementNote?:string|null}):Promise<unknown>;
   listMaintenancePurchaseHistory?(input:{actorUserId:string;purchaseType:z.infer<typeof maintenancePurchaseType>}):Promise<unknown>;
+  listMaintenancePurchaseHistoryPage?(input:{actorUserId:string;purchaseType:"issue"|"general"|"all";page:number;pageSize:number}):Promise<unknown>;
   listManagedMaintenancePurchases?(input:{actorUserId:string;organizationId:string;branchId?:string;issueStatus?:z.infer<typeof maintenanceIssueStatus>;paymentStatus?:z.infer<typeof purchaseLogPaymentStatus>;vendor?:string;dateFrom?:string;dateTo?:string;purchaseType?:z.infer<typeof maintenancePurchaseType>}):Promise<unknown>;
   createManagedMaintenancePurchaseReceiptReadUrl?(input:{actorUserId:string;organizationId:string;purchaseId:string;attachmentId?:string|null}):Promise<unknown>;
   getManagedOperationsSummary?(input:{actorUserId:string;organizationId:string;branchId?:string;month:string}):Promise<unknown>;
@@ -511,7 +550,7 @@ export type OperationalAdmin = {
   submitManagedAnnualEvaluation?(input:{actorUserId:string;organizationId:string;evaluationId:string;expectedRevision:number}):Promise<unknown>;
   listManagedPurchaseLogs?(input: { actorUserId: string; organizationId: string; branchId?: string; category?: z.infer<typeof purchaseLogCategory>; paymentStatus?: z.infer<typeof purchaseLogPaymentStatus>; dateFrom?: string; dateTo?: string }): Promise<unknown>;
   listManagedSupplierReceivings?(input: { actorUserId: string; organizationId: string; branchId?: string; category?: z.infer<typeof supplierReceivingCategory>; supplierId?: string; dateFrom?: string; dateTo?: string }): Promise<unknown>;
-  listManagedMaintenanceIssues?(input: { actorUserId: string; organizationId: string; branchId?: string; status?: z.infer<typeof maintenanceIssueStatus>; priority?: z.infer<typeof maintenanceIssuePriority>; category?: z.infer<typeof maintenanceIssueCategory>; dateFrom?: string; dateTo?: string }): Promise<unknown>;
+  listManagedMaintenanceIssues?(input: { actorUserId: string; organizationId: string; branchId?: string; status?: z.infer<typeof maintenanceIssueStatus>; priority?: z.infer<typeof maintenanceIssuePriority>; category?: z.infer<typeof maintenanceIssueCategory>; dateFrom?: string; dateTo?: string; contract?: "legacy" | "phase1" }): Promise<unknown>;
   listManagedTeams(actorUserId: string, organizationId: string): Promise<unknown>;
   listEligibleSupervisors(actorUserId: string, organizationId: string, branchId: string): Promise<unknown>;
 };
@@ -610,19 +649,6 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     if(!credential)return null;
     return {id:credential.access_user_id,organization_id:credential.organization_id,display_name:credential.display_name,active:true,credential_version:credential.credential_version};
   }
-  function inspectPurchaseInvoice(bytes: Buffer, declaredMime: string) {
-    if (bytes.length === 0 || bytes.length > MAX_PURCHASE_INVOICE_BYTES) throw new AdminOperationError();
-    const mime = purchaseInvoiceMime.safeParse(declaredMime.toLowerCase());
-    if (!mime.success) throw new AdminOperationError();
-    const jpeg = bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff && bytes.at(-2) === 0xff && bytes.at(-1) === 0xd9;
-    const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    const png = bytes.length >= 33 && bytes.subarray(0, 8).equals(pngSignature) && bytes.subarray(12, 16).toString("ascii") === "IHDR" && bytes.subarray(bytes.length - 8, bytes.length - 4).toString("ascii") === "IEND";
-    const webp = bytes.length >= 20 && bytes.subarray(0, 4).toString("ascii") === "RIFF" && bytes.subarray(8, 12).toString("ascii") === "WEBP" && bytes.readUInt32LE(4) === bytes.length - 8;
-    const pdf = bytes.length >= 5 && bytes.subarray(0, 5).toString("ascii") === "%PDF-";
-    const detected = jpeg ? { mime: "image/jpeg" as const, extension: "jpg" as const } : png ? { mime: "image/png" as const, extension: "png" as const } : webp ? { mime: "image/webp" as const, extension: "webp" as const } : pdf ? { mime: "application/pdf" as const, extension: "pdf" as const } : null;
-    if (!detected || detected.mime !== mime.data) throw new AdminOperationError();
-    return detected;
-  }
   function inspectSupplierReceivingPhoto(bytes: Buffer, declaredMime: string) {
     if (bytes.length === 0 || bytes.length > MAX_SUPPLIER_RECEIVING_PHOTO_BYTES) throw new AdminOperationError();
     const mime = supplierReceivingPhotoMime.safeParse(declaredMime.toLowerCase());
@@ -703,12 +729,14 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   }
   const maintenanceIssuePhotoRpcRow=z.object({id:uuid,maintenance_issue_id:uuid,attachment_type:z.enum(["issue","repair"]),storage_path:z.string(),original_filename:optionalStaffText,mime_type:optionalStaffText,size_bytes:z.union([z.number(),z.string()]).nullable(),attachment_position:z.number().int().min(1).max(MAX_MAINTENANCE_ISSUE_PHOTOS).optional().default(1),created_at:z.string()}).strict();
   const maintenancePurchaseAttachmentRpcRow=z.object({id:uuid,storage_path:z.string(),original_filename:optionalStaffText,mime_type:optionalStaffText,size_bytes:z.union([z.number(),z.string()]).nullable(),position:z.number().int().min(1).max(MAX_MAINTENANCE_PURCHASE_PHOTOS)}).strict();
-  const maintenancePurchaseListRpcRow=z.object({id:uuid,branch_id:uuid.nullable(),purchase_type:maintenancePurchaseType,purchase_scope:maintenancePurchaseScope,destination:optionalStaffText,category:maintenancePurchaseCategory,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnit,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:optionalStaffText,payment_status:purchaseLogPaymentStatus,payment_method:maintenancePaymentMethod.nullable().optional().default(null),reimbursement_note:optionalStaffText,reimbursed_at:z.string().nullable(),receipt_storage_path:optionalStaffText,receipt_original_name:optionalStaffText,attachments:z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
+  const maintenancePurchaseListRpcRow=z.object({id:uuid,branch_id:uuid.nullable(),purchase_type:maintenancePurchaseType,purchase_scope:maintenancePurchaseScope,destination:optionalStaffText,category:maintenancePurchaseCategory,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnit,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:optionalStaffText,payment_status:purchaseLogPaymentStatus,payment_method:maintenancePaymentMethod.nullable().optional().default(null),reimbursement_note:optionalStaffText,reimbursed_at:z.string().nullable(),reimbursed_by:uuid.nullable().optional().default(null),receipt_storage_path:optionalStaffText,receipt_original_name:optionalStaffText,attachments:z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
   const maintenancePurchaseMutationRpcRow=maintenancePurchaseListRpcRow.extend({organization_id:uuid,maintenance_issue_id:uuid.nullable(),maintenance_user_id:uuid}).strict();
   async function normalizeMaintenancePurchaseRows(rows:z.infer<typeof maintenancePurchaseListRpcRow>[]){return Promise.all(rows.map(async row=>{const attachments=await Promise.all(row.attachments.map(async attachment=>({id:attachment.id,original_filename:attachment.original_filename,mime_type:attachment.mime_type,size_bytes:attachment.size_bytes===null?null:Number(attachment.size_bytes),position:attachment.position,url:await signMaintenanceReceipt(attachment.storage_path)})));const first=attachments[0];const{receipt_storage_path,...safe}=row;return{...safe,attachments,quantity:Number(row.quantity),amount:Number(row.amount),receipt_url:first?.url??await signMaintenanceReceipt(receipt_storage_path),receipt_original_name:first?.original_filename??row.receipt_original_name};}));}
   async function normalizeMaintenancePurchases(rows:unknown[]){return normalizeMaintenancePurchaseRows(z.array(maintenancePurchaseListRpcRow).max(500).parse(rows));}
   async function normalizeMaintenancePurchaseMutations(rows:unknown[]){const parsed=z.array(maintenancePurchaseMutationRpcRow).length(1).parse(rows);return normalizeMaintenancePurchaseRows(parsed.map(({organization_id,maintenance_issue_id,maintenance_user_id,...row})=>{void organization_id;void maintenance_issue_id;void maintenance_user_id;return row;}));}
-  async function normalizeManagedMaintenancePurchases(rows:unknown[]){return Promise.all(z.array(z.object({id:uuid,organization_id:uuid,branch_id:uuid.nullable(),branch_name:z.string(),maintenance_issue_id:uuid.nullable(),purchase_type:maintenancePurchaseType,issue_title:optionalStaffText,issue_category:maintenanceIssueCategory.nullable(),issue_status:maintenanceIssueStatus.nullable(),responsible_person_name:optionalStaffText.optional().default(null),purchase_scope:maintenancePurchaseScope,destination:optionalStaffText,category:maintenancePurchaseCategory,maintenance_user_id:uuid,maintenance_user_name:optionalStaffText,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnit,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:optionalStaffText,payment_status:purchaseLogPaymentStatus,payment_method:maintenancePaymentMethod.nullable().optional().default(null),reimbursement_note:optionalStaffText,reimbursed_at:z.string().nullable(),receipt_storage_path:optionalStaffText,receipt_original_name:optionalStaffText,attachments:z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict()).max(1000).parse(rows).map(async row=>{const attachments=await Promise.all(row.attachments.map(async attachment=>({id:attachment.id,original_filename:attachment.original_filename,mime_type:attachment.mime_type,size_bytes:attachment.size_bytes===null?null:Number(attachment.size_bytes),position:attachment.position,url:await signMaintenanceReceipt(attachment.storage_path)})));const{organization_id,receipt_storage_path,...safe}=row;void organization_id;return{...safe,attachments,quantity:Number(row.quantity),amount:Number(row.amount),receipt_url:attachments[0]?.url??await signMaintenanceReceipt(receipt_storage_path),receipt_original_name:attachments[0]?.original_filename??row.receipt_original_name};}));}
+  const managedMaintenancePurchaseRpcRow=z.object({id:uuid,organization_id:uuid,branch_id:uuid.nullable(),branch_name:z.string(),maintenance_issue_id:uuid.nullable(),purchase_type:maintenancePurchaseType,issue_title:optionalStaffText,issue_category:maintenanceIssueCategory.nullable(),issue_status:maintenanceIssueStatus.nullable(),responsible_person_name:optionalStaffText.optional().default(null),purchase_scope:maintenancePurchaseScope,destination:optionalStaffText,category:maintenancePurchaseCategory,maintenance_user_id:uuid,maintenance_user_name:optionalStaffText,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnit,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:optionalStaffText,payment_status:purchaseLogPaymentStatus,payment_method:maintenancePaymentMethod.nullable().optional().default(null),reimbursement_note:optionalStaffText,reimbursed_at:z.string().nullable(),reimbursed_by:uuid.nullable().optional().default(null),receipt_storage_path:optionalStaffText,receipt_original_name:optionalStaffText,attachments:z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
+  async function normalizeManagedMaintenancePurchases(rows:unknown[]){return Promise.all(z.array(managedMaintenancePurchaseRpcRow).max(1000).parse(rows).map(async row=>{const attachments=await Promise.all(row.attachments.map(async attachment=>({id:attachment.id,original_filename:attachment.original_filename,mime_type:attachment.mime_type,size_bytes:attachment.size_bytes===null?null:Number(attachment.size_bytes),position:attachment.position,url:await signMaintenanceReceipt(attachment.storage_path)})));const{organization_id,receipt_storage_path,...safe}=row;void organization_id;return{...safe,attachments,quantity:Number(row.quantity),amount:Number(row.amount),receipt_url:attachments[0]?.url??await signMaintenanceReceipt(receipt_storage_path),receipt_original_name:attachments[0]?.original_filename??row.receipt_original_name};}));}
+  async function normalizeMaintenancePurchaseHistoryPage(raw:unknown){const parsed=z.object({maintenance_purchases:z.array(managedMaintenancePurchaseRpcRow).max(200),page:z.number().int().positive(),page_size:z.number().int().min(1).max(200),total_count:z.union([z.number(),z.string()]),has_more:z.boolean()}).strict().parse(raw);const purchases=await Promise.all(parsed.maintenance_purchases.map(async({receipt_storage_path,...row})=>{const attachments=await Promise.all(row.attachments.map(async attachment=>({id:attachment.id,original_filename:attachment.original_filename,mime_type:attachment.mime_type,size_bytes:attachment.size_bytes===null?null:Number(attachment.size_bytes),position:attachment.position,url:await signMaintenanceReceipt(attachment.storage_path)})));return{...row,attachments,quantity:Number(row.quantity),amount:Number(row.amount),receipt_url:attachments[0]?.url??await signMaintenanceReceipt(receipt_storage_path),receipt_original_name:attachments[0]?.original_filename??row.receipt_original_name};}));return{maintenance_purchases:purchases,page:parsed.page,page_size:parsed.page_size,total_count:Number(parsed.total_count),has_more:parsed.has_more};}
   async function normalizePurchaseRows(rows: unknown[]) {
     return Promise.all(z.array(purchaseLogRow.omit({ invoice_url: true })).max(500).parse(rows).map(async (row) => {
       const { organization_id, supervisor_team_id, invoice_storage_path, ...safeRow } = row;
@@ -778,7 +806,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       return safeRow;
     });
   }
-  async function attachMaintenanceIssuePhotos(rows:z.infer<typeof managedMaintenanceIssueRow>[],actorUserId?:string|null,accessUserId?:string|null){
+  async function attachMaintenanceIssuePhotos<Row extends { id: string; organization_id?: string; updates?: unknown[] }>(rows:Row[],actorUserId?:string|null,accessUserId?:string|null){
     if(rows.length===0)return rows.map((row)=> {
       const { organization_id, ...safeRow } = row;
       void organization_id;
@@ -809,9 +837,35 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   async function normalizeMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null,accessUserId?:string|null) {
     return attachMaintenanceIssuePhotos(z.array(maintenanceIssueRow).max(1000).parse(rows),actorUserId,accessUserId);
   }
+  async function normalizeLegacyMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null,accessUserId?:string|null) {
+    const rowsWithPhotos=await attachMaintenanceIssuePhotos(z.array(maintenanceIssueLegacyRpcRow).max(1000).parse(rows),actorUserId,accessUserId);
+    return rowsWithPhotos.map((row)=>({
+      ...row,
+      updates:(row.updates??[]).map(({update_kind,old_planned_repair_date,new_planned_repair_date,change_reason,...update})=>{
+        void update_kind;
+        void old_planned_repair_date;
+        void new_planned_repair_date;
+        void change_reason;
+        return update;
+      }),
+    }));
+  }
   async function normalizeManagedMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null) {
     const rowsWithPhotos=await attachMaintenanceIssuePhotos(z.array(managedMaintenanceIssueRow).max(1000).parse(rows),actorUserId,null);
     return rowsWithPhotos.map(({assigned_to,...row})=>{void assigned_to;return row;});
+  }
+  async function normalizeManagedLegacyMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null) {
+    const rowsWithPhotos=await attachMaintenanceIssuePhotos(z.array(managedMaintenanceIssueLegacyRpcRow).max(1000).parse(rows),actorUserId,null);
+    return rowsWithPhotos.map((row)=>({
+      ...row,
+      updates:(row.updates??[]).map(({update_kind,old_planned_repair_date,new_planned_repair_date,change_reason,...update})=>{
+        void update_kind;
+        void old_planned_repair_date;
+        void new_planned_repair_date;
+        void change_reason;
+        return update;
+      }),
+    }));
   }
   return {
     resolveDailyAuditGrantBranchScope,
@@ -1229,7 +1283,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       let invoiceOriginalName: string | null = null;
       let invoiceMime: z.infer<typeof purchaseInvoiceMime> | null = null;
       if (input.invoice) {
-        const inspected = inspectPurchaseInvoice(input.invoice.bytes, input.invoice.mimeType);
+        const inspected = inspectMaintenancePurchaseReceipt(input.invoice.bytes, input.invoice.mimeType);
         invoiceMime = inspected.mime;
         invoiceOriginalName = input.invoice.originalName.trim().slice(0, 180) || `invoice.${inspected.extension}`;
         invoicePath = `branches/${input.branchId}/purchase-logs/${randomUUID()}/${safeFileName(invoiceOriginalName, inspected.extension)}`;
@@ -1349,11 +1403,14 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         throw error;
       }
     },
-    async listSupervisorMaintenanceIssues(actorUserId, branchId) {
-      return { maintenance_issues: await normalizeMaintenanceIssueRows(await rpc("list_supervisor_maintenance_issues", {
+    async listSupervisorMaintenanceIssues(actorUserId, branchId, contract="phase1") {
+      const rawRows=await rpc(contract==="phase1"?"list_supervisor_maintenance_issues_v2":"list_supervisor_maintenance_issues", {
         actor_user_id: actorUserId,
         target_branch_id: branchId,
-      }),actorUserId,null) };
+      });
+      return { maintenance_issues: contract==="phase1"
+        ? await normalizeMaintenanceIssueRows(rawRows,actorUserId,null)
+        : await normalizeLegacyMaintenanceIssueRows(rawRows,actorUserId,null) };
     },
     async createSupervisorMaintenanceIssue(input) {
       let uploaded:Array<{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}>=[];
@@ -1362,11 +1419,18 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       try{
         if(issueId)uploaded=await uploadMaintenanceIssuePhotos(issueId,"issue",photos);
         const payload={...input.payload,...(issueId?{issue_id:issueId}:{}),...(input.idempotencyKey?{idempotency_key:input.idempotencyKey}:{}),...(uploaded.length?{before_photos:uploaded}:{})};
-        const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded.length?"create_supervisor_maintenance_issue_with_photo":"create_supervisor_maintenance_issue", {
+        const phase1=input.contract!=="legacy";
+        const functionName=uploaded.length
+          ? phase1?"create_supervisor_maintenance_issue_with_photo_v2":"create_supervisor_maintenance_issue_with_photo"
+          : phase1?"create_supervisor_maintenance_issue_v2":"create_supervisor_maintenance_issue";
+        const rawRows=await rpc(functionName, {
           actor_user_id: input.actorUserId,
           target_branch_id: input.branchId,
           payload,
-        }),input.actorUserId,null);
+        });
+        const rows=phase1
+          ? await normalizeMaintenanceIssueRows(rawRows,input.actorUserId,null)
+          : await normalizeLegacyMaintenanceIssueRows(rawRows,input.actorUserId,null);
         if (rows.length !== 1) throw new AdminOperationError();
         const created=issueId?rows[0].id===issueId:true;
         if(uploaded.length&&!created)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path)).catch(()=>undefined);
@@ -1383,11 +1447,18 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       try{
         if(issueId)uploaded=await uploadMaintenanceIssuePhotos(issueId,"issue",photos);
         const payload={...input.payload,...(issueId?{issue_id:issueId}:{}),...(input.idempotencyKey?{idempotency_key:input.idempotencyKey}:{}),...(uploaded.length?{before_photos:uploaded}:{})};
-        const rows = await normalizeMaintenanceIssueRows(await rpc(uploaded.length?"create_manager_office_maintenance_issue_with_photo":"create_manager_office_maintenance_issue", {
+        const phase1=input.contract!=="legacy";
+        const functionName=uploaded.length
+          ? phase1?"create_manager_office_maintenance_issue_with_photo_v2":"create_manager_office_maintenance_issue_with_photo"
+          : phase1?"create_manager_office_maintenance_issue_v2":"create_manager_office_maintenance_issue";
+        const rawRows=await rpc(functionName, {
           actor_user_id: input.actorUserId,
           target_organization_id: input.organizationId,
           payload,
-        }),input.actorUserId,null);
+        });
+        const rows=phase1
+          ? await normalizeMaintenanceIssueRows(rawRows,input.actorUserId,null)
+          : await normalizeLegacyMaintenanceIssueRows(rawRows,input.actorUserId,null);
         if (rows.length !== 1) throw new AdminOperationError();
         const created=issueId?rows[0].id===issueId:true;
         if(uploaded.length&&!created)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path)).catch(()=>undefined);
@@ -1398,11 +1469,15 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       }
     },
     async listMaintenanceIssues(input) {
-      return { maintenance_issues: await normalizeMaintenanceIssueRows(await rpc("list_maintenance_issues", {
+      const phase1=input.contract!=="legacy";
+      const rawRows=await rpc(phase1?"list_maintenance_issues_v2":"list_maintenance_issues", {
         actor_user_id: input.actorUserId ?? null,
         access_user_id: input.accessUserId ?? null,
         target_organization_id: input.organizationId,
-      }),input.actorUserId,input.accessUserId) };
+      });
+      return { maintenance_issues: phase1
+        ? await normalizeMaintenanceIssueRows(rawRows,input.actorUserId,input.accessUserId)
+        : await normalizeLegacyMaintenanceIssueRows(rawRows,input.actorUserId,input.accessUserId) };
     },
     async updateMaintenanceIssue(input) {
       let uploaded:Array<{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}>=[];
@@ -1410,23 +1485,26 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       try{
         if(repairPhotos.length)uploaded=await uploadMaintenanceIssuePhotos(input.issueId,"repair",repairPhotos);
         const functionName=uploaded.length?"update_maintenance_issue_with_repair_photo":"update_maintenance_issue";
-        const legacyInput={
+        const commonInput={
           actor_user_id: input.actorUserId ?? null,
           access_user_id: input.accessUserId ?? null,
           target_issue_id: input.issueId,
           new_status: input.status,
           new_note: input.note ?? null,
           ...(uploaded.length?{repair_photo:uploaded}:{}),
+          new_responsible_person_name:input.responsiblePersonName??null,
         };
-        const hasResponsible=typeof input.responsiblePersonName==="string"&&input.responsiblePersonName.trim().length>0;
-        let rawRows:unknown[];
-        try{
-          rawRows=await rpc(functionName,{...legacyInput,new_responsible_person_name:input.responsiblePersonName??null});
-        }catch(error){
-          if(!(error instanceof RpcSignatureMissingError)||hasResponsible)throw error;
-          rawRows=await rpc(functionName,legacyInput);
-        }
-        const rows = await normalizeMaintenanceIssueRows(rawRows,input.actorUserId,input.accessUserId);
+        const rpcInput=input.contract==="phase1"?{
+          ...commonInput,
+          expected_revision:input.expectedRevision,
+          new_planned_repair_date:input.plannedRepairDate??null,
+          planned_repair_change_reason:input.plannedRepairChangeReason??null,
+        }:commonInput;
+        const rawRows=await rpc(functionName,rpcInput);
+        // The DB intentionally retains legacy overloads during rollout; they return the pre-Phase-1 row shape.
+        const rows = input.contract==="phase1"
+          ? await normalizeMaintenanceIssueRows(rawRows,input.actorUserId,input.accessUserId)
+          : await normalizeLegacyMaintenanceIssueRows(rawRows,input.actorUserId,input.accessUserId);
         if (rows.length !== 1) throw new AdminOperationError();
         return { maintenance_issue: rows[0] };
       }catch(error){
@@ -1440,16 +1518,18 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       const receipts=input.receipts?.filter((receipt)=>receipt.bytes.length>0)??[];
       if(receipts.length>MAX_MAINTENANCE_PURCHASE_PHOTOS)throw new AdminOperationError();
       const purchaseId=randomUUID();
+      const requestHash=input.idempotencyKey?maintenancePurchaseRequestHash({issueId:input.issueId,payload:input.payload,receipts}):null;
       const uploaded:Array<{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenancePurchaseReceiptMime>;size_bytes:number;position:number}>=[];
       let uploadCompleted=false;
       let uploadErrorLogged=false;
       try{
         emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"receipt_upload",status:"start"});
+        const purchaseScope=receipts.length>0?z.array(z.object({organization_id:uuid}).strict()).length(1).parse(await rpc("resolve_maintenance_purchase_scope",{actor_user_id:input.actorUserId,target_issue_id:input.issueId??null}))[0]:null;
         for(const [index,receipt]of receipts.entries()){
-          const inspected=inspectPurchaseInvoice(receipt.bytes,receipt.mimeType);
+          const inspected=inspectMaintenancePurchaseReceipt(receipt.bytes,receipt.mimeType);
           const originalName=safeOriginalFileName(receipt.originalName,`receipt-${index+1}.${inspected.extension}`);
           const storageName=`${randomUUID()}-${safeFileName(receipt.originalName,inspected.extension,`receipt-${index+1}`)}`;
-          const path=`maintenance/${input.issueId??"standalone"}/purchases/${purchaseId}/${storageName}`;
+          const path=`maintenance/${purchaseScope?.organization_id}/purchases/${purchaseId}/${storageName}`;
           const upload=await maintenanceReceiptStorage.upload(path,receipt.bytes,{contentType:inspected.mime,upsert:false,metadata:{byteSize:String(receipt.bytes.length),mimeType:inspected.mime,originalName}});
           if(upload.error){uploadErrorLogged=true;emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"receipt_upload",status:"error",errorClass:"StorageUploadError",errorCode:"statusCode"in upload.error?String(upload.error.statusCode):null});throw new AdminOperationError();}
           uploaded.push({id:randomUUID(),storage_path:path,original_filename:originalName,mime_type:inspected.mime,size_bytes:receipt.bytes.length,position:index+1});
@@ -1461,7 +1541,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         let rpcErrorLogged=false;
         let rawRows:unknown[];
         try{
-          rawRows=await rpc("create_maintenance_purchase_log",{actor_user_id:input.actorUserId,target_issue_id:input.issueId??null,payload:{...input.payload,purchase_id:purchaseId,receipt_storage_path:first?.storage_path??null,receipt_original_name:first?.original_filename??null,attachments:uploaded}},{onError:(error)=>{rpcErrorLogged=true;emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_create",status:"error",errorClass:"PostgrestError",errorCode:error.code??null});}});
+          rawRows=await rpc("create_maintenance_purchase_log_v2",{actor_user_id:input.actorUserId,target_issue_id:input.issueId??null,payload:{...input.payload,purchase_id:purchaseId,idempotency_key:input.idempotencyKey??null,request_hash:requestHash,receipt_storage_path:first?.storage_path??null,receipt_original_name:first?.original_filename??null,attachments:uploaded}},{onError:(error)=>{rpcErrorLogged=true;emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_create",status:"error",errorClass:"PostgrestError",errorCode:error.code??null});}});
           emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_create",status:"ok"});
         }catch(error){
           if(!rpcErrorLogged)emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_create",status:"error",errorClass:maintenancePurchaseErrorClass(error)});
@@ -1476,61 +1556,28 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
           emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_parse",status:"error",errorClass:maintenancePurchaseErrorClass(error)});
           throw error;
         }
-        return{maintenance_purchase:rows[0]};
+        const created=rows[0]?.id===purchaseId;
+        if(uploaded.length&&!created)await maintenanceReceiptStorage.remove(uploaded.map((item)=>item.storage_path)).catch(()=>undefined);
+        return{maintenance_purchase:rows[0],created};
       }catch(error){
         if(!uploadCompleted&&!uploadErrorLogged)emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"receipt_upload",status:"error",errorClass:maintenancePurchaseErrorClass(error)});
         if(uploaded.length>0)await maintenanceReceiptStorage.remove(uploaded.map((item)=>item.storage_path));
         throw error;
       }
     },
-    async reimburseMaintenancePurchase(input){const rows=await normalizeMaintenancePurchaseMutations(await rpc("reimburse_maintenance_purchase_log",{actor_user_id:input.actorUserId,target_purchase_id:input.purchaseId,new_note:input.reimbursementNote??null}));return{maintenance_purchase:rows[0]};},
+    async reimburseMaintenancePurchase(input){const rows=await normalizeMaintenancePurchaseMutations(await rpc("reimburse_maintenance_purchase_log_v2",{actor_user_id:input.actorUserId,target_purchase_id:input.purchaseId,new_note:input.reimbursementNote??null}));return{maintenance_purchase:rows[0]};},
     async listMaintenancePurchaseHistory(input){return{maintenance_purchases:await normalizeManagedMaintenancePurchases(await rpc("list_maintenance_purchase_history",{actor_user_id:input.actorUserId,purchase_type_filter:input.purchaseType}))};},
+    async listMaintenancePurchaseHistoryPage(input){return normalizeMaintenancePurchaseHistoryPage(await rpcObject("get_maintenance_purchase_history_page",{actor_user_id:input.actorUserId,purchase_type_filter:input.purchaseType,requested_page:input.page,requested_page_size:input.pageSize}));},
     async getSupervisorDailyAuditCurrentState(input){return dailyAuditCurrent.parse(await rpcObject("get_supervisor_daily_audit_current_state",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate}));},
     async saveSupervisorDailyAuditDraft(input){return dailyAuditCurrent.parse(await rpcObject("save_supervisor_daily_audit_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,auditor_kind:input.auditorKind,auditor_id:input.auditorId,auditor_name_snapshot:input.auditorDisplayName,access_credential_version:input.accessCredentialVersion,items:input.items}));},
     async submitSupervisorDailyAudit(input){return dailyAuditCurrent.parse(await rpcObject("submit_supervisor_daily_audit",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,auditor_kind:input.auditorKind,auditor_id:input.auditorId,auditor_name_snapshot:input.auditorDisplayName,access_credential_version:input.accessCredentialVersion,items:input.items,idempotency_key:input.idempotencyKey??null}));},
     async listManagedMaintenancePurchases(input){return{maintenance_purchases:await normalizeManagedMaintenancePurchases(await rpc("list_managed_maintenance_purchases",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,branch_filter:input.branchId??null,issue_status_filter:input.issueStatus??null,payment_status_filter:input.paymentStatus??null,vendor_filter:input.vendor??null,date_from_filter:input.dateFrom??null,date_to_filter:input.dateTo??null,purchase_type_filter:input.purchaseType??null}))};},
     async createManagedMaintenancePurchaseReceiptReadUrl(input){
-      const purchaseResult=await client.from("maintenance_purchase_logs")
-        .select("organization_id,branch_id,receipt_storage_path,receipt_original_name")
-        .eq("id",input.purchaseId)
-        .eq("organization_id",input.organizationId)
-        .maybeSingle();
-      if(purchaseResult.error)throw new AdminOperationError();
-      const purchase=purchaseResult.data?managedMaintenancePurchaseReceiptRow.parse(purchaseResult.data):null;
-      if(!purchase)throw new OperationalAttachmentNotFoundError();
-      if(purchase.branch_id){
-        const branchResult=await client.from("branches").select("id").eq("id",purchase.branch_id).eq("organization_id",input.organizationId).maybeSingle();
-        if(branchResult.error)throw new AdminOperationError();
-        if(!branchResult.data)throw new OperationalAccessError();
-      }
-      if(input.attachmentId){
-        const attachmentResult=await client.from("maintenance_purchase_attachments")
-          .select("storage_path,original_filename")
-          .eq("id",input.attachmentId)
-          .eq("purchase_id",input.purchaseId)
-          .eq("organization_id",input.organizationId)
-          .maybeSingle();
-        if(attachmentResult.error)throw new AdminOperationError();
-        const attachment=attachmentResult.data?managedMaintenancePurchaseAttachmentReadRow.parse(attachmentResult.data):null;
-        if(!attachment?.storage_path)throw new OperationalAttachmentNotFoundError();
-        const signedUrl=await signMaintenanceReceipt(attachment.storage_path);
-        if(!signedUrl)throw new AdminOperationError();
-        return{signed_url:signedUrl,expires_in:PURCHASE_INVOICE_SIGNED_URL_SECONDS,original_name:attachment.original_filename};
-      }
-      const primaryAttachmentResult=await client.from("maintenance_purchase_attachments")
-        .select("storage_path,original_filename")
-        .eq("purchase_id",input.purchaseId)
-        .eq("organization_id",input.organizationId)
-        .order("position",{ascending:true})
-        .limit(1)
-        .maybeSingle();
-      if(primaryAttachmentResult.error)throw new AdminOperationError();
-      const primaryAttachment=primaryAttachmentResult.data?managedMaintenancePurchaseAttachmentReadRow.parse(primaryAttachmentResult.data):null;
-      const path=primaryAttachment?.storage_path??purchase.receipt_storage_path;
-      if(!path)throw new OperationalAttachmentNotFoundError();
-      const signedUrl=await signMaintenanceReceipt(path);
+      const metadata=z.array(managedMaintenancePurchaseAttachmentReadRow).max(1).parse(await rpc("get_managed_maintenance_purchase_receipt_metadata",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,target_purchase_id:input.purchaseId,target_attachment_id:input.attachmentId??null}))[0];
+      if(!metadata?.storage_path)throw new OperationalAttachmentNotFoundError();
+      const signedUrl=await signMaintenanceReceipt(metadata.storage_path);
       if(!signedUrl)throw new AdminOperationError();
-      return{signed_url:signedUrl,expires_in:PURCHASE_INVOICE_SIGNED_URL_SECONDS,original_name:primaryAttachment?.original_filename??purchase.receipt_original_name};
+      return{signed_url:signedUrl,expires_in:PURCHASE_INVOICE_SIGNED_URL_SECONDS,original_name:metadata.original_filename};
     },
     async getManagedOperationsSummary(input) {
       await applyDueScheduledTeamMoves({ organizationId: input.organizationId });
@@ -1653,11 +1700,15 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       })) };
     },
     async listManagedMaintenanceIssues(input) {
-      return { maintenance_issues: await normalizeManagedMaintenanceIssueRows(await rpc("list_managed_maintenance_issues", {
+      const phase1=input.contract!=="legacy";
+      const rawRows=await rpc(phase1?"list_managed_maintenance_issues_v2":"list_managed_maintenance_issues", {
         actor_user_id: input.actorUserId, target_organization_id: input.organizationId, branch_filter: input.branchId ?? null,
         status_filter: input.status ?? null, priority_filter: input.priority ?? null, category_filter: input.category ?? null,
         date_from_filter: input.dateFrom ?? null, date_to_filter: input.dateTo ?? null,
-      }),input.actorUserId) };
+      });
+      return { maintenance_issues: phase1
+        ? await normalizeManagedMaintenanceIssueRows(rawRows,input.actorUserId)
+        : await normalizeManagedLegacyMaintenanceIssueRows(rawRows,input.actorUserId) };
     },
     async listManagedTeams(actorUserId, organizationId) {
       await applyDueScheduledTeamMoves({ organizationId });

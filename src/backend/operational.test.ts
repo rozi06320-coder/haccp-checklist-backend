@@ -66,6 +66,23 @@ const contexts: Record<string, UserContext> = {
 };
 
 function dependencies(calls: Array<Record<string, unknown>>): BackendDependencies {
+  const maintenanceIssueKeys=new Set<string>();
+  const maintenancePurchaseKeys=new Set<string>();
+  const maintenanceReimbursements=new Set<string>();
+  const issueForContract=(issue:Record<string,unknown>,contract:"legacy"|"phase1"|undefined)=>{
+    if(contract==="phase1")return issue;
+    const{revision,planned_repair_date,updates,...legacy}=issue;
+    void revision;
+    void planned_repair_date;
+    return{...legacy,updates:Array.isArray(updates)?updates.map((entry)=>{
+      const{update_kind,old_planned_repair_date,new_planned_repair_date,change_reason,...legacyUpdate}=entry as Record<string,unknown>;
+      void update_kind;
+      void old_planned_repair_date;
+      void new_planned_repair_date;
+      void change_reason;
+      return legacyUpdate;
+    }):updates};
+  };
   return {
     authVerifier: { async verify(token) {
       const context = contexts[token];
@@ -229,30 +246,38 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
         if (input.actorUserId !== id.supervisor) throw new Error("denied");
         return { supplier_receiving: { id: id.supplierReceiving, organization_id: id.organization, branch_id: input.branchId, supervisor_team_id: id.shift, branch_name: "Branch", supplier_id: input.payload.supplier_id ?? id.supplier, category: input.payload.category, supplier_name_en: input.payload.supplier_name_en ?? "Riyadh Supplier", supplier_name_ar: input.payload.supplier_name_ar ?? null, piv_pos: input.payload.piv_pos ?? null, quantity: Number(input.payload.quantity), unit: input.payload.unit, notes: input.payload.notes ?? null, photo_storage_path: input.photo ? `branches/${input.branchId}/supplier-receivings/${id.supplierReceiving}/photo.jpg` : null, photo_original_name: input.photo?.originalName ?? null, photo_url: input.photo ? "https://storage.example.invalid/photo" : null, created_by: input.actorUserId, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z" } };
       },
-      async listSupervisorMaintenanceIssues(actorUserId, branchId) {
-        calls.push({ method: "supervisorMaintenanceIssues", actorUserId, branchId });
+      async listSupervisorMaintenanceIssues(actorUserId, branchId, contract) {
+        calls.push({ method: "supervisorMaintenanceIssues", actorUserId, branchId, contract });
         if (actorUserId !== id.supervisor) throw new Error("denied");
         return { maintenance_issues: [] };
       },
       async createSupervisorMaintenanceIssue(input) {
         calls.push({ method: "createSupervisorMaintenanceIssue", ...input });
         if (input.actorUserId !== id.supervisor) throw new Error("denied");
-        return { maintenance_issue: { id: id.maintenanceIssue, branch_id: input.branchId, branch_name: "Branch", title: input.payload.title, category: input.payload.category, priority: input.payload.priority, status: "new", description: input.payload.description ?? null, location: input.payload.location ?? null, reported_by: input.actorUserId, reporter_name: "Supervisor", assigned_to: null, responsible_person_name: input.payload.responsible_person_name ?? null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", updates: [] } };
+        const replay=Boolean(input.idempotencyKey&&maintenanceIssueKeys.has(`branch:${input.branchId}:${input.idempotencyKey}`));
+        if(input.idempotencyKey)maintenanceIssueKeys.add(`branch:${input.branchId}:${input.idempotencyKey}`);
+        return { maintenance_issue: issueForContract({ id: id.maintenanceIssue, branch_id: input.branchId, branch_name: "Branch", title: input.payload.title, category: input.payload.category, priority: input.payload.priority, status: "new", description: input.payload.description ?? null, location: input.payload.location ?? null, reported_by: input.actorUserId, reporter_name: "Supervisor", assigned_to: null, responsible_person_name: input.payload.responsible_person_name ?? null, revision: 0, planned_repair_date: null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", updates: [] },input.contract), created: !replay };
       },
       async createManagerOfficeMaintenanceIssue(input) {
         calls.push({ method: "createManagerOfficeMaintenanceIssue", ...input });
         if (input.actorUserId !== id.manager) throw new OperationalAccessError();
-        return { maintenance_issue: { id: id.maintenanceIssue, branch_id: null, branch_name: "Office", title: input.payload.title, category: input.payload.category, priority: input.payload.priority, status: "new", description: input.payload.description ?? null, location: input.payload.location ?? null, reported_by: input.actorUserId, reporter_name: "Manager", assigned_to: null, responsible_person_name: input.payload.responsible_person_name ?? null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", updates: [] } };
+        const replay=Boolean(input.idempotencyKey&&maintenanceIssueKeys.has(`office:${input.organizationId}:${input.idempotencyKey}`));
+        if(input.idempotencyKey)maintenanceIssueKeys.add(`office:${input.organizationId}:${input.idempotencyKey}`);
+        return { maintenance_issue: issueForContract({ id: id.maintenanceIssue, branch_id: null, branch_name: "Office", title: input.payload.title, category: input.payload.category, priority: input.payload.priority, status: "new", description: input.payload.description ?? null, location: input.payload.location ?? null, reported_by: input.actorUserId, reporter_name: "Manager", assigned_to: null, responsible_person_name: input.payload.responsible_person_name ?? null, revision: 0, planned_repair_date: null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", updates: [] },input.contract), created: !replay };
       },
       async listMaintenanceIssues(input) {
         calls.push({ method: "maintenanceIssues", ...input });
         if (input.actorUserId !== id.staffAccount && input.accessUserId !== id.maintenanceAccessUser) throw new Error("denied");
-        return { maintenance_issues: [{ id: id.maintenanceIssue, branch_id: id.branch, branch_name: "Branch", title: "Freezer door", category: "refrigeration", priority: "urgent", status: "new", description: "Door is loose", location: "Kitchen", reported_by: id.supervisor, reporter_name: "Supervisor", assigned_to: null, responsible_person_name: "Ahmed", created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", updates: [{ id: id.maintenanceUpdate, status: "new", note: "Issue reported.", updated_by: id.supervisor, updated_by_access_user_id: null, updated_by_name: "Supervisor", created_at: "2026-08-09T00:00:00.000Z" }] }] };
+        return { maintenance_issues: [issueForContract({ id: id.maintenanceIssue, branch_id: id.branch, branch_name: "Branch", title: "Freezer door", category: "refrigeration", priority: "urgent", status: "new", description: "Door is loose", location: "Kitchen", reported_by: id.supervisor, reporter_name: "Supervisor", assigned_to: null, responsible_person_name: "Ahmed", revision: 0, planned_repair_date: null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", updates: [{ id: id.maintenanceUpdate, status: "new", note: "Issue reported.", updated_by: id.supervisor, updated_by_access_user_id: null, updated_by_name: "Supervisor", created_at: "2026-08-09T00:00:00.000Z" }] },input.contract) ] };
       },
       async updateMaintenanceIssue(input) {
         calls.push({ method: "updateMaintenanceIssue", ...input });
         if (input.actorUserId !== id.staffAccount && input.accessUserId !== id.maintenanceAccessUser) throw new Error("denied");
-        return { maintenance_issue: { id: input.issueId, branch_id: id.branch, branch_name: "Branch", title: "Freezer door", category: "refrigeration", priority: "urgent", status: input.status, description: "Door is loose", location: "Kitchen", reported_by: id.supervisor, reporter_name: "Supervisor", assigned_to: null, responsible_person_name: input.responsiblePersonName ?? "Ahmed", created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T01:00:00.000Z", updates: [{ id: id.maintenanceUpdate, status: input.status, note: input.note ?? null, updated_by: input.actorUserId ?? null, updated_by_access_user_id: input.accessUserId ?? null, updated_by_name: "Maintenance", created_at: "2026-08-09T01:00:00.000Z" }] } };
+        if (input.contract === "phase1" && input.expectedRevision === 99) throw new OperationalConflictError();
+        const maintenance_issue = { id: input.issueId, branch_id: id.branch, branch_name: "Branch", title: "Freezer door", category: "refrigeration", priority: "urgent", status: input.status, description: "Door is loose", location: "Kitchen", reported_by: id.supervisor, reporter_name: "Supervisor", assigned_to: null, responsible_person_name: input.responsiblePersonName ?? "Ahmed", created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T01:00:00.000Z", updates: [{ id: id.maintenanceUpdate, status: input.status, note: input.note ?? null, updated_by: input.actorUserId ?? null, updated_by_access_user_id: input.accessUserId ?? null, updated_by_name: "Maintenance", created_at: "2026-08-09T01:00:00.000Z" }] };
+        return input.contract === "phase1"
+          ? { maintenance_issue: { ...maintenance_issue, revision: input.expectedRevision + 1, planned_repair_date: input.plannedRepairDate ?? null } }
+          : { maintenance_issue };
       },
       async listMaintenancePurchases(actorUserId, issueId) {
         calls.push({ method: "maintenanceIssuePurchases", actorUserId, issueId });
@@ -267,11 +292,15 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
         calls.push({ method: "createMaintenancePurchase", hasReceipts: Boolean(input.receipts?.length), ...input });
         if (input.actorUserId !== id.staffAccount || (input.issueId !== id.maintenanceIssue && input.issueId !== null && input.issueId !== undefined)) throw new Error("denied");
         const scope = input.issueId ? "branch" : input.payload.purchase_scope ?? "branch";
-        return { maintenance_purchase: { id: id.purchaseLog, branch_id: scope === "branch" ? input.payload.branch_id ?? id.branch : null, purchase_type: input.issueId ? "issue" : "general", purchase_scope: scope, destination: scope === "office" ? "Office" : scope === "other" ? input.payload.destination ?? "CEO House" : null, category: input.payload.category, item_name: input.payload.item_name, quantity: Number(input.payload.quantity), unit: input.payload.unit, amount: Number(input.payload.amount), vendor_name: input.payload.vendor_name || "N/A", purchase_date: input.payload.purchase_date, notes: input.payload.notes ?? null, payment_status: "unpaid", payment_method: input.payload.payment_method ?? null, reimbursement_note: null, reimbursed_at: null, receipt_original_name: "receipt.pdf", receipt_url: "https://storage.example.invalid/signed-maintenance-receipt", attachments: [{ id: "a1000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 1200, position: 1, url: "https://storage.example.invalid/signed-maintenance-receipt" }], created_at: "2026-08-12T10:00:00.000Z", updated_at: "2026-08-12T10:00:00.000Z" } };
+        const replay=Boolean(input.idempotencyKey&&maintenancePurchaseKeys.has(`${input.issueId??"general"}:${input.idempotencyKey}`));
+        if(input.idempotencyKey)maintenancePurchaseKeys.add(`${input.issueId??"general"}:${input.idempotencyKey}`);
+        return { maintenance_purchase: { id: id.purchaseLog, branch_id: scope === "branch" ? input.payload.branch_id ?? id.branch : null, purchase_type: input.issueId ? "issue" : "general", purchase_scope: scope, destination: scope === "office" ? "Office" : scope === "other" ? input.payload.destination ?? "CEO House" : null, category: input.payload.category, item_name: input.payload.item_name, quantity: Number(input.payload.quantity), unit: input.payload.unit, amount: Number(input.payload.amount), vendor_name: input.payload.vendor_name || "N/A", purchase_date: input.payload.purchase_date, notes: input.payload.notes ?? null, payment_status: "unpaid", payment_method: input.payload.payment_method ?? null, reimbursement_note: null, reimbursed_at: null, receipt_original_name: "receipt.pdf", receipt_url: "https://storage.example.invalid/signed-maintenance-receipt", attachments: [{ id: "a1000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 1200, position: 1, url: "https://storage.example.invalid/signed-maintenance-receipt" }], created_at: "2026-08-12T10:00:00.000Z", updated_at: "2026-08-12T10:00:00.000Z" }, created: !replay };
       },
       async reimburseMaintenancePurchase(input) {
         calls.push({ method: "reimburseMaintenancePurchase", ...input });
         if (input.actorUserId !== id.staffAccount || input.purchaseId !== id.purchaseLog) throw new Error("denied");
+        if(maintenanceReimbursements.has(input.purchaseId))throw new OperationalConflictError();
+        maintenanceReimbursements.add(input.purchaseId);
         return { maintenance_purchase: { id: id.purchaseLog, branch_id: id.branch, purchase_type: "issue", purchase_scope: "branch", destination: null, category: "spare_parts", item_name: "Replacement seal", quantity: 2, unit: "meter", amount: 35.5, vendor_name: "Parts Shop", purchase_date: "2026-08-12", notes: "Urgent", payment_status: "reimbursed", payment_method: null, reimbursement_note: input.reimbursementNote ?? null, reimbursed_at: "2026-08-12T12:00:00.000Z", receipt_original_name: "receipt.pdf", receipt_url: "https://storage.example.invalid/signed-maintenance-receipt", attachments: [{ id: "a1000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 1200, position: 1, url: "https://storage.example.invalid/signed-maintenance-receipt" }], created_at: "2026-08-12T10:00:00.000Z", updated_at: "2026-08-12T12:00:00.000Z" } };
       },
       async listMaintenancePurchaseHistory(input) {
@@ -308,6 +337,25 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
           updated_at: "2026-08-12T10:00:00.000Z",
         }] };
       },
+      async listMaintenancePurchaseHistoryPage(input) {
+        calls.push({ method: "maintenancePurchaseHistoryPage", ...input });
+        if (input.actorUserId !== id.staffAccount) throw new OperationalAccessError();
+        return { maintenance_purchases: [{
+          id: id.purchaseLog, organization_id: id.organization, branch_id: id.branch, branch_name: "Branch", maintenance_issue_id: id.maintenanceIssue,
+          purchase_type: "issue", issue_title: "Freezer door", issue_category: "refrigeration", issue_status: "new", responsible_person_name: "Ahmed",
+          purchase_scope: "branch", destination: null, category: "spare_parts", maintenance_user_name: "Maintenance",
+          item_name: "Replacement seal", quantity: 2, unit: "meter", amount: 35.5, vendor_name: "Parts Shop", purchase_date: "2026-08-12", notes: "Urgent",
+          payment_status: "unpaid", payment_method: "cash", reimbursement_note: null, reimbursed_at: null, reimbursed_by: null,
+          receipt_original_name: "receipt.pdf", receipt_url: "https://storage.example.invalid/signed-maintenance-receipt",
+          attachments: [{ id: "a1000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 1200, position: 1, url: "https://storage.example.invalid/signed-maintenance-receipt" }],
+          created_at: "2026-08-12T10:00:00.000Z", updated_at: "2026-08-12T10:00:00.000Z",
+        }], page: input.page, page_size: input.pageSize, total_count: 2, has_more: input.page === 1 };
+      },
+      async createManagedMaintenancePurchaseReceiptReadUrl(input) {
+        calls.push({ method: "managedMaintenanceReceiptReadUrl", ...input });
+        if (input.actorUserId !== id.manager || input.organizationId !== id.organization || input.purchaseId !== id.purchaseLog) throw new OperationalAccessError();
+        return { signed_url: "https://storage.example.invalid/signed-maintenance-receipt", expires_in: 300, original_name: "receipt.pdf" };
+      },
       async listManagedStaff(input) {
         calls.push({ method: "list", ...input });
         if (input.actorUserId !== id.manager || input.organizationId !== id.organization) throw new Error("denied");
@@ -336,7 +384,7 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
       async listManagedMaintenanceIssues(input) {
         calls.push({ method: "managedMaintenanceIssues", ...input });
         if (input.actorUserId !== id.manager || input.organizationId !== id.organization) throw new Error("denied");
-        return { maintenance_issues: [{ id: id.maintenanceIssue, branch_id: id.branch, branch_name: "Branch", title: "Freezer door", category: "refrigeration", priority: "urgent", status: "in_progress", description: null, location: "Kitchen", reported_by: id.supervisor, reporter_name: "Supervisor", created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T01:00:00.000Z", updates: [{ id: "90000000-0000-4000-8000-000000000081", status: "in_progress", note: "Started repair", updated_by: null, updated_by_access_user_id: null, updated_by_name: null, created_at: "2026-08-09T01:00:00.000Z" }] }] };
+        return { maintenance_issues: [issueForContract({ id: id.maintenanceIssue, branch_id: id.branch, branch_name: "Branch", title: "Freezer door", category: "refrigeration", priority: "urgent", status: "in_progress", description: null, location: "Kitchen", reported_by: id.supervisor, reporter_name: "Supervisor", revision: 1, planned_repair_date: null, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T01:00:00.000Z", updates: [{ id: "90000000-0000-4000-8000-000000000081", status: "in_progress", note: "Started repair", updated_by: null, updated_by_access_user_id: null, updated_by_name: null, created_at: "2026-08-09T01:00:00.000Z" }] },input.contract) ] };
       },
       async listManagedTeams(actorUserId, organizationId) {
         calls.push({ method: "teams", actorUserId, organizationId });
@@ -354,6 +402,35 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
 }
 
 describe("managed maintenance operational adapter", () => {
+  it("uses retained legacy list RPCs only for unversioned Maintenance readers",async()=>{
+    const paths:string[]=[];
+    const rpc=createServer((request,response)=>{
+      paths.push(request.url??"");
+      response.setHeader("content-type","application/json");
+      response.end(JSON.stringify([]));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address() as AddressInfo).port}`,"service-key");
+      await admin.listMaintenanceIssues({actorUserId:id.staffAccount,contract:"legacy"});
+      await admin.listMaintenanceIssues({actorUserId:id.staffAccount,contract:"phase1"});
+      await admin.listSupervisorMaintenanceIssues(id.supervisor,id.branch,"legacy");
+      await admin.listSupervisorMaintenanceIssues(id.supervisor,id.branch,"phase1");
+      await admin.listManagedMaintenanceIssues?.({actorUserId:id.manager,organizationId:id.organization,contract:"legacy"});
+      await admin.listManagedMaintenanceIssues?.({actorUserId:id.manager,organizationId:id.organization,contract:"phase1"});
+      assert.deepEqual(paths,[
+        "/rest/v1/rpc/list_maintenance_issues",
+        "/rest/v1/rpc/list_maintenance_issues_v2",
+        "/rest/v1/rpc/list_supervisor_maintenance_issues",
+        "/rest/v1/rpc/list_supervisor_maintenance_issues_v2",
+        "/rest/v1/rpc/list_managed_maintenance_issues",
+        "/rest/v1/rpc/list_managed_maintenance_issues_v2",
+      ]);
+    }finally{
+      await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));
+    }
+  });
+
   it("accepts the Manager RPC row shape without a maintenance-only assignee", async () => {
     const rpc = createServer((request, response) => {
       response.setHeader("content-type", "application/json");
@@ -361,12 +438,12 @@ describe("managed maintenance operational adapter", () => {
         response.end(JSON.stringify([]));
         return;
       }
-      assert.equal(request.url, "/rest/v1/rpc/list_managed_maintenance_issues");
+      assert.equal(request.url, "/rest/v1/rpc/list_managed_maintenance_issues_v2");
       response.end(JSON.stringify([{
         id: id.maintenanceIssue, organization_id: id.organization, branch_id: id.branch, branch_name: "Branch", title: "Freezer door",
         category: "refrigeration", priority: "urgent", status: "in_progress", description: null, location: null,
-        reported_by: id.supervisor, reporter_name: null, created_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T01:00:00.000Z",
-        updates: [{ id: id.maintenanceUpdate, status: "in_progress", note: null, updated_by: null, updated_by_access_user_id: null, updated_by_name: null, created_at: "2026-08-10T01:00:00.000Z" }],
+        reported_by: id.supervisor, reporter_name: null, revision: 0, planned_repair_date: null, created_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T01:00:00.000Z",
+        updates: [{ id: id.maintenanceUpdate, status: "in_progress", note: null, updated_by: null, updated_by_access_user_id: null, updated_by_name: null, update_kind: "status_update", old_planned_repair_date: null, new_planned_repair_date: null, change_reason: null, created_at: "2026-08-10T01:00:00.000Z" }],
       }]));
     });
     await new Promise<void>((resolve) => rpc.listen(0, "127.0.0.1", resolve));
@@ -376,16 +453,16 @@ describe("managed maintenance operational adapter", () => {
       const result = await admin.listManagedMaintenanceIssues?.({ actorUserId: id.manager, organizationId: id.organization });
       assert.deepEqual(result, { maintenance_issues: [{
         id: id.maintenanceIssue, branch_id: id.branch, branch_name: "Branch", title: "Freezer door", category: "refrigeration", priority: "urgent", status: "in_progress",
-        description: null, location: null, reported_by: id.supervisor, reporter_name: null, responsible_person_name: null, created_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T01:00:00.000Z",
+        description: null, location: null, reported_by: id.supervisor, reporter_name: null, responsible_person_name: null, revision: 0, planned_repair_date: null, created_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T01:00:00.000Z",
         before_photo: null, after_photo: null, before_photos: [], after_photos: [],
-        updates: [{ id: id.maintenanceUpdate, status: "in_progress", note: null, updated_by: null, updated_by_access_user_id: null, updated_by_name: null, created_at: "2026-08-10T01:00:00.000Z" }],
+        updates: [{ id: id.maintenanceUpdate, status: "in_progress", note: null, updated_by: null, updated_by_access_user_id: null, updated_by_name: null, update_kind: "status_update", old_planned_repair_date: null, new_planned_repair_date: null, change_reason: null, created_at: "2026-08-10T01:00:00.000Z" }],
       }] });
     } finally {
       await new Promise<void>((resolve, reject) => rpc.close((error) => error ? reject(error) : resolve()));
     }
   });
 
-  it("falls back to the legacy Maintenance issue update RPC before the responsible-person migration when no responsible person is present", async () => {
+  it("uses the canonical revision-aware Maintenance issue update RPC without a legacy fallback", async () => {
     const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
     const rpc = createServer(async (request, response) => {
       let raw = "";
@@ -398,27 +475,51 @@ describe("managed maintenance operational adapter", () => {
       const body = JSON.parse(raw) as Record<string, unknown>;
       requests.push({ path: request.url ?? "", body });
       response.setHeader("content-type", "application/json");
-      if ("new_responsible_person_name" in body) {
-        response.statusCode = 404;
-        response.end(JSON.stringify({ code: "PGRST202", message: "Could not find the function public.update_maintenance_issue in the schema cache" }));
-        return;
-      }
       response.end(JSON.stringify([{
         id: id.maintenanceIssue, organization_id: id.organization, branch_id: id.branch, branch_name: "Branch", title: "Freezer door",
         category: "refrigeration", priority: "urgent", status: "in_progress", description: null, location: null,
-        reported_by: id.supervisor, reporter_name: null, assigned_to: null, created_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T01:00:00.000Z",
+        reported_by: id.supervisor, reporter_name: null, assigned_to: null, revision: 3, planned_repair_date: "2026-08-15", created_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T01:00:00.000Z",
         updates: [{ id: id.maintenanceUpdate, status: "in_progress", note: "Started", updated_by: id.staffAccount, updated_by_access_user_id: null, updated_by_name: "Maintenance", created_at: "2026-08-10T01:00:00.000Z" }],
       }]));
     });
     await new Promise<void>((resolve) => rpc.listen(0, "127.0.0.1", resolve));
     try {
       const admin = createOperationalAdmin(`http://127.0.0.1:${(rpc.address() as AddressInfo).port}`, "service-key");
-      const result = await admin.updateMaintenanceIssue({ actorUserId: id.staffAccount, issueId: id.maintenanceIssue, status: "in_progress", note: "Started", responsiblePersonName: null });
+      const result = await admin.updateMaintenanceIssue({ contract: "phase1", actorUserId: id.staffAccount, issueId: id.maintenanceIssue, status: "in_progress", note: "Started", responsiblePersonName: null, expectedRevision: 2, plannedRepairDate: "2026-08-15", plannedRepairChangeReason: null });
       assert.equal((result as { maintenance_issue: { responsible_person_name: string | null } }).maintenance_issue.responsible_person_name, null);
-      assert.deepEqual(requests.map((request) => request.body), [
-        { actor_user_id: id.staffAccount, access_user_id: null, target_issue_id: id.maintenanceIssue, new_status: "in_progress", new_note: "Started", new_responsible_person_name: null },
-        { actor_user_id: id.staffAccount, access_user_id: null, target_issue_id: id.maintenanceIssue, new_status: "in_progress", new_note: "Started" },
-      ]);
+      assert.deepEqual(requests.map((request) => request.body), [{ actor_user_id: id.staffAccount, access_user_id: null, target_issue_id: id.maintenanceIssue, new_status: "in_progress", new_note: "Started", new_responsible_person_name: null, expected_revision: 2, new_planned_repair_date: "2026-08-15", planned_repair_change_reason: null }]);
+    } finally {
+      await new Promise<void>((resolve, reject) => rpc.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("uses the retained legacy Maintenance issue update overload without revision arguments", async () => {
+    const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const rpc = createServer(async (request, response) => {
+      let raw = "";
+      for await (const chunk of request) raw += chunk;
+      if (request.url === "/rest/v1/rpc/list_maintenance_issue_attachments") {
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify([]));
+        return;
+      }
+      requests.push({ path: request.url ?? "", body: JSON.parse(raw) as Record<string, unknown> });
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify([{
+        id: id.maintenanceIssue, organization_id: id.organization, branch_id: id.branch, branch_name: "Branch", title: "Freezer door",
+        category: "refrigeration", priority: "urgent", status: "in_progress", description: null, location: null,
+        reported_by: id.supervisor, reporter_name: null, assigned_to: null, responsible_person_name: "Ahmed", created_at: "2026-08-10T00:00:00.000Z", updated_at: "2026-08-10T01:00:00.000Z",
+        updates: [{ id: id.maintenanceUpdate, status: "in_progress", note: "Legacy", updated_by: id.staffAccount, updated_by_access_user_id: null, updated_by_name: "Maintenance", update_kind: "status_update", old_planned_repair_date: null, new_planned_repair_date: null, change_reason: null, created_at: "2026-08-10T01:00:00.000Z" }],
+      }]));
+    });
+    await new Promise<void>((resolve) => rpc.listen(0, "127.0.0.1", resolve));
+    try {
+      const admin = createOperationalAdmin(`http://127.0.0.1:${(rpc.address() as AddressInfo).port}`, "service-key");
+      const result = await admin.updateMaintenanceIssue({ contract: "legacy", actorUserId: id.staffAccount, issueId: id.maintenanceIssue, status: "in_progress", note: "Legacy", responsiblePersonName: "Ahmed" }) as { maintenance_issue: Record<string, unknown> & { updates: Array<Record<string, unknown>> } };
+      assert.equal("revision" in result.maintenance_issue, false);
+      assert.equal("planned_repair_date" in result.maintenance_issue, false);
+      assert.equal("update_kind" in result.maintenance_issue.updates[0]!, false);
+      assert.deepEqual(requests.map((request) => request.body), [{ actor_user_id: id.staffAccount, access_user_id: null, target_issue_id: id.maintenanceIssue, new_status: "in_progress", new_note: "Legacy", new_responsible_person_name: "Ahmed" }]);
     } finally {
       await new Promise<void>((resolve, reject) => rpc.close((error) => error ? reject(error) : resolve()));
     }
@@ -438,10 +539,11 @@ describe("managed maintenance operational adapter", () => {
     try {
       const admin = createOperationalAdmin(`http://127.0.0.1:${(rpc.address() as AddressInfo).port}`, "service-key");
       await assert.rejects(
-        () => admin.updateMaintenanceIssue({ actorUserId: id.staffAccount, issueId: id.maintenanceIssue, status: "in_progress", note: "Started", responsiblePersonName: "Ahmed" }),
+        () => admin.updateMaintenanceIssue({ contract: "phase1", actorUserId: id.staffAccount, issueId: id.maintenanceIssue, status: "in_progress", note: "Started", responsiblePersonName: "Ahmed", expectedRevision: 4, plannedRepairDate: null, plannedRepairChangeReason: null }),
       );
       assert.equal(requests.length, 1);
       assert.equal(requests[0]?.new_responsible_person_name, "Ahmed");
+      assert.equal(requests[0]?.expected_revision, 4);
     } finally {
       await new Promise<void>((resolve, reject) => rpc.close((error) => error ? reject(error) : resolve()));
     }
@@ -468,12 +570,12 @@ describe("managed maintenance operational adapter", () => {
       assert.equal((created as{maintenance_purchase:{payment_status:string}}).maintenance_purchase.payment_status,"unpaid");
       const reimbursed=await admin.reimburseMaintenancePurchase?.({actorUserId:id.staffAccount,purchaseId:id.purchaseLog,reimbursementNote:"Paid"});
       assert.equal((reimbursed as{maintenance_purchase:{payment_status:string}}).maintenance_purchase.payment_status,"reimbursed");
-      assert.equal(requests[0]?.path,"/rest/v1/rpc/create_maintenance_purchase_log");
+      assert.equal(requests[0]?.path,"/rest/v1/rpc/create_maintenance_purchase_log_v2");
       assert.equal(requests[0]?.body.actor_user_id,id.staffAccount);
       assert.equal(requests[0]?.body.target_issue_id,id.maintenanceIssue);
       assert.match(String((requests[0]?.body.payload as {purchase_id:string}).purchase_id),/^[0-9a-f-]{36}$/);
-      assert.deepEqual({...(requests[0]?.body.payload as Record<string,unknown>),purchase_id:"<uuid>"},{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null,purchase_id:"<uuid>",receipt_storage_path:null,receipt_original_name:null,attachments:[]});
-      assert.deepEqual(requests[1],{path:"/rest/v1/rpc/reimburse_maintenance_purchase_log",body:{actor_user_id:id.staffAccount,target_purchase_id:id.purchaseLog,new_note:"Paid"}});
+      assert.deepEqual({...(requests[0]?.body.payload as Record<string,unknown>),purchase_id:"<uuid>"},{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null,purchase_id:"<uuid>",idempotency_key:null,request_hash:null,receipt_storage_path:null,receipt_original_name:null,attachments:[]});
+      assert.deepEqual(requests[1],{path:"/rest/v1/rpc/reimburse_maintenance_purchase_log_v2",body:{actor_user_id:id.staffAccount,target_purchase_id:id.purchaseLog,new_note:"Paid"}});
     }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
   });
 
@@ -545,7 +647,7 @@ describe("managed maintenance operational adapter", () => {
       const history=await admin.listMaintenancePurchaseHistory?.({actorUserId:id.staffAccount,purchaseType:"issue"}) as {maintenance_purchases:Array<{branch_id:string|null;branch_name:string}>};
       assert.equal(history.maintenance_purchases[0]?.branch_id,null);
       assert.equal(history.maintenance_purchases[0]?.branch_name,"Office");
-      assert.deepEqual(requests.map((request)=>request.path),["/rest/v1/rpc/create_maintenance_purchase_log","/rest/v1/rpc/list_maintenance_purchase_history"]);
+      assert.deepEqual(requests.map((request)=>request.path),["/rest/v1/rpc/create_maintenance_purchase_log_v2","/rest/v1/rpc/list_maintenance_purchase_history"]);
     }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
   });
 
@@ -872,6 +974,7 @@ describe("Phase 3A operational API", () => {
   });
   after(async () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
   const headers = (token: string) => ({ authorization: `Bearer ${token}`, "content-type": "application/json" });
+  const phase1Headers = (token: string) => ({ ...headers(token), "x-maintenance-contract": "phase1" });
 
   it("requires authentication", async () => {
     assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/team`)).status, 401);
@@ -1437,7 +1540,7 @@ describe("Phase 3A operational API", () => {
     const list = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/maintenance-issues`, { headers: headers("supervisor") });
     assert.equal(list.status, 200);
     assert.deepEqual(await list.json(), { maintenance_issues: [] });
-    assert.deepEqual(calls.at(-1), { method: "supervisorMaintenanceIssues", actorUserId: id.supervisor, branchId: id.branch });
+    assert.deepEqual(calls.at(-1), { method: "supervisorMaintenanceIssues", actorUserId: id.supervisor, branchId: id.branch, contract: "legacy" });
 
     const created = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/maintenance-issues`, {
       method: "POST", headers: headers("supervisor"),
@@ -1455,6 +1558,7 @@ describe("Phase 3A operational API", () => {
       idempotencyKey: null,
       payload: { title: "Freezer door", category: "refrigeration", priority: "urgent", description: "Door is loose", location: "Kitchen", responsible_person_name: null },
       photos: [],
+      contract: "legacy",
     });
 
     const withPhoto = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/maintenance-issues`, {
@@ -1471,6 +1575,18 @@ describe("Phase 3A operational API", () => {
     assert.equal(photoCall.photos?.[0]?.mimeType, "image/png");
     assert.equal(photoCall.photos?.[0]?.originalName, "before.png");
     assert.ok(Buffer.isBuffer(photoCall.photos?.[0]?.bytes));
+
+    const idempotencyKey="72000000-0000-4000-8000-000000000001";
+    const replayRequest=()=>fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/maintenance-issues`,{
+      method:"POST",headers:{...headers("supervisor"),"idempotency-key":idempotencyKey},
+      body:JSON.stringify({title:"Drain issue",category:"plumbing",priority:"normal"}),
+    });
+    const first=await replayRequest();
+    const replay=await replayRequest();
+    assert.equal(first.status,201,await first.clone().text());
+    assert.equal(replay.status,200,await replay.clone().text());
+    assert.equal((await first.json() as {maintenance_issue:{id:string}}).maintenance_issue.id,id.maintenanceIssue);
+    assert.equal((await replay.json() as {maintenance_issue:{id:string}}).maintenance_issue.id,id.maintenanceIssue);
   });
   it("rejects supervisor Maintenance issue auth and invalid payloads safely", async () => {
     assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/maintenance-issues`)).status, 401);
@@ -1487,20 +1603,53 @@ describe("Phase 3A operational API", () => {
       assert.equal(response.status, 400);
     }
   });
+  it("negotiates legacy and Phase 1 Maintenance list/create responses", async () => {
+    const legacyList=await fetch(`${baseUrl}/api/v1/maintenance/issues`,{headers:headers("maintenance")});
+    assert.equal(legacyList.status,200);
+    const legacyListBody=await legacyList.json() as {maintenance_issues:Array<Record<string,unknown>&{updates:Array<Record<string,unknown>>}>};
+    assert.equal("revision" in legacyListBody.maintenance_issues[0]!,false);
+    assert.equal("planned_repair_date" in legacyListBody.maintenance_issues[0]!,false);
+    assert.equal("update_kind" in legacyListBody.maintenance_issues[0]!.updates[0]!,false);
+
+    const phase1List=await fetch(`${baseUrl}/api/v1/maintenance/issues`,{headers:phase1Headers("maintenance")});
+    assert.equal(phase1List.status,200);
+    const phase1ListBody=await phase1List.json() as {maintenance_issues:Array<{revision:number;planned_repair_date:string|null;updates:Array<{update_kind:string}>}>};
+    assert.equal(phase1ListBody.maintenance_issues[0]?.revision,0);
+    assert.equal(phase1ListBody.maintenance_issues[0]?.planned_repair_date,null);
+    assert.equal(phase1ListBody.maintenance_issues[0]?.updates[0]?.update_kind,"status_update");
+    assert.equal(calls.at(-1)?.contract,"phase1");
+
+    const unknownBefore=calls.length;
+    const unknown=await fetch(`${baseUrl}/api/v1/maintenance/issues`,{headers:{...headers("maintenance"),"x-maintenance-contract":"phase2"}});
+    assert.equal(unknown.status,400);
+    assert.equal(calls.length,unknownBefore);
+
+    const created=await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/maintenance-issues`,{
+      method:"POST",headers:phase1Headers("supervisor"),
+      body:JSON.stringify({title:"Phase 1 issue",category:"equipment",priority:"normal"}),
+    });
+    assert.equal(created.status,201,await created.clone().text());
+    const createdBody=await created.json() as {maintenance_issue:{revision:number;planned_repair_date:string|null}};
+    assert.equal(createdBody.maintenance_issue.revision,0);
+    assert.equal(createdBody.maintenance_issue.planned_repair_date,null);
+    assert.equal(calls.at(-1)?.contract,"phase1");
+  });
   it("allows Maintenance users to list and update issue workflow state", async () => {
     const list = await fetch(`${baseUrl}/api/v1/maintenance/issues`, { headers: headers("maintenance") });
     assert.equal(list.status, 200);
     const listed = await list.json() as { maintenance_issues: Array<{ id: string; updates: unknown[] }> };
     assert.equal(listed.maintenance_issues[0].id, id.maintenanceIssue);
-    assert.deepEqual(calls.at(-1), { method: "maintenanceIssues", actorUserId: id.staffAccount, accessUserId: null, organizationId: null });
+    assert.deepEqual(calls.at(-1), { method: "maintenanceIssues", actorUserId: id.staffAccount, accessUserId: null, organizationId: null, contract: "legacy" });
 
     const updated = await fetch(`${baseUrl}/api/v1/maintenance/issues/${id.maintenanceIssue}`, {
-      method: "PATCH", headers: headers("maintenance"),
-      body: JSON.stringify({ status: "in_progress", note: "  Started repair  " }),
+      method: "PATCH", headers: phase1Headers("maintenance"),
+      body: JSON.stringify({ status: "in_progress", note: "  Started repair  ", expected_revision: 0, planned_repair_date: null }),
     });
     assert.equal(updated.status, 200);
-    const body = await updated.json() as { maintenance_issue: { status: string; updates: Array<{ note: string | null }> } };
+    const body = await updated.json() as { maintenance_issue: { status: string; revision: number; planned_repair_date: string | null; updates: Array<{ note: string | null }> } };
     assert.equal(body.maintenance_issue.status, "in_progress");
+    assert.equal(body.maintenance_issue.revision, 1);
+    assert.equal(body.maintenance_issue.planned_repair_date, null);
     assert.equal(body.maintenance_issue.updates[0].note, "Started repair");
     assert.deepEqual(calls.at(-1), {
       method: "updateMaintenanceIssue",
@@ -1510,22 +1659,26 @@ describe("Phase 3A operational API", () => {
       status: "in_progress",
       note: "Started repair",
       responsiblePersonName: null,
+      contract: "phase1",
+      expectedRevision: 0,
+      plannedRepairDate: null,
+      plannedRepairChangeReason: null,
       repairPhotos: [],
     });
 
     const beforeResolveCalls = calls.length;
     const resolvedWithoutPhoto = await fetch(`${baseUrl}/api/v1/maintenance/issues/${id.maintenanceIssue}`, {
-      method: "PATCH", headers: headers("maintenance"),
-      body: JSON.stringify({ status: "resolved", note: "Fixed" }),
+      method: "PATCH", headers: phase1Headers("maintenance"),
+      body: JSON.stringify({ status: "resolved", note: "Fixed", expected_revision: 1, planned_repair_date: null }),
     });
     assert.equal(resolvedWithoutPhoto.status, 422);
     assert.equal(calls.length, beforeResolveCalls);
 
     const resolvedWithPhoto = await fetch(`${baseUrl}/api/v1/maintenance/issues/${id.maintenanceIssue}`, {
       method: "PATCH",
-      headers: { ...headers("maintenance"), "content-type": "application/vnd.maintenance-issue+json" },
+      headers: { ...phase1Headers("maintenance"), "content-type": "application/vnd.maintenance-issue+json" },
       body: JSON.stringify({
-        issue: { status: "resolved", note: "Fixed" },
+        issue: { status: "resolved", note: "Fixed", expected_revision: 1, planned_repair_date: null },
         repair_photo: { original_name: "after.jpg", mime_type: "image/jpeg", content_base64: Buffer.from("jpg-bytes").toString("base64") },
       }),
     });
@@ -1536,12 +1689,89 @@ describe("Phase 3A operational API", () => {
     assert.equal(repairCall.repairPhotos?.[0]?.originalName, "after.jpg");
     assert.ok(Buffer.isBuffer(repairCall.repairPhotos?.[0]?.bytes));
   });
+  it("keeps legacy Maintenance PATCH requests on the retained legacy contract", async () => {
+    const updated = await fetch(`${baseUrl}/api/v1/maintenance/issues/${id.maintenanceIssue}`, {
+      method: "PATCH", headers: headers("maintenance"),
+      body: JSON.stringify({ status: "waiting_parts", note: "  Waiting for parts  ", responsible_person_name: "Ahmed" }),
+    });
+    assert.equal(updated.status, 200, await updated.clone().text());
+    const body = await updated.json() as { maintenance_issue: Record<string, unknown> & { updates: Array<Record<string, unknown>> } };
+    assert.equal(body.maintenance_issue.status, "waiting_parts");
+    assert.equal("revision" in body.maintenance_issue, false);
+    assert.equal("planned_repair_date" in body.maintenance_issue, false);
+    assert.equal("update_kind" in body.maintenance_issue.updates[0]!, false);
+    const call = calls.at(-1) as Record<string, unknown>;
+    assert.equal(call.contract, "legacy");
+    assert.equal("expectedRevision" in call, false);
+    assert.equal("plannedRepairDate" in call, false);
+  });
+  it("does not downgrade malformed Phase 1 Maintenance PATCH requests to legacy", async () => {
+    for (const body of [
+      { status: "in_progress", planned_repair_date: "2026-09-10" },
+      { status: "in_progress", planned_repair_change_reason: "Rescheduled" },
+      { status: "in_progress", expected_revision: null },
+      { status: "in_progress", expected_revision: -1 },
+      { status: "in_progress", expected_revision: "5" },
+    ]) {
+      const before = calls.length;
+      const response = await fetch(`${baseUrl}/api/v1/maintenance/issues/${id.maintenanceIssue}`, {
+        method: "PATCH", headers: headers("maintenance"), body: JSON.stringify(body),
+      });
+      assert.equal(response.status, 400, JSON.stringify(body));
+      assert.equal(calls.length, before, JSON.stringify(body));
+    }
+  });
+  it("rejects mixed Maintenance PATCH body and response contracts before persistence",async()=>{
+    for(const request of[
+      {headers:headers("maintenance"),body:{status:"in_progress",expected_revision:0,planned_repair_date:null}},
+      {headers:phase1Headers("maintenance"),body:{status:"in_progress"}},
+    ]){
+      const before=calls.length;
+      const response=await fetch(`${baseUrl}/api/v1/maintenance/issues/${id.maintenanceIssue}`,{
+        method:"PATCH",headers:request.headers,body:JSON.stringify(request.body),
+      });
+      assert.equal(response.status,400);
+      assert.equal(calls.length,before);
+    }
+  });
+  it("maps stale Phase 1 Maintenance revisions to one bounded conflict", async () => {
+    const before = calls.length;
+    const response = await fetch(`${baseUrl}/api/v1/maintenance/issues/${id.maintenanceIssue}`, {
+      method: "PATCH", headers: phase1Headers("maintenance"),
+      body: JSON.stringify({ status: "in_progress", expected_revision: 99, planned_repair_date: null }),
+    });
+    assert.equal(response.status, 409, await response.clone().text());
+    assert.equal(calls.length, before + 1);
+    assert.equal(calls.at(-1)?.contract, "phase1");
+  });
+  it("keeps legacy proofless resolution blocked and repair-photo resolution routed to legacy", async () => {
+    const before = calls.length;
+    const proofless = await fetch(`${baseUrl}/api/v1/maintenance/issues/${id.maintenanceIssue}`, {
+      method: "PATCH", headers: headers("maintenance"),
+      body: JSON.stringify({ status: "resolved", note: "Fixed" }),
+    });
+    assert.equal(proofless.status, 422);
+    assert.equal(calls.length, before);
+
+    const withProof = await fetch(`${baseUrl}/api/v1/maintenance/issues/${id.maintenanceIssue}`, {
+      method: "PATCH",
+      headers: { ...headers("maintenance"), "content-type": "application/vnd.maintenance-issue+json" },
+      body: JSON.stringify({
+        issue: { status: "resolved", note: "Fixed" },
+        repair_photo: { original_name: "legacy-after.jpg", mime_type: "image/jpeg", content_base64: Buffer.from("jpg-bytes").toString("base64") },
+      }),
+    });
+    assert.equal(withProof.status, 200, await withProof.clone().text());
+    const call = calls.at(-1) as { contract?: string; repairPhotos?: unknown[] };
+    assert.equal(call.contract, "legacy");
+    assert.equal(call.repairPhotos?.length, 1);
+  });
   it("exposes Maintenance purchase history without raw storage or membership fields", async () => {
     const history = await fetch(`${baseUrl}/api/v1/maintenance/purchases/issue`, { headers: headers("maintenance") });
     assert.equal(history.status, 200, await history.clone().text());
     assert.equal(history.headers.get("cache-control"), "private, no-store");
     const text = await history.text();
-    assert.doesNotMatch(text, /storage_path|maintenance\/[0-9a-f-]{36}\/purchases|organization_id|maintenance_user_id/);
+    assert.doesNotMatch(text, /storage_path|maintenance\/[0-9a-f-]{36}\/purchases|organization_id|maintenance_user_id|reimbursed_by/);
     const body = JSON.parse(text) as { maintenance_purchases: Array<{ id: string; maintenance_issue_id: string; receipt_url: string | null; attachments: Array<{ url: string | null }> }> };
     assert.equal(body.maintenance_purchases[0]?.id, id.purchaseLog);
     assert.equal(body.maintenance_purchases[0]?.maintenance_issue_id, id.maintenanceIssue);
@@ -1556,6 +1786,23 @@ describe("Phase 3A operational API", () => {
     assert.equal(generalBody.maintenance_purchases[0]?.maintenance_issue_id, null);
     assert.equal(generalBody.maintenance_purchases[0]?.destination, "CEO House");
     assert.deepEqual(calls.at(-1), { method: "maintenancePurchaseHistory", actorUserId: id.staffAccount, purchaseType: "general" });
+  });
+  it("exposes explicit combined Maintenance purchase pagination", async () => {
+    const history = await fetch(`${baseUrl}/api/v1/maintenance/purchases?purchase_type=all&page=1&page_size=1`, { headers: headers("maintenance") });
+    assert.equal(history.status, 200, await history.clone().text());
+    assert.equal(history.headers.get("cache-control"), "private, no-store");
+    const body = await history.json() as { maintenance_purchases: Array<{ purchase_type: string; organization_id: string }>; total_count: number; has_more: boolean };
+    assert.equal(body.maintenance_purchases[0]?.purchase_type, "issue");
+    assert.equal(body.maintenance_purchases[0]?.organization_id, id.organization);
+    assert.equal(body.total_count, 2);
+    assert.equal(body.has_more, true);
+    assert.deepEqual(calls.at(-1), { method: "maintenancePurchaseHistoryPage", actorUserId: id.staffAccount, purchaseType: "all", page: 1, pageSize: 1 });
+  });
+  it("hydrates Manager Maintenance receipts through the scoped backend lookup", async () => {
+    const receipt = await fetch(`${baseUrl}/api/v1/management/organizations/${id.organization}/maintenance-purchases/${id.purchaseLog}/receipt/read-url`, { headers: headers("manager") });
+    assert.equal(receipt.status, 200, await receipt.clone().text());
+    assert.deepEqual(await receipt.json(), { signed_url: "https://storage.example.invalid/signed-maintenance-receipt", expires_in: 300, original_name: "receipt.pdf" });
+    assert.deepEqual(calls.at(-1), { method: "managedMaintenanceReceiptReadUrl", actorUserId: id.manager, organizationId: id.organization, purchaseId: id.purchaseLog, attachmentId: null });
   });
   it("allows authenticated Maintenance users to create standalone Purchase Log entries", async () => {
     const branches = await fetch(`${baseUrl}/api/v1/maintenance/purchase-branches`, { headers: headers("maintenance") });
@@ -1579,6 +1826,7 @@ describe("Phase 3A operational API", () => {
     assert.equal(body.maintenance_purchase.destination, "CEO House");
     assert.equal(body.maintenance_purchase.category, "fuel_petrol");
     assert.equal(body.maintenance_purchase.branch_id, null);
+    assert.equal("reimbursed_by" in body.maintenance_purchase, false);
     const call = calls.at(-1) as { method: string; issueId?: string | null; payload?: Record<string, unknown>; receipts?: unknown[] };
     assert.equal(call.method, "createMaintenancePurchase");
     assert.equal(call.issueId, null);
@@ -1586,6 +1834,26 @@ describe("Phase 3A operational API", () => {
     assert.equal(call.payload?.destination, "CEO House");
     assert.equal(call.payload?.category, "fuel_petrol");
     assert.equal(call.receipts?.length, 1);
+    assert.equal((call as { idempotencyKey?: string | null }).idempotencyKey, null);
+  });
+  it("returns the same Purchase Log replay without reporting a duplicate create", async () => {
+    const idempotencyKey="71000000-0000-4000-8000-000000000001";
+    const request=()=>fetch(`${baseUrl}/api/v1/maintenance/purchases/general`,{
+      method:"POST",headers:{...headers("maintenance"),"idempotency-key":idempotencyKey},
+      body:JSON.stringify({purchase_type:"general",purchase_scope:"other",destination:"Warehouse",category:"general_supplies",item_name:"Cleaning supplies",quantity:1,unit:"box",amount:25,purchase_date:"2026-08-26",payment_method:"credit_card"}),
+    });
+    const first=await request();
+    const replay=await request();
+    assert.equal(first.status,201,await first.clone().text());
+    assert.equal(replay.status,200,await replay.clone().text());
+    const firstBody=await first.json() as {maintenance_purchase:{id:string;reimbursed_by?:string|null}};
+    const replayBody=await replay.json() as {maintenance_purchase:{id:string;reimbursed_by?:string|null}};
+    assert.equal(firstBody.maintenance_purchase.id,id.purchaseLog);
+    assert.equal(replayBody.maintenance_purchase.id,id.purchaseLog);
+    assert.equal("reimbursed_by" in firstBody.maintenance_purchase,true);
+    assert.equal("reimbursed_by" in replayBody.maintenance_purchase,true);
+    const createCalls=calls.filter((call)=>call.method==="createMaintenancePurchase"&&call.idempotencyKey===idempotencyKey);
+    assert.equal(createCalls.length,2);
   });
   it("rejects invalid standalone Purchase Log scope payloads before service mutation", async () => {
     const before = calls.length;
@@ -1624,6 +1892,11 @@ describe("Phase 3A operational API", () => {
     assert.equal(body.maintenance_purchase.payment_status, "reimbursed");
     assert.equal(body.maintenance_purchase.reimbursement_note, "Paid");
     assert.deepEqual(calls.at(-1), { method: "reimburseMaintenancePurchase", actorUserId: id.staffAccount, purchaseId: id.purchaseLog, reimbursementNote: "Paid" });
+    const duplicate=await fetch(`${baseUrl}/api/v1/maintenance/purchases/${id.purchaseLog}/payment-status`,{
+      method:"PATCH",headers:headers("maintenance"),body:JSON.stringify({reimbursement_note:"Again"}),
+    });
+    assert.equal(duplicate.status,409,await duplicate.clone().text());
+    assert.equal((await duplicate.json() as {error:{code:string}}).error.code,"conflict");
   });
   it("denies Manager and Supervisor from Maintenance workflow routes", async () => {
     assert.equal((await fetch(`${baseUrl}/api/v1/maintenance/issues`)).status, 401);
@@ -1701,7 +1974,13 @@ describe("Phase 3A operational API", () => {
     const body = JSON.parse(text) as { maintenance_issues: Array<{ status: string; updates: Array<{ note: string | null }> }> };
     assert.equal(body.maintenance_issues[0]?.status, "in_progress");
     assert.equal(body.maintenance_issues[0]?.updates[0]?.note, "Started repair");
-    assert.deepEqual(calls.at(-1), { method: "managedMaintenanceIssues", actorUserId: id.manager, organizationId: id.organization, branchId: id.branch, status: "in_progress", priority: "urgent", category: "refrigeration", dateFrom: "2026-08-01", dateTo: "2026-08-31" });
+    assert.deepEqual(calls.at(-1), { method: "managedMaintenanceIssues", actorUserId: id.manager, organizationId: id.organization, branchId: id.branch, status: "in_progress", priority: "urgent", category: "refrigeration", dateFrom: "2026-08-01", dateTo: "2026-08-31", contract: "legacy" });
+    const phase1List=await fetch(`${baseUrl}/api/v1/management/organizations/${id.organization}/maintenance-issues`,{headers:phase1Headers("manager")});
+    assert.equal(phase1List.status,200);
+    const phase1Body=await phase1List.json() as {maintenance_issues:Array<{revision:number;planned_repair_date:string|null}>};
+    assert.equal(phase1Body.maintenance_issues[0]?.revision,1);
+    assert.equal(phase1Body.maintenance_issues[0]?.planned_repair_date,null);
+    assert.equal(calls.at(-1)?.contract,"phase1");
     assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/30000000-0000-4000-8000-000000000099/maintenance-issues`, { headers: headers("manager") })).status, 403);
     assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/${id.organization}/maintenance-issues/${id.maintenanceIssue}`, { method: "PATCH", headers: headers("manager"), body: JSON.stringify({}) })).status, 404);
   });
@@ -1721,9 +2000,20 @@ describe("Phase 3A operational API", () => {
       actorUserId: id.manager,
       organizationId: id.organization,
       idempotencyKey: null,
-      payload: { title: "Office AC", category: "equipment", priority: "high", description: "Not cooling", location: "Office" },
+      payload: { title: "Office AC", category: "equipment", priority: "high", description: "Not cooling", location: "Office", responsible_person_name: null },
       photos: [],
+      contract: "legacy",
     });
+
+    const phase1Created=await fetch(`${baseUrl}/api/v1/management/organizations/${id.organization}/maintenance-issues`,{
+      method:"POST",headers:phase1Headers("manager"),
+      body:JSON.stringify({title:"Office Phase 1",category:"equipment",priority:"normal"}),
+    });
+    assert.equal(phase1Created.status,201,await phase1Created.clone().text());
+    const phase1CreatedBody=await phase1Created.json() as {maintenance_issue:{revision:number;planned_repair_date:string|null}};
+    assert.equal(phase1CreatedBody.maintenance_issue.revision,0);
+    assert.equal(phase1CreatedBody.maintenance_issue.planned_repair_date,null);
+    assert.equal(calls.at(-1)?.contract,"phase1");
 
     const withPhoto = await fetch(`${baseUrl}/api/v1/management/organizations/${id.organization}/maintenance-issues`, {
       method: "POST",

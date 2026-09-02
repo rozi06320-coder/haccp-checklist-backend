@@ -349,10 +349,18 @@ const maintenanceIssueBodySchema = z.object({
   location: optionalStaffTextSchema(160),
   responsible_person_name: optionalTrimmedMaintenanceTextSchema(100),
 }).strict();
-const maintenanceIssueUpdateBodySchema = z.object({
+const maintenanceIssueLegacyUpdateBodySchema = z.object({
   status: maintenanceIssueStatusSchema,
   note: optionalStaffTextSchema(2000),
   responsible_person_name: optionalTrimmedMaintenanceTextSchema(100),
+}).strict();
+const maintenanceIssuePhase1UpdateBodySchema = z.object({
+  status: maintenanceIssueStatusSchema,
+  note: optionalStaffTextSchema(2000),
+  responsible_person_name: optionalTrimmedMaintenanceTextSchema(100),
+  expected_revision: z.number().int().nonnegative(),
+  planned_repair_date: dateOnlySchema.nullable().optional().default(null),
+  planned_repair_change_reason: optionalTrimmedMaintenanceTextSchema(500),
 }).strict();
 const maintenanceIssuePhotoResponseSchema = z.object({
   url: z.string().nullable(),
@@ -371,7 +379,7 @@ const maintenanceIssueCreateEnvelopeSchema = z.object({
   before_photos: z.array(maintenanceIssuePhotoUploadSchema).max(MAX_MAINTENANCE_ISSUE_PHOTOS).optional(),
 }).strict();
 const maintenanceIssueUpdateEnvelopeSchema = z.object({
-  issue: maintenanceIssueUpdateBodySchema,
+  issue: z.unknown(),
   repair_photo: maintenanceIssuePhotoUploadSchema.nullable().optional(),
   repair_photos: z.array(maintenanceIssuePhotoUploadSchema).max(MAX_MAINTENANCE_ISSUE_PHOTOS).optional(),
 }).strict();
@@ -382,6 +390,10 @@ const maintenanceIssueUpdateResponseRowSchema = z.object({
   updated_by: z.uuid().nullable(),
   updated_by_access_user_id: z.uuid().nullable().optional(),
   updated_by_name: z.string().nullable(),
+  update_kind: z.enum(["status_update", "repair_schedule_change"]).optional().default("status_update"),
+  old_planned_repair_date: dateOnlySchema.nullable().optional().default(null),
+  new_planned_repair_date: dateOnlySchema.nullable().optional().default(null),
+  change_reason: z.string().nullable().optional().default(null),
   created_at: z.string(),
 }).strict();
 const maintenanceIssueResponseRowSchema = z.object({
@@ -398,6 +410,8 @@ const maintenanceIssueResponseRowSchema = z.object({
   reporter_name: z.string().nullable(),
   assigned_to: z.uuid().nullable(),
   responsible_person_name: z.string().nullable().optional().default(null),
+  revision: z.number().int().nonnegative(),
+  planned_repair_date: dateOnlySchema.nullable(),
   created_at: z.string(),
   updated_at: z.string(),
   updates: z.array(maintenanceIssueUpdateResponseRowSchema).optional(),
@@ -408,8 +422,32 @@ const maintenanceIssueResponseRowSchema = z.object({
 }).strict();
 const maintenanceIssueListResponseSchema = z.object({ maintenance_issues: z.array(maintenanceIssueResponseRowSchema).max(1000) }).strict();
 const maintenanceIssueMutationResponseSchema = z.object({ maintenance_issue: maintenanceIssueResponseRowSchema }).strict();
+const maintenanceIssueLegacyUpdateResponseRowSchema = maintenanceIssueUpdateResponseRowSchema.omit({
+  update_kind: true,
+  old_planned_repair_date: true,
+  new_planned_repair_date: true,
+  change_reason: true,
+}).strict();
+const maintenanceIssueLegacyResponseRowSchema = maintenanceIssueResponseRowSchema.omit({
+  revision: true,
+  planned_repair_date: true,
+  updates: true,
+}).extend({
+  updates: z.array(maintenanceIssueLegacyUpdateResponseRowSchema).optional(),
+}).strict();
+const maintenanceIssueLegacyMutationResponseSchema = z.object({ maintenance_issue: maintenanceIssueLegacyResponseRowSchema }).strict();
+const maintenanceIssueLegacyListResponseSchema = z.object({ maintenance_issues: z.array(maintenanceIssueLegacyResponseRowSchema).max(1000) }).strict();
 const managedMaintenanceIssueRowSchema=maintenanceIssueResponseRowSchema.omit({assigned_to:true}).strict();
 const managedMaintenanceIssueListResponseSchema=z.object({maintenance_issues:z.array(managedMaintenanceIssueRowSchema).max(1000)}).strict();
+const managedMaintenanceIssueLegacyRowSchema=maintenanceIssueLegacyResponseRowSchema.omit({assigned_to:true}).strict();
+const managedMaintenanceIssueLegacyListResponseSchema=z.object({maintenance_issues:z.array(managedMaintenanceIssueLegacyRowSchema).max(1000)}).strict();
+type MaintenanceContract="legacy"|"phase1";
+function maintenanceContract(request:Request):MaintenanceContract{
+  const value=request.header("X-Maintenance-Contract");
+  if(value===undefined||value==="")return"legacy";
+  if(value==="phase1")return"phase1";
+  throw new HttpError(400,"bad_request","The Maintenance contract is invalid.");
+}
 function maintenanceIssueCreateResultWasCreated(result: unknown) {
   return typeof result === "object" && result !== null && "created" in result
     ? (result as { created?: unknown }).created !== false
@@ -419,6 +457,22 @@ function maintenanceIssueCreateResponsePayload(result: unknown) {
   return typeof result === "object" && result !== null && "maintenance_issue" in result
     ? { maintenance_issue: (result as { maintenance_issue?: unknown }).maintenance_issue }
     : result;
+}
+type MaintenanceIssueUpdateRequest =
+  | { contract: "legacy"; data: z.infer<typeof maintenanceIssueLegacyUpdateBodySchema> }
+  | { contract: "phase1"; data: z.infer<typeof maintenanceIssuePhase1UpdateBodySchema> };
+function parseMaintenanceIssueUpdateRequest(value: unknown): MaintenanceIssueUpdateRequest | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const hasExpectedRevision = Object.prototype.hasOwnProperty.call(record, "expected_revision");
+  const hasPlannedRepairContract = Object.prototype.hasOwnProperty.call(record, "planned_repair_date") ||
+    Object.prototype.hasOwnProperty.call(record, "planned_repair_change_reason");
+  if (!hasExpectedRevision && !hasPlannedRepairContract) {
+    const legacy = maintenanceIssueLegacyUpdateBodySchema.safeParse(value);
+    return legacy.success ? { contract: "legacy", data: legacy.data } : null;
+  }
+  const phase1 = maintenanceIssuePhase1UpdateBodySchema.safeParse(value);
+  return phase1.success ? { contract: "phase1", data: phase1.data } : null;
 }
 const pushSubscriptionBodySchema = z.object({
   endpoint: z.url().max(4096),
@@ -444,17 +498,27 @@ const supervisorPushRunResponseSchema = z.object({
   deliveries_sent: z.number().int().nonnegative(),
 }).strict();
 const maintenancePurchaseAttachmentSchema=z.object({id:z.uuid(),original_filename:z.string().nullable(),mime_type:z.string().nullable(),size_bytes:z.number().nullable(),position:z.number().int().min(1).max(MAX_MAINTENANCE_PURCHASE_PHOTOS),url:z.string().nullable()}).strict();
-const maintenancePurchaseRowSchema=z.object({id:z.uuid(),branch_id:z.uuid().nullable(),purchase_type:maintenancePurchaseTypeSchema,purchase_scope:maintenancePurchaseScopeSchema,destination:z.string().nullable(),category:maintenancePurchaseCategorySchema,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnitSchema,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:z.string().nullable(),payment_status:z.enum(["unpaid","reimbursed"]),payment_method:maintenancePaymentMethodSchema.nullable().optional().default(null),reimbursement_note:z.string().nullable(),reimbursed_at:z.string().nullable(),receipt_original_name:z.string().nullable(),receipt_url:z.string().nullable(),attachments:z.array(maintenancePurchaseAttachmentSchema).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
+const maintenancePurchaseRowSchema=z.object({id:z.uuid(),branch_id:z.uuid().nullable(),purchase_type:maintenancePurchaseTypeSchema,purchase_scope:maintenancePurchaseScopeSchema,destination:z.string().nullable(),category:maintenancePurchaseCategorySchema,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnitSchema,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:z.string().nullable(),payment_status:z.enum(["unpaid","reimbursed"]),payment_method:maintenancePaymentMethodSchema.nullable().optional().default(null),reimbursement_note:z.string().nullable(),reimbursed_at:z.string().nullable(),reimbursed_by:z.uuid().nullable().optional().default(null),receipt_original_name:z.string().nullable(),receipt_url:z.string().nullable(),attachments:z.array(maintenancePurchaseAttachmentSchema).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
 const maintenancePurchaseListSchema=z.object({maintenance_purchases:z.array(maintenancePurchaseRowSchema).max(500)}).strict();
 const maintenancePurchaseMutationSchema=z.object({maintenance_purchase:maintenancePurchaseRowSchema}).strict();
-const managedMaintenancePurchaseRowSchema=z.object({id:z.uuid(),branch_id:z.uuid().nullable(),branch_name:z.string(),maintenance_issue_id:z.uuid().nullable(),purchase_type:maintenancePurchaseTypeSchema,issue_title:z.string().nullable(),issue_category:maintenanceIssueCategorySchema.nullable(),issue_status:maintenanceIssueStatusSchema.nullable(),responsible_person_name:z.string().nullable().optional().default(null),purchase_scope:maintenancePurchaseScopeSchema,destination:z.string().nullable(),category:maintenancePurchaseCategorySchema,maintenance_user_id:z.uuid(),maintenance_user_name:z.string().nullable(),item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnitSchema,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:z.string().nullable(),payment_status:z.enum(["unpaid","reimbursed"]),payment_method:maintenancePaymentMethodSchema.nullable().optional().default(null),reimbursement_note:z.string().nullable(),reimbursed_at:z.string().nullable(),receipt_original_name:z.string().nullable(),receipt_url:z.string().nullable(),attachments:z.array(maintenancePurchaseAttachmentSchema).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
+const maintenancePurchaseLegacyRowSchema=maintenancePurchaseRowSchema.omit({reimbursed_by:true}).strict();
+const maintenancePurchaseLegacyListSchema=z.object({maintenance_purchases:z.array(maintenancePurchaseLegacyRowSchema).max(500)}).strict();
+const maintenancePurchaseLegacyMutationSchema=z.object({maintenance_purchase:maintenancePurchaseLegacyRowSchema}).strict();
+const managedMaintenancePurchaseRowSchema=z.object({id:z.uuid(),branch_id:z.uuid().nullable(),branch_name:z.string(),maintenance_issue_id:z.uuid().nullable(),purchase_type:maintenancePurchaseTypeSchema,issue_title:z.string().nullable(),issue_category:maintenanceIssueCategorySchema.nullable(),issue_status:maintenanceIssueStatusSchema.nullable(),responsible_person_name:z.string().nullable().optional().default(null),purchase_scope:maintenancePurchaseScopeSchema,destination:z.string().nullable(),category:maintenancePurchaseCategorySchema,maintenance_user_id:z.uuid(),maintenance_user_name:z.string().nullable(),item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseUnitSchema,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:z.string().nullable(),payment_status:z.enum(["unpaid","reimbursed"]),payment_method:maintenancePaymentMethodSchema.nullable().optional().default(null),reimbursement_note:z.string().nullable(),reimbursed_at:z.string().nullable(),reimbursed_by:z.uuid().nullable().optional().default(null),receipt_original_name:z.string().nullable(),receipt_url:z.string().nullable(),attachments:z.array(maintenancePurchaseAttachmentSchema).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
 const managedMaintenancePurchaseListSchema=z.object({maintenance_purchases:z.array(managedMaintenancePurchaseRowSchema).max(1000)}).strict();
-const maintenancePurchaseHistoryListSchema=z.object({maintenance_purchases:z.array(managedMaintenancePurchaseRowSchema.omit({maintenance_user_id:true})).max(1000)}).strict();
+const maintenancePurchaseLegacyHistoryListSchema=z.object({maintenance_purchases:z.array(managedMaintenancePurchaseRowSchema.omit({maintenance_user_id:true,reimbursed_by:true})).max(1000)}).strict();
 const maintenancePurchaseBodySchema=z.object({purchase_type:maintenancePurchaseTypeSchema.optional(),purchase_scope:maintenancePurchaseScopeSchema.optional(),branch_id:z.uuid().nullable().optional(),destination:optionalStaffTextSchema(120),category:maintenancePurchaseCategorySchema,item_name:normalizedNameSchema,quantity:z.union([z.number(),z.string()]).transform(Number).pipe(z.number().positive()),unit:maintenancePurchaseUnitSchema,amount:z.union([z.number(),z.string()]).transform(Number).pipe(z.number().nonnegative()),vendor_name:optionalStaffTextSchema(120),purchase_date:dateOnlySchema,notes:optionalStaffTextSchema(2000),payment_method:maintenancePaymentMethodSchema.nullable().optional().default(null)}).strict();
 const maintenancePurchaseBranchListSchema=z.object({branches:z.array(z.object({id:z.uuid(),name:z.string(),name_ar:z.string().nullable()}).strict()).max(500)}).strict();
 const maintenancePurchaseAttachmentUploadSchema=z.object({original_name:z.string().max(180).optional().nullable(),mime_type:maintenancePurchaseReceiptMime,content_base64:z.string().min(1)}).strict();
 const maintenancePurchaseUploadEnvelopeSchema=z.object({purchase:maintenancePurchaseBodySchema,attachments:z.array(maintenancePurchaseAttachmentUploadSchema).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([])}).strict();
 const maintenancePurchasePaymentBodySchema=z.object({reimbursement_note:optionalStaffTextSchema(500)}).strict();
+const maintenancePurchaseHistoryQuerySchema=z.object({purchase_type:z.enum(["issue","general","all"]).default("all"),page:z.coerce.number().int().min(1).default(1),page_size:z.coerce.number().int().min(1).max(200).default(100)}).strict();
+const maintenancePurchaseHistoryPageSchema=z.object({maintenance_purchases:z.array(managedMaintenancePurchaseRowSchema.extend({organization_id:z.uuid()}).omit({maintenance_user_id:true})).max(200),page:z.number().int().positive(),page_size:z.number().int().min(1).max(200),total_count:z.number().int().nonnegative(),has_more:z.boolean()}).strict();
+function maintenancePurchaseCreateResultWasCreated(result:unknown){return typeof result==="object"&&result!==null&&"created"in result?(result as{created?:unknown}).created!==false:true;}
+function maintenancePurchaseCreateResponsePayload(result:unknown){return typeof result==="object"&&result!==null&&"maintenance_purchase"in result?{maintenance_purchase:(result as{maintenance_purchase?:unknown}).maintenance_purchase}:result;}
+function maintenancePurchaseLegacyMutationPayload(result:unknown){const parsed=maintenancePurchaseMutationSchema.parse(maintenancePurchaseCreateResponsePayload(result));const{reimbursed_by,...purchase}=parsed.maintenance_purchase;void reimbursed_by;return maintenancePurchaseLegacyMutationSchema.parse({maintenance_purchase:purchase});}
+function maintenancePurchaseLegacyListPayload(result:unknown){const parsed=maintenancePurchaseListSchema.parse(result);return maintenancePurchaseLegacyListSchema.parse({maintenance_purchases:parsed.maintenance_purchases.map(({reimbursed_by,...purchase})=>{void reimbursed_by;return purchase;})});}
+function maintenancePurchaseLegacyHistoryPayload(result:unknown){const parsed=managedMaintenancePurchaseListSchema.parse(result);return maintenancePurchaseLegacyHistoryListSchema.parse({maintenance_purchases:parsed.maintenance_purchases.map(({maintenance_user_id,reimbursed_by,...purchase})=>{void maintenance_user_id;void reimbursed_by;return purchase;})});}
 type MaintenancePurchaseDiagnosticPayload={hasCategory:boolean;category:string|null;hasPaymentMethod:boolean;paymentMethod:string|null;unit:string|null;hasPurchaseDate:boolean;hasItemName:boolean;attachmentCount:number};
 type MaintenancePurchaseDiagnosticEvent={requestId?:string|null;stage:"request_validation"|"receipt_validation"|"receipt_upload"|"rpc_create"|"rpc_parse";status:"start"|"ok"|"error";errorClass?:string;errorCode?:string|null;payload?:MaintenancePurchaseDiagnosticPayload};
 const MAINTENANCE_PURCHASE_DIAGNOSTIC_PREFIX="MAINTENANCE_PURCHASE_DIAGNOSTIC";
@@ -3027,7 +3091,7 @@ export function createApp(
       }
     },
   );
-  app.get("/api/v1/maintenance/issues/:issueId/purchases",protectedRateLimit,authenticate,async(request,response,next)=>{try{const issue=z.uuid().safeParse(request.params.issueId);if(!issue.success||!emptyQuerySchema.safeParse(request.query).success||!dependencies.operationalAdmin)throw new HttpError(issue.success?503:400,issue.success?"service_unavailable":"bad_request",issue.success?"Maintenance purchases are temporarily unavailable.":"The request is invalid.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=maintenancePurchaseListSchema.parse(await dependencies.operationalAdmin.listMaintenancePurchases(actorUserId,issue.data));response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);}catch(error){next(error instanceof HttpError?error:operationalMaintenanceIssueError(error));}});
+  app.get("/api/v1/maintenance/issues/:issueId/purchases",protectedRateLimit,authenticate,async(request,response,next)=>{try{const issue=z.uuid().safeParse(request.params.issueId);if(!issue.success||!emptyQuerySchema.safeParse(request.query).success||!dependencies.operationalAdmin)throw new HttpError(issue.success?503:400,issue.success?"service_unavailable":"bad_request",issue.success?"Maintenance purchases are temporarily unavailable.":"The request is invalid.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=maintenancePurchaseLegacyListPayload(await dependencies.operationalAdmin.listMaintenancePurchases(actorUserId,issue.data));response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);}catch(error){next(error instanceof HttpError?error:operationalMaintenanceIssueError(error));}});
   app.post("/api/v1/maintenance/issues/:issueId/purchases",protectedRateLimit,authenticate,maintenanceReceiptRawBody,async(request,response,next)=>{
     const requestId=request.id;
     try{
@@ -3080,27 +3144,33 @@ export function createApp(
         logMaintenancePurchaseDiagnostic({requestId,stage:"request_validation",status:"error",errorClass:!issue.success?"InvalidIssueId":!body.success?"ZodError":!query.success?"InvalidQuery":"MissingOperationalAdmin",payload:payloadDiagnostic});
         throw new HttpError(400,"bad_request","The request is invalid.");
       }
+      const idempotencyHeader=request.header("Idempotency-Key");
+      const idempotencyKey=idempotencyHeader?idempotencySchema.safeParse(idempotencyHeader):null;
+      if(idempotencyKey&&!idempotencyKey.success)throw new HttpError(400,"bad_request","The request is invalid.");
       logMaintenancePurchaseDiagnostic({requestId,stage:"request_validation",status:"ok",payload:payloadDiagnostic});
       const actorUserId=await loadAuthenticatedMaintenanceUser(request);
-      const operationalResult=await dependencies.operationalAdmin.createMaintenancePurchase({actorUserId,issueId:issue.data,payload:body.data,receipts,diagnostics:{requestId,payload:payloadDiagnostic,log:logMaintenancePurchaseDiagnostic}});
-      let result:z.infer<typeof maintenancePurchaseMutationSchema>;
+      const operationalResult=await dependencies.operationalAdmin.createMaintenancePurchase({actorUserId,issueId:issue.data,idempotencyKey:idempotencyKey?.success?idempotencyKey.data:null,payload:body.data,receipts,diagnostics:{requestId,payload:payloadDiagnostic,log:logMaintenancePurchaseDiagnostic}});
+      let result:z.infer<typeof maintenancePurchaseMutationSchema>|z.infer<typeof maintenancePurchaseLegacyMutationSchema>;
       try{
-        result=maintenancePurchaseMutationSchema.parse(operationalResult);
+        result=idempotencyKey?.success
+          ? maintenancePurchaseMutationSchema.parse(maintenancePurchaseCreateResponsePayload(operationalResult))
+          : maintenancePurchaseLegacyMutationPayload(operationalResult);
       }catch(error){
         logMaintenancePurchaseDiagnostic({requestId,stage:"rpc_parse",status:"error",errorClass:error instanceof Error?error.constructor.name:typeof error,payload:payloadDiagnostic});
         throw error;
       }
       response.setHeader("Cache-Control","private, no-store");
-      response.status(201).json(result);
+      response.status(maintenancePurchaseCreateResultWasCreated(operationalResult)?201:200).json(result);
     }catch(error){
       next(error instanceof HttpError?error:operationalMaintenanceIssueError(error));
     }
   });
   app.get("/api/v1/maintenance/purchase-branches",protectedRateLimit,authenticate,async(request,response,next)=>{try{if(!emptyQuerySchema.safeParse(request.query).success||!dependencies.operationalAdmin?.listMaintenancePurchaseBranches)throw new HttpError(503,"service_unavailable","Maintenance purchase branches are temporarily unavailable.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=maintenancePurchaseBranchListSchema.parse(await dependencies.operationalAdmin.listMaintenancePurchaseBranches({actorUserId}));response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);}catch(error){next(error instanceof HttpError?error:error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Maintenance purchase branches are temporarily unavailable."));}});
-  app.post("/api/v1/maintenance/purchases/general",protectedRateLimit,authenticate,maintenanceReceiptRawBody,async(request,response,next)=>{try{let raw:unknown=request.body;let receipts:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>=[];if(Buffer.isBuffer(request.body)){const contentType=request.header("Content-Type")?.split(";")[0]?.trim().toLowerCase();if(contentType==="application/vnd.maintenance-purchase+json"){let decoded:unknown;try{decoded=JSON.parse(request.body.toString("utf8"));}catch{throw new HttpError(400,"bad_request","The request is invalid.");}const envelope=maintenancePurchaseUploadEnvelopeSchema.safeParse(decoded);if(!envelope.success)throw new HttpError(400,"bad_request","The request is invalid.");raw=envelope.data.purchase;receipts=envelope.data.attachments.map((attachment)=>({bytes:Buffer.from(attachment.content_base64,"base64"),mimeType:attachment.mime_type,originalName:attachment.original_name?.trim()||"receipt"}));}else{const encoded=request.header("X-Maintenance-Purchase-Payload"),name=decodeUploadFilename(request.header("X-Maintenance-Purchase-Filename-B64"))??"receipt";if(!encoded)throw new HttpError(400,"bad_request","The request is invalid.");try{raw=JSON.parse(Buffer.from(encoded,"base64url").toString("utf8"));}catch{throw new HttpError(400,"bad_request","The request is invalid.");}const mime=maintenancePurchaseReceiptMime.safeParse(contentType);if(!mime.success)throw new HttpError(400,"bad_request","The request is invalid.");receipts=[{bytes:request.body,mimeType:mime.data,originalName:name}];}}const body=maintenancePurchaseBodySchema.safeParse(raw);if(!body.success||!emptyQuerySchema.safeParse(request.query).success||!dependencies.operationalAdmin)throw new HttpError(400,"bad_request","The request is invalid.");if(body.data.purchase_type==="issue"||body.data.branch_id||!body.data.destination)throw new HttpError(422,"unprocessable_entity","The maintenance purchase details are invalid.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=maintenancePurchaseMutationSchema.parse(await dependencies.operationalAdmin.createMaintenancePurchase({actorUserId,issueId:null,payload:{...body.data,purchase_type:"general",purchase_scope:"other",branch_id:null},receipts}));response.setHeader("Cache-Control","private, no-store");response.status(201).json(result);}catch(error){next(error instanceof HttpError?error:operationalMaintenanceIssueError(error));}});
-  app.get("/api/v1/maintenance/purchases/issue",protectedRateLimit,authenticate,async(request,response,next)=>{try{if(!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");if(!dependencies.operationalAdmin?.listMaintenancePurchaseHistory)throw new HttpError(503,"service_unavailable","Maintenance purchase history is temporarily unavailable.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=managedMaintenancePurchaseListSchema.parse(await dependencies.operationalAdmin.listMaintenancePurchaseHistory({actorUserId,purchaseType:"issue"}));const safeResult=maintenancePurchaseHistoryListSchema.parse({maintenance_purchases:result.maintenance_purchases.map(({maintenance_user_id,...purchase})=>{void maintenance_user_id;return purchase;})});response.setHeader("Cache-Control","private, no-store");response.status(200).json(safeResult);}catch(error){next(error instanceof HttpError?error:error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Maintenance purchase history is temporarily unavailable."));}});
-  app.get("/api/v1/maintenance/purchases/general",protectedRateLimit,authenticate,async(request,response,next)=>{try{if(!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");if(!dependencies.operationalAdmin?.listMaintenancePurchaseHistory)throw new HttpError(503,"service_unavailable","Maintenance purchase history is temporarily unavailable.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=managedMaintenancePurchaseListSchema.parse(await dependencies.operationalAdmin.listMaintenancePurchaseHistory({actorUserId,purchaseType:"general"}));const safeResult=maintenancePurchaseHistoryListSchema.parse({maintenance_purchases:result.maintenance_purchases.map(({maintenance_user_id,...purchase})=>{void maintenance_user_id;return purchase;})});response.setHeader("Cache-Control","private, no-store");response.status(200).json(safeResult);}catch(error){next(error instanceof HttpError?error:error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Maintenance purchase history is temporarily unavailable."));}});
-  app.patch("/api/v1/maintenance/purchases/:purchaseId/payment-status",protectedRateLimit,authenticate,async(request,response,next)=>{try{const purchase=z.uuid().safeParse(request.params.purchaseId),body=maintenancePurchasePaymentBodySchema.safeParse(request.body);if(!purchase.success||!body.success||!emptyQuerySchema.safeParse(request.query).success||!dependencies.operationalAdmin)throw new HttpError(400,"bad_request","The request is invalid.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=maintenancePurchaseMutationSchema.parse(await dependencies.operationalAdmin.reimburseMaintenancePurchase({actorUserId,purchaseId:purchase.data,reimbursementNote:body.data.reimbursement_note}));response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);}catch(error){next(error instanceof HttpError?error:operationalMaintenanceIssueError(error));}});
+  app.post("/api/v1/maintenance/purchases/general",protectedRateLimit,authenticate,maintenanceReceiptRawBody,async(request,response,next)=>{try{let raw:unknown=request.body;let receipts:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>=[];if(Buffer.isBuffer(request.body)){const contentType=request.header("Content-Type")?.split(";")[0]?.trim().toLowerCase();if(contentType==="application/vnd.maintenance-purchase+json"){let decoded:unknown;try{decoded=JSON.parse(request.body.toString("utf8"));}catch{throw new HttpError(400,"bad_request","The request is invalid.");}const envelope=maintenancePurchaseUploadEnvelopeSchema.safeParse(decoded);if(!envelope.success)throw new HttpError(400,"bad_request","The request is invalid.");raw=envelope.data.purchase;receipts=envelope.data.attachments.map((attachment)=>({bytes:Buffer.from(attachment.content_base64,"base64"),mimeType:attachment.mime_type,originalName:attachment.original_name?.trim()||"receipt"}));}else{const encoded=request.header("X-Maintenance-Purchase-Payload"),name=decodeUploadFilename(request.header("X-Maintenance-Purchase-Filename-B64"))??"receipt";if(!encoded)throw new HttpError(400,"bad_request","The request is invalid.");try{raw=JSON.parse(Buffer.from(encoded,"base64url").toString("utf8"));}catch{throw new HttpError(400,"bad_request","The request is invalid.");}const mime=maintenancePurchaseReceiptMime.safeParse(contentType);if(!mime.success)throw new HttpError(400,"bad_request","The request is invalid.");receipts=[{bytes:request.body,mimeType:mime.data,originalName:name}];}}const body=maintenancePurchaseBodySchema.safeParse(raw);if(!body.success||!emptyQuerySchema.safeParse(request.query).success||!dependencies.operationalAdmin)throw new HttpError(400,"bad_request","The request is invalid.");if(body.data.purchase_type==="issue"||body.data.branch_id||!body.data.destination)throw new HttpError(422,"unprocessable_entity","The maintenance purchase details are invalid.");const idempotencyHeader=request.header("Idempotency-Key"),idempotencyKey=idempotencyHeader?idempotencySchema.safeParse(idempotencyHeader):null;if(idempotencyKey&&!idempotencyKey.success)throw new HttpError(400,"bad_request","The request is invalid.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const operationalResult=await dependencies.operationalAdmin.createMaintenancePurchase({actorUserId,issueId:null,idempotencyKey:idempotencyKey?.success?idempotencyKey.data:null,payload:{...body.data,purchase_type:"general",purchase_scope:"other",branch_id:null},receipts});const result=idempotencyKey?.success?maintenancePurchaseMutationSchema.parse(maintenancePurchaseCreateResponsePayload(operationalResult)):maintenancePurchaseLegacyMutationPayload(operationalResult);response.setHeader("Cache-Control","private, no-store");response.status(maintenancePurchaseCreateResultWasCreated(operationalResult)?201:200).json(result);}catch(error){next(error instanceof HttpError?error:operationalMaintenanceIssueError(error));}});
+  app.get("/api/v1/maintenance/purchases/issue",protectedRateLimit,authenticate,async(request,response,next)=>{try{if(!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");if(!dependencies.operationalAdmin?.listMaintenancePurchaseHistory)throw new HttpError(503,"service_unavailable","Maintenance purchase history is temporarily unavailable.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const safeResult=maintenancePurchaseLegacyHistoryPayload(await dependencies.operationalAdmin.listMaintenancePurchaseHistory({actorUserId,purchaseType:"issue"}));response.setHeader("Cache-Control","private, no-store");response.status(200).json(safeResult);}catch(error){next(error instanceof HttpError?error:error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Maintenance purchase history is temporarily unavailable."));}});
+  app.get("/api/v1/maintenance/purchases/general",protectedRateLimit,authenticate,async(request,response,next)=>{try{if(!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");if(!dependencies.operationalAdmin?.listMaintenancePurchaseHistory)throw new HttpError(503,"service_unavailable","Maintenance purchase history is temporarily unavailable.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const safeResult=maintenancePurchaseLegacyHistoryPayload(await dependencies.operationalAdmin.listMaintenancePurchaseHistory({actorUserId,purchaseType:"general"}));response.setHeader("Cache-Control","private, no-store");response.status(200).json(safeResult);}catch(error){next(error instanceof HttpError?error:error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Maintenance purchase history is temporarily unavailable."));}});
+  app.get("/api/v1/maintenance/purchases",protectedRateLimit,authenticate,async(request,response,next)=>{try{const query=maintenancePurchaseHistoryQuerySchema.safeParse(request.query);if(!query.success)throw new HttpError(400,"bad_request","The request is invalid.");if(!dependencies.operationalAdmin?.listMaintenancePurchaseHistoryPage)throw new HttpError(503,"service_unavailable","Maintenance purchase history is temporarily unavailable.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=maintenancePurchaseHistoryPageSchema.parse(await dependencies.operationalAdmin.listMaintenancePurchaseHistoryPage({actorUserId,purchaseType:query.data.purchase_type,page:query.data.page,pageSize:query.data.page_size}));response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);}catch(error){next(error instanceof HttpError?error:operationalMaintenanceIssueError(error));}});
+  app.patch("/api/v1/maintenance/purchases/:purchaseId/payment-status",protectedRateLimit,authenticate,async(request,response,next)=>{try{const purchase=z.uuid().safeParse(request.params.purchaseId),body=maintenancePurchasePaymentBodySchema.safeParse(request.body);if(!purchase.success||!body.success||!emptyQuerySchema.safeParse(request.query).success||!dependencies.operationalAdmin)throw new HttpError(400,"bad_request","The request is invalid.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=maintenancePurchaseLegacyMutationPayload(await dependencies.operationalAdmin.reimburseMaintenancePurchase({actorUserId,purchaseId:purchase.data,reimbursementNote:body.data.reimbursement_note}));response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);}catch(error){next(error instanceof HttpError?error:operationalMaintenanceIssueError(error));}});
   app.delete(
     "/api/v1/internal-admin/organizations/:organizationId/managers/:userId",
     protectedRateLimit, authenticate, async (request, response, next) => {
@@ -4272,8 +4342,12 @@ export function createApp(
           throw new HttpError(400, "bad_request", "The request is invalid.");
         }
         if (!dependencies.operationalAdmin) throw new HttpError(503, "service_unavailable", "Maintenance issues are temporarily unavailable.");
+        const contract=maintenanceContract(request);
         const actor = await loadMaintenanceIssueActor(request);
-        const result = maintenanceIssueListResponseSchema.parse(await dependencies.operationalAdmin.listMaintenanceIssues(actor));
+        const operationalResult=await dependencies.operationalAdmin.listMaintenanceIssues({...actor,contract});
+        const result = contract==="phase1"
+          ? maintenanceIssueListResponseSchema.parse(operationalResult)
+          : maintenanceIssueLegacyListResponseSchema.parse(operationalResult);
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json(result);
       } catch (error) {
@@ -4310,24 +4384,39 @@ export function createApp(
             originalName: photo.original_name?.trim() || `after-repair-photo-${index + 1}`,
           }));
         }
-        const body = maintenanceIssueUpdateBodySchema.safeParse(rawPayload);
-        if (!issueId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+        const updateRequest = parseMaintenanceIssueUpdateRequest(rawPayload);
+        if (!issueId.success || !updateRequest || !emptyQuerySchema.safeParse(request.query).success) {
           throw new HttpError(400, "bad_request", "The request is invalid.");
         }
-        if (body.data.status === "resolved" && repairPhotos.length === 0) {
+        const responseContract=maintenanceContract(request);
+        if(responseContract!==updateRequest.contract)throw new HttpError(400,"bad_request","The Maintenance request contract is inconsistent.");
+        if (updateRequest.data.status === "resolved" && repairPhotos.length === 0) {
           throw new HttpError(422, "unprocessable_entity", "Photo required to resolve this issue.");
         }
         if (!dependencies.operationalAdmin) throw new HttpError(503, "service_unavailable", "Maintenance issues are temporarily unavailable.");
         const actor = await loadMaintenanceIssueActor(request);
-        const result = maintenanceIssueMutationResponseSchema.parse(await dependencies.operationalAdmin.updateMaintenanceIssue({
+        const commonInput = {
           actorUserId: actor.actorUserId,
           accessUserId: actor.accessUserId,
           issueId: issueId.data,
-          status: body.data.status,
-          note: body.data.note,
-          responsiblePersonName: body.data.responsible_person_name,
+          status: updateRequest.data.status,
+          note: updateRequest.data.note,
+          responsiblePersonName: updateRequest.data.responsible_person_name,
           repairPhotos,
-        }));
+        };
+        // Temporary rollout bridge: absence means the old HTTP contract; malformed Phase 1 fields never reach this path.
+        const operationalResult = updateRequest.contract === "phase1"
+          ? await dependencies.operationalAdmin.updateMaintenanceIssue({
+              ...commonInput,
+              contract: "phase1",
+              expectedRevision: updateRequest.data.expected_revision,
+              plannedRepairDate: updateRequest.data.planned_repair_date,
+              plannedRepairChangeReason: updateRequest.data.planned_repair_change_reason,
+            })
+          : await dependencies.operationalAdmin.updateMaintenanceIssue({ ...commonInput, contract: "legacy" });
+        const result = updateRequest.contract === "phase1"
+          ? maintenanceIssueMutationResponseSchema.parse(operationalResult)
+          : maintenanceIssueLegacyMutationResponseSchema.parse(operationalResult);
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json(result);
       } catch (error) {
@@ -5235,10 +5324,14 @@ export function createApp(
       try {
         const branchId = branchIdSchema.safeParse(request.params.branchId);
         if (!branchId.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const contract=maintenanceContract(request);
         const auth = requireAuthContext(request);
         const context = await loadActiveUser(request);
         if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin) throw new HttpError(403, "forbidden", "Access is denied.");
-        const result = maintenanceIssueListResponseSchema.parse(await dependencies.operationalAdmin.listSupervisorMaintenanceIssues(auth.userId, branchId.data));
+        const operationalResult=await dependencies.operationalAdmin.listSupervisorMaintenanceIssues(auth.userId,branchId.data,contract);
+        const result=contract==="phase1"
+          ? maintenanceIssueListResponseSchema.parse(operationalResult)
+          : maintenanceIssueLegacyListResponseSchema.parse(operationalResult);
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json(result);
       } catch (error) {
@@ -5278,6 +5371,7 @@ export function createApp(
         const idempotencyKey = idempotencyHeader ? idempotencySchema.safeParse(idempotencyHeader) : null;
         if (idempotencyKey && !idempotencyKey.success) throw new HttpError(400, "bad_request", "The request is invalid.");
         const parsedIdempotencyKey = idempotencyKey?.success ? idempotencyKey.data : null;
+        const contract=maintenanceContract(request);
         const auth = requireAuthContext(request);
         const context = await loadActiveUser(request);
         if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin) throw new HttpError(403, "forbidden", "Access is denied.");
@@ -5287,9 +5381,13 @@ export function createApp(
           idempotencyKey: parsedIdempotencyKey,
           payload: body.data,
           photos,
+          contract,
         });
         const created = maintenanceIssueCreateResultWasCreated(serviceResult);
-        const result = maintenanceIssueMutationResponseSchema.parse(maintenanceIssueCreateResponsePayload(serviceResult));
+        const responsePayload=maintenanceIssueCreateResponsePayload(serviceResult);
+        const result = contract==="phase1"
+          ? maintenanceIssueMutationResponseSchema.parse(responsePayload)
+          : maintenanceIssueLegacyMutationResponseSchema.parse(responsePayload);
         response.setHeader("Cache-Control", "private, no-store");
         response.status(created ? 201 : 200).json(result);
         if (created) void dependencies.maintenancePush?.notifyMaintenanceIssueCreated({
@@ -5660,9 +5758,11 @@ export function createApp(
       try{
         const organizationId=organizationIdSchema.safeParse(request.params.organizationId),query=managedMaintenanceIssueQuerySchema.safeParse(request.query);
         if(!organizationId.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const contract=maintenanceContract(request);
         const auth=requireAuthContext(request),context=await loadActiveUser(request);
         if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.listManagedMaintenanceIssues)throw new HttpError(403,"forbidden","Access is denied.");
-        const result=managedMaintenanceIssueListResponseSchema.parse(await dependencies.operationalAdmin.listManagedMaintenanceIssues({actorUserId:auth.userId,organizationId:organizationId.data,branchId:query.data.branch_id,status:query.data.status,priority:query.data.priority,category:query.data.category,dateFrom:query.data.date_from,dateTo:query.data.date_to}));
+        const operationalResult=await dependencies.operationalAdmin.listManagedMaintenanceIssues({actorUserId:auth.userId,organizationId:organizationId.data,branchId:query.data.branch_id,status:query.data.status,priority:query.data.priority,category:query.data.category,dateFrom:query.data.date_from,dateTo:query.data.date_to,contract});
+        const result=contract==="phase1"?managedMaintenanceIssueListResponseSchema.parse(operationalResult):managedMaintenanceIssueLegacyListResponseSchema.parse(operationalResult);
         response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
       }catch(error){next(error instanceof HttpError?error:error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Maintenance Issues are temporarily unavailable."));}
     });
@@ -5699,11 +5799,13 @@ export function createApp(
         const idempotencyKey=idempotencyHeader?idempotencySchema.safeParse(idempotencyHeader):null;
         if(idempotencyKey&&!idempotencyKey.success)throw new HttpError(400,"bad_request","The request is invalid.");
         const parsedIdempotencyKey=idempotencyKey?.success?idempotencyKey.data:null;
+        const contract=maintenanceContract(request);
         const auth=requireAuthContext(request),context=await loadActiveUser(request);
         if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.createManagerOfficeMaintenanceIssue)throw new HttpError(403,"forbidden","Access is denied.");
-        const serviceResult=await dependencies.operationalAdmin.createManagerOfficeMaintenanceIssue({actorUserId:auth.userId,organizationId:organizationId.data,idempotencyKey:parsedIdempotencyKey,payload:body.data,photos});
+        const serviceResult=await dependencies.operationalAdmin.createManagerOfficeMaintenanceIssue({actorUserId:auth.userId,organizationId:organizationId.data,idempotencyKey:parsedIdempotencyKey,payload:body.data,photos,contract});
         const created=maintenanceIssueCreateResultWasCreated(serviceResult);
-        const result=maintenanceIssueMutationResponseSchema.parse(maintenanceIssueCreateResponsePayload(serviceResult));
+        const responsePayload=maintenanceIssueCreateResponsePayload(serviceResult);
+        const result=contract==="phase1"?maintenanceIssueMutationResponseSchema.parse(responsePayload):maintenanceIssueLegacyMutationResponseSchema.parse(responsePayload);
         response.setHeader("Cache-Control","private, no-store");response.status(created?201:200).json(result);
         if(created)void dependencies.maintenancePush?.notifyMaintenanceIssueCreated({
           issueId: result.maintenance_issue.id,

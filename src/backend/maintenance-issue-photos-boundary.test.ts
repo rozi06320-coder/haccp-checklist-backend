@@ -66,7 +66,7 @@ describe("Maintenance issue before/after photos", () => {
     assert.match(app, /maintenanceIssueCreateEnvelopeSchema/);
     assert.match(app, /maintenanceIssueUpdateEnvelopeSchema/);
     assert.match(app, /application\/vnd\.maintenance-issue\+json/);
-    assert.match(app, /body\.data\.status === "resolved" && repairPhotos\.length === 0/);
+    assert.match(app, /updateRequest\.data\.status === "resolved" && repairPhotos\.length === 0/);
     assert.match(app, /Photo required to resolve this issue\./);
     assert.doesNotMatch(app, /pin_hash|storage_path.*json|SUPABASE_SECRET_KEY/);
   });
