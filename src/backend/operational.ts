@@ -33,6 +33,42 @@ const maintenancePaymentMethod = z.enum(["cash", "credit_card", "pay_later"]);
 type MaintenancePurchaseDiagnosticStage = "request_parsing" | "auth_context" | "scope_resolution" | "evidence_validation" | "storage_upload" | "purchase_rpc" | "response_parse" | "storage_cleanup";
 type MaintenancePurchaseDiagnosticOutcome = "start" | "success" | "failure";
 type MaintenancePurchaseDiagnosticErrorCategory = "validation" | "authentication" | "authorization" | "rpc" | "storage" | "response" | "cleanup" | "unexpected";
+export type MaintenanceUndefinedObjectIdentity = {
+  undefinedObjectKind: "function" | "operator";
+  undefinedIdentity: string;
+};
+const MAX_MAINTENANCE_UNDEFINED_IDENTITY_LENGTH = 200;
+const MAX_MAINTENANCE_UNDEFINED_MESSAGE_LENGTH = 500;
+function normalizeMaintenanceUndefinedType(value: string) {
+  const normalized = value.trim().replace(/\s+/gu, " ");
+  return normalized.length <= 80
+    && /^[A-Za-z_][A-Za-z0-9_.$]*(?:\.[A-Za-z_][A-Za-z0-9_.$]*)*(?:\[\])?(?: [A-Za-z_][A-Za-z0-9_.$]*(?:\[\])?)*$/u.test(normalized)
+    ? normalized
+    : null;
+}
+export function parseMaintenanceUndefinedObjectIdentity(code: string | null | undefined, message: string | null | undefined): MaintenanceUndefinedObjectIdentity | null {
+  if (code !== "42883" || typeof message !== "string" || message.length > MAX_MAINTENANCE_UNDEFINED_MESSAGE_LENGTH) return null;
+  const normalizedMessage = message.trim();
+  const functionMatch = /^function\s+([A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)?)\s*\(([^)]*)\)\s+does not exist$/iu.exec(normalizedMessage);
+  if (functionMatch) {
+    const rawArguments = functionMatch[2]?.trim() ?? "";
+    const argumentsList = rawArguments === "" ? [] : rawArguments.split(",").map(normalizeMaintenanceUndefinedType);
+    if (argumentsList.some((argument) => argument === null)) return null;
+    const identity = `${functionMatch[1]}(${argumentsList.join(",")})`;
+    return identity.length <= MAX_MAINTENANCE_UNDEFINED_IDENTITY_LENGTH
+      ? { undefinedObjectKind: "function", undefinedIdentity: identity }
+      : null;
+  }
+  const operatorMatch = /^operator does not exist:\s*(.+?)\s+([+\-*/<>=~!@#%^&|`?]{1,16})\s+(.+?)$/iu.exec(normalizedMessage);
+  if (!operatorMatch) return null;
+  const leftType = normalizeMaintenanceUndefinedType(operatorMatch[1] ?? "");
+  const rightType = normalizeMaintenanceUndefinedType(operatorMatch[3] ?? "");
+  if (!leftType || !rightType) return null;
+  const identity = `${leftType}${operatorMatch[2]}${rightType}`;
+  return identity.length <= MAX_MAINTENANCE_UNDEFINED_IDENTITY_LENGTH
+    ? { undefinedObjectKind: "operator", undefinedIdentity: identity }
+    : null;
+}
 type MaintenancePurchaseDiagnostics = {
   requestId?: string | null;
   log?: (event: {
@@ -41,6 +77,20 @@ type MaintenancePurchaseDiagnostics = {
     outcome: MaintenancePurchaseDiagnosticOutcome;
     safeErrorCategory?: MaintenancePurchaseDiagnosticErrorCategory;
     safeCode?: string | null;
+    undefinedObjectKind?: "function" | "operator" | null;
+    undefinedIdentity?: string | null;
+    durationMs?: number;
+  }) => void;
+};
+type MaintenanceIssueCreateDiagnostics = {
+  requestId?: string | null;
+  log?: (event: {
+    requestId?: string | null;
+    stage: "create_rpc";
+    outcome: MaintenancePurchaseDiagnosticOutcome;
+    safeCode?: string | null;
+    undefinedObjectKind?: "function" | "operator" | null;
+    undefinedIdentity?: string | null;
     durationMs?: number;
   }) => void;
 };
@@ -478,6 +528,7 @@ export type OperationalAdmin = {
     photo?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
     photos?: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> | null;
     contract?: "legacy" | "phase1";
+    diagnostics?: MaintenanceIssueCreateDiagnostics;
   }): Promise<unknown>;
   createManagerOfficeMaintenanceIssue?(input: {
     actorUserId: string;
@@ -562,13 +613,19 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     if (!value) return null;
     return /^(?:PGRST\d{3}|[0-9A-Z]{5}|[1-5]\d{2})$/.test(value) ? value : null;
   }
-  function emitMaintenancePurchaseDiagnostic(diagnostics: MaintenancePurchaseDiagnostics | undefined, event: { stage: MaintenancePurchaseDiagnosticStage; outcome: MaintenancePurchaseDiagnosticOutcome; safeErrorCategory?: MaintenancePurchaseDiagnosticErrorCategory; safeCode?: string | null; durationMs?: number }) {
+  function emitMaintenancePurchaseDiagnostic(diagnostics: MaintenancePurchaseDiagnostics | undefined, event: { stage: MaintenancePurchaseDiagnosticStage; outcome: MaintenancePurchaseDiagnosticOutcome; safeErrorCategory?: MaintenancePurchaseDiagnosticErrorCategory; safeCode?: string | null; undefinedObjectKind?: "function" | "operator" | null; undefinedIdentity?: string | null; durationMs?: number }) {
+    const safeCode = safeMaintenancePurchaseDiagnosticCode(event.safeCode);
+    const undefinedObject = safeCode === "42883" && event.undefinedObjectKind && event.undefinedIdentity
+      ? { undefinedObjectKind: event.undefinedObjectKind, undefinedIdentity: event.undefinedIdentity }
+      : null;
     diagnostics?.log?.({
       requestId: diagnostics.requestId ?? null,
       stage: event.stage,
       outcome: event.outcome,
       safeErrorCategory: event.safeErrorCategory,
-      safeCode: safeMaintenancePurchaseDiagnosticCode(event.safeCode),
+      safeCode,
+      undefinedObjectKind: undefinedObject?.undefinedObjectKind ?? null,
+      undefinedIdentity: undefinedObject?.undefinedIdentity ?? null,
       durationMs: event.durationMs,
     });
   }
@@ -576,7 +633,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     const startedAt = performance.now();
     let completed = false;
     emitMaintenancePurchaseDiagnostic(diagnostics, { stage, outcome: "start" });
-    return (outcome: Exclude<MaintenancePurchaseDiagnosticOutcome, "start">, safeErrorCategory?: MaintenancePurchaseDiagnosticErrorCategory, safeCode?: string | null) => {
+    return (outcome: Exclude<MaintenancePurchaseDiagnosticOutcome, "start">, safeErrorCategory?: MaintenancePurchaseDiagnosticErrorCategory, safeCode?: string | null, undefinedObject?: MaintenanceUndefinedObjectIdentity | null) => {
       if (completed) return;
       completed = true;
       emitMaintenancePurchaseDiagnostic(diagnostics, {
@@ -584,6 +641,28 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         outcome,
         safeErrorCategory,
         safeCode,
+        undefinedObjectKind: undefinedObject?.undefinedObjectKind ?? null,
+        undefinedIdentity: undefinedObject?.undefinedIdentity ?? null,
+        durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+      });
+    };
+  }
+  function startMaintenanceIssueCreateDiagnosticStage(diagnostics: MaintenanceIssueCreateDiagnostics | undefined) {
+    const startedAt = performance.now();
+    let completed = false;
+    diagnostics?.log?.({ requestId: diagnostics.requestId ?? null, stage: "create_rpc", outcome: "start", safeCode: null, undefinedObjectKind: null, undefinedIdentity: null });
+    return (outcome: Exclude<MaintenancePurchaseDiagnosticOutcome, "start">, safeCode?: string | null, undefinedObject?: MaintenanceUndefinedObjectIdentity | null) => {
+      if (completed) return;
+      completed = true;
+      const boundedCode = safeMaintenancePurchaseDiagnosticCode(safeCode);
+      const boundedUndefinedObject = boundedCode === "42883" ? undefinedObject : null;
+      diagnostics?.log?.({
+        requestId: diagnostics.requestId ?? null,
+        stage: "create_rpc",
+        outcome,
+        safeCode: boundedCode,
+        undefinedObjectKind: boundedUndefinedObject?.undefinedObjectKind ?? null,
+        undefinedIdentity: boundedUndefinedObject?.undefinedIdentity ?? null,
         durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
       });
     };
@@ -1431,11 +1510,29 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         const functionName=uploaded.length
           ? phase1?"create_supervisor_maintenance_issue_with_photo_v2":"create_supervisor_maintenance_issue_with_photo"
           : phase1?"create_supervisor_maintenance_issue_v2":"create_supervisor_maintenance_issue";
-        const rawRows=await rpc(functionName, {
-          actor_user_id: input.actorUserId,
-          target_branch_id: input.branchId,
-          payload,
-        });
+        let rawRows:unknown[];
+        if(phase1){
+          const finishCreateRpc=startMaintenanceIssueCreateDiagnosticStage(input.diagnostics);
+          let rpcErrorCode:string|null=null;
+          let undefinedObject:MaintenanceUndefinedObjectIdentity|null=null;
+          try{
+            rawRows=await rpc(functionName, {
+              actor_user_id: input.actorUserId,
+              target_branch_id: input.branchId,
+              payload,
+            },{onError:(error)=>{rpcErrorCode=error.code??null;undefinedObject=parseMaintenanceUndefinedObjectIdentity(error.code,error.message);}});
+            finishCreateRpc("success");
+          }catch(error){
+            finishCreateRpc("failure",rpcErrorCode,undefinedObject);
+            throw error;
+          }
+        }else{
+          rawRows=await rpc(functionName, {
+            actor_user_id: input.actorUserId,
+            target_branch_id: input.branchId,
+            payload,
+          });
+        }
         const rows=phase1
           ? await normalizeMaintenanceIssueRows(rawRows,input.actorUserId,null)
           : await normalizeLegacyMaintenanceIssueRows(rawRows,input.actorUserId,null);
@@ -1574,12 +1671,13 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         const first=uploaded[0];
         const finishPurchaseRpc=startMaintenancePurchaseDiagnosticStage(input.diagnostics,"purchase_rpc");
         let rpcErrorCode:string|null=null;
+        let undefinedObject:MaintenanceUndefinedObjectIdentity|null=null;
         let rawRows:unknown[];
         try{
-          rawRows=await rpc("create_maintenance_purchase_log_v2",{actor_user_id:input.actorUserId,target_issue_id:input.issueId??null,payload:{...input.payload,purchase_id:purchaseId,idempotency_key:input.idempotencyKey??null,request_hash:requestHash,receipt_storage_path:first?.storage_path??null,receipt_original_name:first?.original_filename??null,attachments:uploaded}},{onError:(error)=>{rpcErrorCode=error.code??null;}});
+          rawRows=await rpc("create_maintenance_purchase_log_v2",{actor_user_id:input.actorUserId,target_issue_id:input.issueId??null,payload:{...input.payload,purchase_id:purchaseId,idempotency_key:input.idempotencyKey??null,request_hash:requestHash,receipt_storage_path:first?.storage_path??null,receipt_original_name:first?.original_filename??null,attachments:uploaded}},{onError:(error)=>{rpcErrorCode=error.code??null;undefinedObject=parseMaintenanceUndefinedObjectIdentity(error.code,error.message);}});
           finishPurchaseRpc("success");
         }catch(error){
-          finishPurchaseRpc("failure","rpc",rpcErrorCode);
+          finishPurchaseRpc("failure","rpc",rpcErrorCode,undefinedObject);
           throw error;
         }
         const finishResponseParse=startMaintenancePurchaseDiagnosticStage(input.diagnostics,"response_parse");

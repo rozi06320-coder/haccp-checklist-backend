@@ -6,7 +6,7 @@ import { after, before, describe, it } from "node:test";
 import { createApp } from "./app";
 import { loadBackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
-import { branchLocalDate, createOperationalAdmin, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError } from "./operational";
+import { branchLocalDate, createOperationalAdmin, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, parseMaintenanceUndefinedObjectIdentity } from "./operational";
 import type { UserContext } from "./user-context";
 
 const id = {
@@ -252,7 +252,9 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
         return { maintenance_issues: [] };
       },
       async createSupervisorMaintenanceIssue(input) {
-        calls.push({ method: "createSupervisorMaintenanceIssue", ...input });
+        const { diagnostics, ...recordedInput } = input;
+        void diagnostics;
+        calls.push({ method: "createSupervisorMaintenanceIssue", ...recordedInput });
         if (input.actorUserId !== id.supervisor) throw new Error("denied");
         const replay=Boolean(input.idempotencyKey&&maintenanceIssueKeys.has(`branch:${input.branchId}:${input.idempotencyKey}`));
         if(input.idempotencyKey)maintenanceIssueKeys.add(`branch:${input.branchId}:${input.idempotencyKey}`);
@@ -609,7 +611,44 @@ describe("managed maintenance operational adapter", () => {
         {stage:"purchase_rpc",outcome:"start",safeErrorCategory:undefined,safeCode:null},
         {stage:"purchase_rpc",outcome:"failure",safeErrorCategory:"rpc",safeCode:"22023"},
       ]);
+      assert.ok(diagnostics.every((event)=>event.undefinedObjectKind==null&&event.undefinedIdentity==null));
       assert.doesNotMatch(JSON.stringify(diagnostics),/Replacement seal|Parts Shop|Do not log|service-key/);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("emits only a sanitized 42883 identity for Maintenance purchase RPC failures",async()=>{
+    const diagnostics:Array<Record<string,unknown>>=[];
+    const rpc=createServer(async(_request,response)=>{
+      response.setHeader("content-type","application/json");
+      response.statusCode=400;
+      response.end(JSON.stringify({code:"42883",message:"function private.clean_purchase_text(uuid, text) does not exist",details:"receipt-bytes",hint:"service-key"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await assert.rejects(()=>admin.createMaintenancePurchase?.({actorUserId:id.staffAccount,issueId:id.maintenanceIssue,payload:{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:"Do not log"},diagnostics:{requestId:"request-42883",log:(event)=>diagnostics.push(event)}}));
+      const failure=diagnostics.at(-1);
+      assert.deepEqual({stage:failure?.stage,outcome:failure?.outcome,safeCode:failure?.safeCode,undefinedObjectKind:failure?.undefinedObjectKind,undefinedIdentity:failure?.undefinedIdentity},{stage:"purchase_rpc",outcome:"failure",safeCode:"42883",undefinedObjectKind:"function",undefinedIdentity:"private.clean_purchase_text(uuid,text)"});
+      assert.doesNotMatch(JSON.stringify(diagnostics),/receipt-bytes|service-key|Replacement seal|Parts Shop|Do not log/);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("emits sanitized 42883 identity for Supervisor Maintenance create RPC failures",async()=>{
+    const diagnostics:Array<Record<string,unknown>>=[];
+    const rpc=createServer(async(_request,response)=>{
+      response.setHeader("content-type","application/json");
+      response.statusCode=400;
+      response.end(JSON.stringify({code:"42883",message:"operator does not exist: text = uuid",details:"private issue payload",hint:"bearer-token"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await assert.rejects(()=>admin.createSupervisorMaintenanceIssue({actorUserId:id.supervisor,branchId:id.branch,payload:{title:"Freezer",category:"refrigeration",priority:"urgent"},contract:"phase1",diagnostics:{requestId:"issue-request-42883",log:(event)=>diagnostics.push(event)}}));
+      assert.deepEqual(diagnostics.map((event)=>({stage:event.stage,outcome:event.outcome,safeCode:event.safeCode,undefinedObjectKind:event.undefinedObjectKind,undefinedIdentity:event.undefinedIdentity})),[
+        {stage:"create_rpc",outcome:"start",safeCode:null,undefinedObjectKind:null,undefinedIdentity:null},
+        {stage:"create_rpc",outcome:"failure",safeCode:"42883",undefinedObjectKind:"operator",undefinedIdentity:"text=uuid"},
+      ]);
+      assert.doesNotMatch(JSON.stringify(diagnostics),/private issue payload|bearer-token|service-key|Freezer/);
     }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
   });
 
@@ -908,6 +947,19 @@ describe("Daily Audit operational adapter", () => {
   });
 });
 
+describe("Maintenance 42883 diagnostic identity",()=>{
+  it("extracts bounded function and operator identities",()=>{
+    assert.deepEqual(parseMaintenanceUndefinedObjectIdentity("42883","function private.foo(uuid, text) does not exist"),{undefinedObjectKind:"function",undefinedIdentity:"private.foo(uuid,text)"});
+    assert.deepEqual(parseMaintenanceUndefinedObjectIdentity("42883","operator does not exist: text = uuid"),{undefinedObjectKind:"operator",undefinedIdentity:"text=uuid"});
+  });
+
+  it("rejects arbitrary, oversized, and non-42883 messages",()=>{
+    assert.equal(parseMaintenanceUndefinedObjectIdentity("42883","function private.foo(uuid) does not exist; select secret"),null);
+    assert.equal(parseMaintenanceUndefinedObjectIdentity("42883",`function private.${"a".repeat(450)}(uuid) does not exist`),null);
+    assert.equal(parseMaintenanceUndefinedObjectIdentity("22023","function private.foo(uuid) does not exist"),null);
+  });
+});
+
 describe("Maintenance purchase diagnostic API", () => {
   const headers = (token: string) => ({ authorization: `Bearer ${token}`, "content-type": "application/json" });
   async function captureMaintenancePurchaseDiagnostics<T>(run: () => Promise<T>) {
@@ -929,6 +981,22 @@ describe("Maintenance purchase diagnostic API", () => {
     } finally {
       console.info = original;
     }
+  }
+
+  async function captureMaintenanceIssueDiagnostics<T>(run: () => Promise<T>) {
+    const original=console.info;
+    const events:Array<Record<string,unknown>>=[];
+    const lines:Array<{argumentCount:number;value:string}>=[];
+    console.info=(...args:unknown[])=>{
+      if(typeof args[0]==="string"&&args[0].startsWith("MAINTENANCE_ISSUE_DIAGNOSTIC ")){
+        const value=args[0];
+        lines.push({argumentCount:args.length,value});
+        events.push(JSON.parse(value.slice("MAINTENANCE_ISSUE_DIAGNOSTIC ".length))as Record<string,unknown>);
+        return;
+      }
+      original(...args);
+    };
+    try{return{value:await run(),events,lines};}finally{console.info=original;}
   }
 
   it("emits safe diagnostics for issue-linked Maintenance purchase validation and success paths", async () => {
@@ -1005,6 +1073,33 @@ describe("Maintenance purchase diagnostic API", () => {
       const serialized=JSON.stringify({events:result.events,lines:result.lines});
       assert.doesNotMatch(serialized,/raw SQL|secret|receipt-bytes|bearer-token|Replacement seal|Parts Shop|Do not expose/);
       assert.ok(result.lines.every((line)=>line.argumentCount===1));
+    }finally{await new Promise<void>((resolve,reject)=>server.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("keeps Supervisor Maintenance create failures generic while logging only safe 42883 identity",async()=>{
+    const calls:Array<Record<string,unknown>>=[];
+    const fixture=dependencies(calls);
+    if(!fixture.operationalAdmin)throw new Error("missing test adapter");
+    fixture.operationalAdmin.createSupervisorMaintenanceIssue=async(input)=>{
+      input.diagnostics?.log?.({requestId:input.diagnostics.requestId,stage:"create_rpc",outcome:"failure",safeCode:"42883",undefinedObjectKind:"function",undefinedIdentity:"private.create_issue(uuid,text)",durationMs:1.25});
+      throw new Error("raw SQL secret issue payload bearer-token");
+    };
+    const config=loadBackendConfig({NODE_ENV:"test",SUPABASE_URL:"http://127.0.0.1:54321",SUPABASE_PUBLISHABLE_KEY:"placeholder",DAILY_AUDIT_GRANT_SECRET:"test-daily-audit-grant-secret-placeholder-32-bytes"});
+    const server=createServer(createApp(config,fixture));
+    await new Promise<void>((resolve)=>server.listen(0,"127.0.0.1",resolve));
+    try{
+      const baseUrl=`http://127.0.0.1:${(server.address()as AddressInfo).port}`;
+      const result=await captureMaintenanceIssueDiagnostics(()=>fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/maintenance-issues`,{
+        method:"POST",headers:{...headers("supervisor"),"x-maintenance-contract":"phase1"},body:JSON.stringify({title:"Private freezer issue",category:"refrigeration",priority:"urgent",description:"Do not log"}),
+      }));
+      assert.equal(result.value.status,503);
+      const body=await result.value.text();
+      assert.match(body,/temporarily unavailable/i);
+      assert.doesNotMatch(body,/raw SQL|secret|payload|bearer-token|Private freezer|Do not log/);
+      assert.equal(result.events.length,1);
+      assert.deepEqual({stage:result.events[0]?.stage,outcome:result.events[0]?.outcome,safeCode:result.events[0]?.safeCode,undefinedObjectKind:result.events[0]?.undefinedObjectKind,undefinedIdentity:result.events[0]?.undefinedIdentity},{stage:"create_rpc",outcome:"failure",safeCode:"42883",undefinedObjectKind:"function",undefinedIdentity:"private.create_issue(uuid,text)"});
+      assert.ok(result.lines.every((line)=>line.argumentCount===1));
+      assert.doesNotMatch(JSON.stringify({events:result.events,lines:result.lines}),/raw SQL|secret|issue payload|bearer-token|Private freezer|Do not log/);
     }finally{await new Promise<void>((resolve,reject)=>server.close((error)=>error?reject(error):resolve()));}
   });
 });
