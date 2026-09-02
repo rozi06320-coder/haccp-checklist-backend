@@ -2070,6 +2070,43 @@ describe("Phase 3A operational API", () => {
     assert.equal(call.receipts?.length, 1);
     assert.equal((call as { idempotencyKey?: string | null }).idempotencyKey, null);
   });
+  it("validates and canonicalizes Phase B general scopes and service requests before the adapter",async()=>{
+    const post=(purchase:Record<string,unknown>)=>fetch(`${baseUrl}/api/v1/maintenance/purchases/general`,{
+      method:"POST",headers:{...headers("maintenance"),"content-type":"application/json"},body:JSON.stringify(purchase),
+    });
+    const branchService=await post({purchase_type:"general",purchase_scope:"branch",branch_id:id.branch,destination:"Untrusted browser branch",category:"service",item_name:"Monthly deep cleaning",quantity:1,unit:"service",amount:350,vendor_name:"Dr. Clean",purchase_date:"2026-09-02",payment_method:"cash"});
+    assert.equal(branchService.status,201,await branchService.clone().text());
+    const branchCall=calls.at(-1)as{method:string;payload?:Record<string,unknown>};
+    assert.equal(branchCall.method,"createMaintenancePurchase");
+    assert.deepEqual({scope:branchCall.payload?.purchase_scope,branch:branchCall.payload?.branch_id,destination:branchCall.payload?.destination,category:branchCall.payload?.category,unit:branchCall.payload?.unit,quantity:branchCall.payload?.quantity,vendor:branchCall.payload?.vendor_name},{scope:"branch",branch:id.branch,destination:null,category:"service",unit:"service",quantity:1,vendor:"Dr. Clean"});
+
+    const office=await post({purchase_scope:"office",destination:"Browser office",category:"general_supplies",item_name:"Printer toner",quantity:1,unit:"pcs",amount:90,purchase_date:"2026-09-02"});
+    assert.equal(office.status,201,await office.clone().text());
+    const officeCall=calls.at(-1)as{payload?:Record<string,unknown>};
+    assert.deepEqual({scope:officeCall.payload?.purchase_scope,branch:officeCall.payload?.branch_id,destination:officeCall.payload?.destination},{scope:"office",branch:null,destination:"Office"});
+
+    const omitted=await post({destination:"Warehouse",category:"general_supplies",item_name:"Storage boxes",quantity:2,unit:"box",amount:30,purchase_date:"2026-09-02"});
+    assert.equal(omitted.status,201,await omitted.clone().text());
+    const omittedCall=calls.at(-1)as{payload?:Record<string,unknown>};
+    assert.deepEqual({scope:omittedCall.payload?.purchase_scope,branch:omittedCall.payload?.branch_id,destination:omittedCall.payload?.destination},{scope:"other",branch:null,destination:"Warehouse"});
+
+    const beforeInvalid=calls.length;
+    const invalid=[
+      {purchase_scope:"branch",category:"general_supplies",item_name:"Missing branch",quantity:1,unit:"pcs",amount:1,purchase_date:"2026-09-02"},
+      {purchase_scope:"office",branch_id:id.branch,category:"general_supplies",item_name:"Office branch",quantity:1,unit:"pcs",amount:1,purchase_date:"2026-09-02"},
+      {purchase_scope:"other",branch_id:id.branch,destination:"Warehouse",category:"general_supplies",item_name:"Other branch",quantity:1,unit:"pcs",amount:1,purchase_date:"2026-09-02"},
+      {purchase_scope:"other",destination:"Warehouse",category:"service",item_name:"Bad pair",quantity:1,unit:"pcs",amount:1,vendor_name:"Provider",purchase_date:"2026-09-02"},
+      {purchase_scope:"other",destination:"Warehouse",category:"general_supplies",item_name:"Bad pair",quantity:1,unit:"service",amount:1,vendor_name:"Provider",purchase_date:"2026-09-02"},
+      {purchase_scope:"other",destination:"Warehouse",category:"service",item_name:"Bad quantity",quantity:2,unit:"service",amount:1,vendor_name:"Provider",purchase_date:"2026-09-02"},
+      {purchase_scope:"other",destination:"Warehouse",category:"service",item_name:"Bad provider",quantity:1,unit:"service",amount:1,vendor_name:" N/A ",purchase_date:"2026-09-02"},
+    ];
+    for(const purchase of invalid)assert.equal((await post(purchase)).status,422);
+    const issueService=await fetch(`${baseUrl}/api/v1/maintenance/issues/${id.maintenanceIssue}/purchases`,{
+      method:"POST",headers:{...headers("maintenance"),"content-type":"application/json"},body:JSON.stringify({category:"service",item_name:"Issue service",quantity:1,unit:"service",amount:1,vendor_name:"Provider",purchase_date:"2026-09-02"}),
+    });
+    assert.equal(issueService.status,422);
+    assert.equal(calls.length,beforeInvalid);
+  });
   it("returns the same Purchase Log replay without reporting a duplicate create", async () => {
     const idempotencyKey="71000000-0000-4000-8000-000000000001";
     const request=()=>fetch(`${baseUrl}/api/v1/maintenance/purchases/general`,{

@@ -25,11 +25,11 @@ const supplierReceivingCategory = z.enum(["raw", "frozen", "juice"]);
 const maintenanceIssueCategory = z.enum(["equipment", "plumbing", "electrical", "refrigeration", "building", "other"]);
 const maintenanceIssuePriority = z.enum(["low", "normal", "high", "urgent"]);
 const maintenanceIssueStatus = z.enum(["new", "in_progress", "waiting_parts", "resolved", "closed"]);
-const maintenancePurchaseUnit = z.enum(["pcs", "meter", "kg", "box", "bag", "roll", "set", "liter", "other"]);
+const maintenancePurchaseUnit = z.enum(["pcs", "meter", "kg", "box", "bag", "roll", "set", "liter", "other", "service"]);
 const maintenancePurchaseReadUnit = z.enum(["pcs", "meter", "kg", "box", "bag", "roll", "set", "liter", "other", "service"]);
 const maintenancePurchaseType = z.enum(["issue", "general"]);
 const maintenancePurchaseScope = z.enum(["branch", "office", "other"]);
-const maintenancePurchaseCategory = z.enum(["spare_parts", "tools_equipment", "electrical", "plumbing", "hvac_refrigeration", "kitchen_equipment", "fuel_petrol", "transportation", "technician_contractor", "building_facility", "safety_equipment", "it_network", "general_supplies", "other"]);
+const maintenancePurchaseCategory = z.enum(["spare_parts", "tools_equipment", "electrical", "plumbing", "hvac_refrigeration", "kitchen_equipment", "fuel_petrol", "transportation", "technician_contractor", "building_facility", "safety_equipment", "it_network", "general_supplies", "other", "service"]);
 const maintenancePurchaseReadCategory = z.enum(["spare_parts", "tools_equipment", "electrical", "plumbing", "hvac_refrigeration", "kitchen_equipment", "fuel_petrol", "transportation", "technician_contractor", "building_facility", "safety_equipment", "it_network", "general_supplies", "other", "service"]);
 const maintenancePaymentMethod = z.enum(["cash", "credit_card", "pay_later"]);
 type MaintenancePurchaseDiagnosticStage = "request_parsing" | "auth_context" | "scope_resolution" | "evidence_validation" | "storage_upload" | "purchase_rpc" | "response_parse" | "storage_cleanup";
@@ -396,6 +396,69 @@ export function maintenancePurchaseRequestHash(input:{issueId?:string|null;paylo
   })).digest("hex");
 }
 
+export type MaintenancePurchaseWriterPayload={
+  purchase_type?:z.infer<typeof maintenancePurchaseType>;
+  purchase_scope?:z.infer<typeof maintenancePurchaseScope>|null;
+  branch_id?:string|null;
+  destination?:string|null;
+  category:z.infer<typeof maintenancePurchaseCategory>;
+  item_name:string;
+  quantity:string|number;
+  unit:z.infer<typeof maintenancePurchaseUnit>;
+  amount:string|number;
+  vendor_name?:string|null;
+  purchase_date:string;
+  notes?:string|null;
+  payment_method?:z.infer<typeof maintenancePaymentMethod>|null;
+};
+
+export type CanonicalMaintenancePurchasePayload=MaintenancePurchaseWriterPayload;
+
+function normalizeMaintenancePurchaseCanonicalText(value:string|null|undefined){
+  if(typeof value!=="string")return null;
+  const normalized=value.trim().replace(/\s+/gu," ");
+  return normalized||null;
+}
+
+export function canonicalizeMaintenancePurchasePayload(input:{issueId?:string|null;payload:MaintenancePurchaseWriterPayload}):CanonicalMaintenancePurchasePayload{
+  const payload=input.payload;
+  const serviceCategory=payload.category==="service",serviceUnit=payload.unit==="service";
+  if(serviceCategory!==serviceUnit)throw new OperationalInputError();
+  if(input.issueId){
+    if(serviceCategory)throw new OperationalInputError();
+    return payload;
+  }
+  if(payload.purchase_type==="issue")throw new OperationalInputError();
+  const scope=payload.purchase_scope??"other";
+  const branchId=payload.branch_id??null;
+  if(scope==="branch"){
+    if(!uuid.safeParse(branchId).success)throw new OperationalInputError();
+  }else if(branchId!==null){
+    throw new OperationalInputError();
+  }
+  const destination=scope==="branch"?null:scope==="office"?"Office":normalizeMaintenancePurchaseCanonicalText(payload.destination);
+  if(scope==="other"&&!destination)throw new OperationalInputError();
+  const quantity=Number(payload.quantity),amount=Number(payload.amount);
+  if(!Number.isFinite(quantity)||quantity<=0||!Number.isFinite(amount)||amount<0)throw new OperationalInputError();
+  const vendorName=normalizeMaintenancePurchaseCanonicalText(payload.vendor_name);
+  if(serviceCategory&&(quantity!==1||!vendorName||/^n\/a$/iu.test(vendorName)))throw new OperationalInputError();
+  return{
+    purchase_type:"general",
+    purchase_scope:scope,
+    branch_id:scope==="branch"?branchId:null,
+    destination,
+    category:payload.category,
+    item_name:payload.item_name,
+    quantity,
+    unit:payload.unit,
+    amount,
+    vendor_name:vendorName,
+    purchase_date:payload.purchase_date,
+    notes:payload.notes??null,
+    payment_method:payload.payment_method??null,
+  };
+}
+
 export type OperationalRole = z.infer<typeof role>;
 export class OperationalConflictError extends Error {}
 export class OperationalDuplicateStaffCodeError extends Error {}
@@ -572,7 +635,7 @@ export type OperationalAdmin = {
   })): Promise<unknown>;
   listMaintenancePurchases(actorUserId: string, issueId: string): Promise<unknown>;
   listMaintenancePurchaseBranches?(input:{actorUserId:string}):Promise<unknown>;
-  createMaintenancePurchase(input: { actorUserId:string; issueId?:string|null; idempotencyKey?:string|null; payload:{purchase_type?:z.infer<typeof maintenancePurchaseType>;purchase_scope?:z.infer<typeof maintenancePurchaseScope>;branch_id?:string|null;destination?:string|null;category:z.infer<typeof maintenancePurchaseCategory>;item_name:string;quantity:string|number;unit:z.infer<typeof maintenancePurchaseUnit>;amount:string|number;vendor_name?:string|null;purchase_date:string;notes?:string|null;payment_method?:z.infer<typeof maintenancePaymentMethod>|null}; receipts?:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>|null; diagnostics?:MaintenancePurchaseDiagnostics }): Promise<unknown>;
+  createMaintenancePurchase(input: { actorUserId:string; issueId?:string|null; idempotencyKey?:string|null; payload:CanonicalMaintenancePurchasePayload; receipts?:Array<{bytes:Buffer;mimeType:z.infer<typeof maintenancePurchaseReceiptMime>;originalName:string}>|null; diagnostics?:MaintenancePurchaseDiagnostics }): Promise<unknown>;
   reimburseMaintenancePurchase(input:{actorUserId:string;purchaseId:string;reimbursementNote?:string|null}):Promise<unknown>;
   listMaintenancePurchaseHistory?(input:{actorUserId:string;purchaseType:z.infer<typeof maintenancePurchaseType>}):Promise<unknown>;
   listMaintenancePurchaseHistoryPage?(input:{actorUserId:string;purchaseType:"issue"|"general"|"all";page:number;pageSize:number}):Promise<unknown>;
@@ -1631,7 +1694,8 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         throw new AdminOperationError();
       }
       const purchaseId=randomUUID();
-      const requestHash=input.idempotencyKey?maintenancePurchaseRequestHash({issueId:input.issueId,payload:input.payload,receipts}):null;
+      const canonicalPayload=input.payload;
+      const requestHash=input.idempotencyKey?maintenancePurchaseRequestHash({issueId:input.issueId,payload:canonicalPayload,receipts}):null;
       const uploaded:Array<{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenancePurchaseReceiptMime>;size_bytes:number;position:number}>=[];
       try{
         let purchaseScope:{organization_id:string}|null=null;
@@ -1678,7 +1742,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         let undefinedObject:MaintenanceUndefinedObjectIdentity|null=null;
         let rawRows:unknown[];
         try{
-          rawRows=await rpc("create_maintenance_purchase_log_v2",{actor_user_id:input.actorUserId,target_issue_id:input.issueId??null,payload:{...input.payload,purchase_id:purchaseId,idempotency_key:input.idempotencyKey??null,request_hash:requestHash,receipt_storage_path:first?.storage_path??null,receipt_original_name:first?.original_filename??null,attachments:uploaded}},{onError:(error)=>{rpcErrorCode=error.code??null;undefinedObject=parseMaintenanceUndefinedObjectIdentity(error.code,error.message);}});
+          rawRows=await rpc("create_maintenance_purchase_log_v2",{actor_user_id:input.actorUserId,target_issue_id:input.issueId??null,payload:{...canonicalPayload,purchase_id:purchaseId,idempotency_key:input.idempotencyKey??null,request_hash:requestHash,receipt_storage_path:first?.storage_path??null,receipt_original_name:first?.original_filename??null,attachments:uploaded}},{onError:(error)=>{rpcErrorCode=error.code??null;undefinedObject=parseMaintenanceUndefinedObjectIdentity(error.code,error.message);}});
           finishPurchaseRpc("success");
         }catch(error){
           finishPurchaseRpc("failure","rpc",rpcErrorCode,undefinedObject);

@@ -72,36 +72,38 @@ describe("authoritative Maintenance Vendor/Service reader compatibility", () => 
     }
   });
 
-  it("accepts service only in strict read schemas", async () => {
+  it("keeps strict readers compatible while the authoritative writer admits service", async () => {
     const [app, operational] = await Promise.all([
       source("src/backend/app.ts"),
       source("src/backend/operational.ts"),
     ]);
 
-    assert.match(app, /const maintenancePurchaseUnitSchema = z\.enum\(\["pcs", "meter", "kg", "box", "bag", "roll", "set", "liter", "other"\]\)/);
+    assert.match(app, /const maintenancePurchaseUnitSchema = z\.enum\(\["pcs", "meter", "kg", "box", "bag", "roll", "set", "liter", "other", "service"\]\)/);
     assert.match(app, /const maintenancePurchaseReadUnitSchema = z\.enum\(\["pcs", "meter", "kg", "box", "bag", "roll", "set", "liter", "other", "service"\]\)/);
-    assert.match(app, /const maintenancePurchaseCategorySchema = z\.enum\(\[[^\]]*"general_supplies", "other"\]\)/);
+    assert.match(app, /const maintenancePurchaseCategorySchema = z\.enum\(\[[^\]]*"general_supplies", "other", "service"\]\)/);
     assert.match(app, /const maintenancePurchaseReadCategorySchema = z\.enum\(\[[^\]]*"general_supplies", "other", "service"\]\)/);
     assert.match(app, /const maintenancePurchaseBodySchema=z\.object\([^;]*category:maintenancePurchaseCategorySchema[^;]*unit:maintenancePurchaseUnitSchema/);
     assert.match(app, /const maintenancePurchaseRowSchema=z\.object\([^;]*category:maintenancePurchaseReadCategorySchema[^;]*unit:maintenancePurchaseReadUnitSchema/);
     assert.match(app, /const managedMaintenancePurchaseRowSchema=z\.object\([^;]*category:maintenancePurchaseReadCategorySchema[^;]*unit:maintenancePurchaseReadUnitSchema/);
 
-    assert.match(operational, /createMaintenancePurchase\(input:[\s\S]*?category:z\.infer<typeof maintenancePurchaseCategory>[\s\S]*?unit:z\.infer<typeof maintenancePurchaseUnit>/);
+    assert.match(operational, /createMaintenancePurchase\(input:[\s\S]*?payload:CanonicalMaintenancePurchasePayload/);
     assert.match(operational, /maintenancePurchaseListRpcRow=z\.object\([^;]*category:maintenancePurchaseReadCategory[^;]*unit:maintenancePurchaseReadUnit/);
     assert.match(operational, /managedMaintenancePurchaseRpcRow=z\.object\([^;]*category:maintenancePurchaseReadCategory[^;]*unit:maintenancePurchaseReadUnit/);
   });
 
-  it("leaves general writes in legacy other scope with no Phase B canonical hash implementation", async () => {
+  it("uses the Phase B canonical payload for both hashing and the v2 RPC", async () => {
     const [app, operational] = await Promise.all([
       source("src/backend/app.ts"),
       source("src/backend/operational.ts"),
     ]);
     const route = app.slice(app.indexOf('app.post("/api/v1/maintenance/purchases/general"'), app.indexOf('app.patch("/api/v1/maintenance/purchases/'));
-    assert.match(route, /purchase_type:"general",purchase_scope:"other",branch_id:null/);
-    assert.doesNotMatch(route, /canonical|request_hash|purchase_scope:"branch"|purchase_scope:"office"/i);
+    assert.match(route, /canonicalizeMaintenancePurchasePayload\(\{issueId:null,payload:body\.data\}\)/);
+    assert.match(route, /payload:canonicalPayload/);
     const writer = operational.slice(operational.indexOf("async createMaintenancePurchase(input)"), operational.indexOf("async reimburseMaintenancePurchase(input)"));
-    assert.match(writer, /maintenancePurchaseRequestHash\(\{issueId:input\.issueId,payload:input\.payload,receipts\}\)/);
+    assert.match(writer, /const canonicalPayload=input\.payload/);
+    assert.match(writer, /maintenancePurchaseRequestHash\(\{issueId:input\.issueId,payload:canonicalPayload,receipts\}\)/);
+    assert.match(writer, /payload:\{\.\.\.canonicalPayload,purchase_id:/);
     assert.match(writer, /request_hash:requestHash/);
-    assert.doesNotMatch(writer, /canonicalMaintenancePurchase|canonicalPurchasePayload|canonicalizedPayload/i);
+    assert.doesNotMatch(writer, /payload:\{\.\.\.input\.payload/);
   });
 });
