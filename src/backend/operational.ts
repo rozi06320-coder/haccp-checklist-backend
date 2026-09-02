@@ -30,27 +30,18 @@ const maintenancePurchaseType = z.enum(["issue", "general"]);
 const maintenancePurchaseScope = z.enum(["branch", "office", "other"]);
 const maintenancePurchaseCategory = z.enum(["spare_parts", "tools_equipment", "electrical", "plumbing", "hvac_refrigeration", "kitchen_equipment", "fuel_petrol", "transportation", "technician_contractor", "building_facility", "safety_equipment", "it_network", "general_supplies", "other"]);
 const maintenancePaymentMethod = z.enum(["cash", "credit_card", "pay_later"]);
-type MaintenancePurchaseDiagnosticStage = "request_validation" | "receipt_validation" | "receipt_upload" | "rpc_create" | "rpc_parse";
-type MaintenancePurchaseDiagnosticPayload = {
-  hasCategory: boolean;
-  category: string | null;
-  hasPaymentMethod: boolean;
-  paymentMethod: string | null;
-  unit: string | null;
-  hasPurchaseDate: boolean;
-  hasItemName: boolean;
-  attachmentCount: number;
-};
+type MaintenancePurchaseDiagnosticStage = "request_parsing" | "auth_context" | "scope_resolution" | "evidence_validation" | "storage_upload" | "purchase_rpc" | "response_parse" | "storage_cleanup";
+type MaintenancePurchaseDiagnosticOutcome = "start" | "success" | "failure";
+type MaintenancePurchaseDiagnosticErrorCategory = "validation" | "authentication" | "authorization" | "rpc" | "storage" | "response" | "cleanup" | "unexpected";
 type MaintenancePurchaseDiagnostics = {
   requestId?: string | null;
-  payload?: MaintenancePurchaseDiagnosticPayload;
   log?: (event: {
     requestId?: string | null;
     stage: MaintenancePurchaseDiagnosticStage;
-    status: "start" | "ok" | "error";
-    errorClass?: string;
-    errorCode?: string | null;
-    payload?: MaintenancePurchaseDiagnosticPayload;
+    outcome: MaintenancePurchaseDiagnosticOutcome;
+    safeErrorCategory?: MaintenancePurchaseDiagnosticErrorCategory;
+    safeCode?: string | null;
+    durationMs?: number;
   }) => void;
 };
 const monthlyEvaluationScore = z.object({
@@ -567,18 +558,35 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   const supplierReceivingPhotoStorage = client.storage.from(SUPPLIER_RECEIVING_PHOTO_BUCKET);
   const maintenanceReceiptStorage = client.storage.from("maintenance-purchase-receipts");
   const maintenanceIssuePhotoStorage = client.storage.from(MAINTENANCE_ISSUE_PHOTO_BUCKET);
-  function emitMaintenancePurchaseDiagnostic(diagnostics: MaintenancePurchaseDiagnostics | undefined, event: { stage: MaintenancePurchaseDiagnosticStage; status: "start" | "ok" | "error"; errorClass?: string; errorCode?: string | null }) {
+  function safeMaintenancePurchaseDiagnosticCode(value: string | null | undefined) {
+    if (!value) return null;
+    return /^(?:PGRST\d{3}|[0-9A-Z]{5}|[1-5]\d{2})$/.test(value) ? value : null;
+  }
+  function emitMaintenancePurchaseDiagnostic(diagnostics: MaintenancePurchaseDiagnostics | undefined, event: { stage: MaintenancePurchaseDiagnosticStage; outcome: MaintenancePurchaseDiagnosticOutcome; safeErrorCategory?: MaintenancePurchaseDiagnosticErrorCategory; safeCode?: string | null; durationMs?: number }) {
     diagnostics?.log?.({
       requestId: diagnostics.requestId ?? null,
       stage: event.stage,
-      status: event.status,
-      errorClass: event.errorClass,
-      errorCode: event.errorCode,
-      payload: diagnostics.payload,
+      outcome: event.outcome,
+      safeErrorCategory: event.safeErrorCategory,
+      safeCode: safeMaintenancePurchaseDiagnosticCode(event.safeCode),
+      durationMs: event.durationMs,
     });
   }
-  function maintenancePurchaseErrorClass(error: unknown) {
-    return error instanceof Error ? error.constructor.name : typeof error;
+  function startMaintenancePurchaseDiagnosticStage(diagnostics: MaintenancePurchaseDiagnostics | undefined, stage: MaintenancePurchaseDiagnosticStage) {
+    const startedAt = performance.now();
+    let completed = false;
+    emitMaintenancePurchaseDiagnostic(diagnostics, { stage, outcome: "start" });
+    return (outcome: Exclude<MaintenancePurchaseDiagnosticOutcome, "start">, safeErrorCategory?: MaintenancePurchaseDiagnosticErrorCategory, safeCode?: string | null) => {
+      if (completed) return;
+      completed = true;
+      emitMaintenancePurchaseDiagnostic(diagnostics, {
+        stage,
+        outcome,
+        safeErrorCategory,
+        safeCode,
+        durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+      });
+    };
   }
   async function rpc(name: string, input: Record<string, unknown>, options?: { onError?: (error: { code?: string | null; message?: string | null }) => void }) {
     const result = await client.rpc(name, input);
@@ -1516,52 +1524,86 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     async listMaintenancePurchaseBranches(input){return{branches:z.array(z.object({id:uuid,name:z.string(),name_ar:optionalStaffText}).strict()).max(500).parse(await rpc("list_maintenance_purchase_branches",{actor_user_id:input.actorUserId}))};},
     async createMaintenancePurchase(input){
       const receipts=input.receipts?.filter((receipt)=>receipt.bytes.length>0)??[];
-      if(receipts.length>MAX_MAINTENANCE_PURCHASE_PHOTOS)throw new AdminOperationError();
+      if(receipts.length>MAX_MAINTENANCE_PURCHASE_PHOTOS){
+        const finishEvidenceValidation=startMaintenancePurchaseDiagnosticStage(input.diagnostics,"evidence_validation");
+        finishEvidenceValidation("failure","validation");
+        throw new AdminOperationError();
+      }
       const purchaseId=randomUUID();
       const requestHash=input.idempotencyKey?maintenancePurchaseRequestHash({issueId:input.issueId,payload:input.payload,receipts}):null;
       const uploaded:Array<{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenancePurchaseReceiptMime>;size_bytes:number;position:number}>=[];
-      let uploadCompleted=false;
-      let uploadErrorLogged=false;
       try{
-        emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"receipt_upload",status:"start"});
-        const purchaseScope=receipts.length>0?z.array(z.object({organization_id:uuid}).strict()).length(1).parse(await rpc("resolve_maintenance_purchase_scope",{actor_user_id:input.actorUserId,target_issue_id:input.issueId??null}))[0]:null;
-        for(const [index,receipt]of receipts.entries()){
-          const inspected=inspectMaintenancePurchaseReceipt(receipt.bytes,receipt.mimeType);
-          const originalName=safeOriginalFileName(receipt.originalName,`receipt-${index+1}.${inspected.extension}`);
-          const storageName=`${randomUUID()}-${safeFileName(receipt.originalName,inspected.extension,`receipt-${index+1}`)}`;
-          const path=`maintenance/${purchaseScope?.organization_id}/purchases/${purchaseId}/${storageName}`;
-          const upload=await maintenanceReceiptStorage.upload(path,receipt.bytes,{contentType:inspected.mime,upsert:false,metadata:{byteSize:String(receipt.bytes.length),mimeType:inspected.mime,originalName}});
-          if(upload.error){uploadErrorLogged=true;emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"receipt_upload",status:"error",errorClass:"StorageUploadError",errorCode:"statusCode"in upload.error?String(upload.error.statusCode):null});throw new AdminOperationError();}
-          uploaded.push({id:randomUUID(),storage_path:path,original_filename:originalName,mime_type:inspected.mime,size_bytes:receipt.bytes.length,position:index+1});
+        let purchaseScope:{organization_id:string}|null=null;
+        if(receipts.length>0){
+          const finishScopeResolution=startMaintenancePurchaseDiagnosticStage(input.diagnostics,"scope_resolution");
+          let scopeErrorCode:string|null=null;
+          try{
+            purchaseScope=z.array(z.object({organization_id:uuid}).strict()).length(1).parse(await rpc("resolve_maintenance_purchase_scope",{actor_user_id:input.actorUserId,target_issue_id:input.issueId??null},{onError:(error)=>{scopeErrorCode=error.code??null;}}))[0]??null;
+            finishScopeResolution("success");
+          }catch(error){
+            finishScopeResolution("failure","rpc",scopeErrorCode);
+            throw error;
+          }
         }
-        uploadCompleted=true;
-        emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"receipt_upload",status:"ok"});
-        const first=uploaded[0];
-        emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_create",status:"start"});
-        let rpcErrorLogged=false;
-        let rawRows:unknown[];
+        const finishEvidenceValidation=startMaintenancePurchaseDiagnosticStage(input.diagnostics,"evidence_validation");
+        let prepared:Array<{receipt:(typeof receipts)[number];inspected:ReturnType<typeof inspectMaintenancePurchaseReceipt>;originalName:string;storageName:string}>;
         try{
-          rawRows=await rpc("create_maintenance_purchase_log_v2",{actor_user_id:input.actorUserId,target_issue_id:input.issueId??null,payload:{...input.payload,purchase_id:purchaseId,idempotency_key:input.idempotencyKey??null,request_hash:requestHash,receipt_storage_path:first?.storage_path??null,receipt_original_name:first?.original_filename??null,attachments:uploaded}},{onError:(error)=>{rpcErrorLogged=true;emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_create",status:"error",errorClass:"PostgrestError",errorCode:error.code??null});}});
-          emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_create",status:"ok"});
+          prepared=receipts.map((receipt,index)=>{
+            const inspected=inspectMaintenancePurchaseReceipt(receipt.bytes,receipt.mimeType);
+            return{receipt,inspected,originalName:safeOriginalFileName(receipt.originalName,`receipt-${index+1}.${inspected.extension}`),storageName:`${randomUUID()}-${safeFileName(receipt.originalName,inspected.extension,`receipt-${index+1}`)}`};
+          });
+          finishEvidenceValidation("success");
         }catch(error){
-          if(!rpcErrorLogged)emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_create",status:"error",errorClass:maintenancePurchaseErrorClass(error)});
+          finishEvidenceValidation("failure","validation");
           throw error;
         }
-        emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_parse",status:"start"});
+        const finishStorageUpload=startMaintenancePurchaseDiagnosticStage(input.diagnostics,"storage_upload");
+        let storageErrorCode:string|null=null;
+        try{
+          for(const [index,{receipt,inspected,originalName,storageName}]of prepared.entries()){
+            const path=`maintenance/${purchaseScope?.organization_id}/purchases/${purchaseId}/${storageName}`;
+            const upload=await maintenanceReceiptStorage.upload(path,receipt.bytes,{contentType:inspected.mime,upsert:false,metadata:{byteSize:String(receipt.bytes.length),mimeType:inspected.mime,originalName}});
+            if(upload.error){storageErrorCode="statusCode"in upload.error?String(upload.error.statusCode):null;throw new AdminOperationError();}
+            uploaded.push({id:randomUUID(),storage_path:path,original_filename:originalName,mime_type:inspected.mime,size_bytes:receipt.bytes.length,position:index+1});
+          }
+          finishStorageUpload("success");
+        }catch(error){
+          finishStorageUpload("failure","storage",storageErrorCode);
+          throw error;
+        }
+        const first=uploaded[0];
+        const finishPurchaseRpc=startMaintenancePurchaseDiagnosticStage(input.diagnostics,"purchase_rpc");
+        let rpcErrorCode:string|null=null;
+        let rawRows:unknown[];
+        try{
+          rawRows=await rpc("create_maintenance_purchase_log_v2",{actor_user_id:input.actorUserId,target_issue_id:input.issueId??null,payload:{...input.payload,purchase_id:purchaseId,idempotency_key:input.idempotencyKey??null,request_hash:requestHash,receipt_storage_path:first?.storage_path??null,receipt_original_name:first?.original_filename??null,attachments:uploaded}},{onError:(error)=>{rpcErrorCode=error.code??null;}});
+          finishPurchaseRpc("success");
+        }catch(error){
+          finishPurchaseRpc("failure","rpc",rpcErrorCode);
+          throw error;
+        }
+        const finishResponseParse=startMaintenancePurchaseDiagnosticStage(input.diagnostics,"response_parse");
         let rows:Awaited<ReturnType<typeof normalizeMaintenancePurchaseMutations>>;
         try{
           rows=await normalizeMaintenancePurchaseMutations(rawRows);
-          emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_parse",status:"ok"});
+          finishResponseParse("success");
         }catch(error){
-          emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"rpc_parse",status:"error",errorClass:maintenancePurchaseErrorClass(error)});
+          finishResponseParse("failure","response");
           throw error;
         }
         const created=rows[0]?.id===purchaseId;
-        if(uploaded.length&&!created)await maintenanceReceiptStorage.remove(uploaded.map((item)=>item.storage_path)).catch(()=>undefined);
+        if(uploaded.length&&!created){
+          const finishStorageCleanup=startMaintenancePurchaseDiagnosticStage(input.diagnostics,"storage_cleanup");
+          try{await maintenanceReceiptStorage.remove(uploaded.map((item)=>item.storage_path));finishStorageCleanup("success");}
+          catch{finishStorageCleanup("failure","cleanup");}
+        }
         return{maintenance_purchase:rows[0],created};
       }catch(error){
-        if(!uploadCompleted&&!uploadErrorLogged)emitMaintenancePurchaseDiagnostic(input.diagnostics,{stage:"receipt_upload",status:"error",errorClass:maintenancePurchaseErrorClass(error)});
-        if(uploaded.length>0)await maintenanceReceiptStorage.remove(uploaded.map((item)=>item.storage_path));
+        if(uploaded.length>0){
+          const finishStorageCleanup=startMaintenancePurchaseDiagnosticStage(input.diagnostics,"storage_cleanup");
+          try{await maintenanceReceiptStorage.remove(uploaded.map((item)=>item.storage_path));finishStorageCleanup("success");}
+          catch(cleanupError){finishStorageCleanup("failure","cleanup");throw cleanupError;}
+        }
         throw error;
       }
     },

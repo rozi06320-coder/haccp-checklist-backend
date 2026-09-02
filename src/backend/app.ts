@@ -519,17 +519,23 @@ function maintenancePurchaseCreateResponsePayload(result:unknown){return typeof 
 function maintenancePurchaseLegacyMutationPayload(result:unknown){const parsed=maintenancePurchaseMutationSchema.parse(maintenancePurchaseCreateResponsePayload(result));const{reimbursed_by,...purchase}=parsed.maintenance_purchase;void reimbursed_by;return maintenancePurchaseLegacyMutationSchema.parse({maintenance_purchase:purchase});}
 function maintenancePurchaseLegacyListPayload(result:unknown){const parsed=maintenancePurchaseListSchema.parse(result);return maintenancePurchaseLegacyListSchema.parse({maintenance_purchases:parsed.maintenance_purchases.map(({reimbursed_by,...purchase})=>{void reimbursed_by;return purchase;})});}
 function maintenancePurchaseLegacyHistoryPayload(result:unknown){const parsed=managedMaintenancePurchaseListSchema.parse(result);return maintenancePurchaseLegacyHistoryListSchema.parse({maintenance_purchases:parsed.maintenance_purchases.map(({maintenance_user_id,reimbursed_by,...purchase})=>{void maintenance_user_id;void reimbursed_by;return purchase;})});}
-type MaintenancePurchaseDiagnosticPayload={hasCategory:boolean;category:string|null;hasPaymentMethod:boolean;paymentMethod:string|null;unit:string|null;hasPurchaseDate:boolean;hasItemName:boolean;attachmentCount:number};
-type MaintenancePurchaseDiagnosticEvent={requestId?:string|null;stage:"request_validation"|"receipt_validation"|"receipt_upload"|"rpc_create"|"rpc_parse";status:"start"|"ok"|"error";errorClass?:string;errorCode?:string|null;payload?:MaintenancePurchaseDiagnosticPayload};
+type MaintenancePurchaseDiagnosticStage="request_parsing"|"auth_context"|"scope_resolution"|"evidence_validation"|"storage_upload"|"purchase_rpc"|"response_parse"|"storage_cleanup";
+type MaintenancePurchaseDiagnosticOutcome="start"|"success"|"failure";
+type MaintenancePurchaseDiagnosticErrorCategory="validation"|"authentication"|"authorization"|"rpc"|"storage"|"response"|"cleanup"|"unexpected";
+type MaintenancePurchaseDiagnosticEvent={requestId?:string|null;stage:MaintenancePurchaseDiagnosticStage;outcome:MaintenancePurchaseDiagnosticOutcome;safeErrorCategory?:MaintenancePurchaseDiagnosticErrorCategory;safeCode?:string|null;durationMs?:number};
 const MAINTENANCE_PURCHASE_DIAGNOSTIC_PREFIX="MAINTENANCE_PURCHASE_DIAGNOSTIC";
-function summarizeMaintenancePurchasePayload(raw:unknown,attachmentCount:number):MaintenancePurchaseDiagnosticPayload{
-  const payload=typeof raw==="object"&&raw!==null?"purchase"in raw&&typeof (raw as{purchase?:unknown}).purchase==="object"&&(raw as{purchase?:unknown}).purchase!==null?(raw as{purchase:Record<string,unknown>}).purchase:raw as Record<string,unknown>:null;
-  const value=(key:string)=>payload&&Object.prototype.hasOwnProperty.call(payload,key)?payload[key]:undefined;
-  const category=value("category"),paymentMethod=value("payment_method"),unit=value("unit"),purchaseDate=value("purchase_date"),itemName=value("item_name");
-  return{hasCategory:typeof category==="string"&&category.length>0,category:typeof category==="string"?category:null,hasPaymentMethod:typeof paymentMethod==="string"&&paymentMethod.length>0,paymentMethod:typeof paymentMethod==="string"?paymentMethod:null,unit:typeof unit==="string"?unit:null,hasPurchaseDate:typeof purchaseDate==="string"&&purchaseDate.length>0,hasItemName:typeof itemName==="string"&&itemName.length>0,attachmentCount};
-}
 function logMaintenancePurchaseDiagnostic(event:MaintenancePurchaseDiagnosticEvent){
-  console.info(MAINTENANCE_PURCHASE_DIAGNOSTIC_PREFIX,{requestId:event.requestId??null,stage:event.stage,status:event.status,errorClass:event.errorClass,errorCode:event.errorCode,payload:event.payload});
+  const safeCode=event.safeCode&&/^(?:PGRST\d{3}|[0-9A-Z]{5}|[1-5]\d{2})$/.test(event.safeCode)?event.safeCode:null;
+  const payload={timestamp:new Date().toISOString(),requestId:event.requestId??null,stage:event.stage,outcome:event.outcome,safeErrorCategory:event.safeErrorCategory??null,safeCode,durationMs:typeof event.durationMs==="number"&&Number.isFinite(event.durationMs)?event.durationMs:null};
+  try{console.info(`${MAINTENANCE_PURCHASE_DIAGNOSTIC_PREFIX} ${JSON.stringify(payload)}`);}catch{/* Diagnostics must never affect a request. */}
+}
+function startMaintenancePurchaseDiagnosticStage(requestId:string,stage:MaintenancePurchaseDiagnosticStage){
+  const startedAt=performance.now();let completed=false;
+  logMaintenancePurchaseDiagnostic({requestId,stage,outcome:"start"});
+  return(outcome:Exclude<MaintenancePurchaseDiagnosticOutcome,"start">,safeErrorCategory?:MaintenancePurchaseDiagnosticErrorCategory,safeCode?:string|null)=>{
+    if(completed)return;completed=true;
+    logMaintenancePurchaseDiagnostic({requestId,stage,outcome,safeErrorCategory,safeCode,durationMs:Math.round((performance.now()-startedAt)*100)/100});
+  };
 }
 const dailyAuditItemApiSchema=z.object({item_id:z.string().min(1).max(80),answer:z.enum(["not_checked","compliant","non_compliant"]),remark:z.string().max(4000)}).strict();
 const dailyAuditBodySchema=z.object({business_date:dateOnlySchema,expected_revision:z.number().int().nonnegative().default(0),items:z.array(dailyAuditItemApiSchema).max(13)}).strict();
@@ -3094,6 +3100,7 @@ export function createApp(
   app.get("/api/v1/maintenance/issues/:issueId/purchases",protectedRateLimit,authenticate,async(request,response,next)=>{try{const issue=z.uuid().safeParse(request.params.issueId);if(!issue.success||!emptyQuerySchema.safeParse(request.query).success||!dependencies.operationalAdmin)throw new HttpError(issue.success?503:400,issue.success?"service_unavailable":"bad_request",issue.success?"Maintenance purchases are temporarily unavailable.":"The request is invalid.");const actorUserId=await loadAuthenticatedMaintenanceUser(request);const result=maintenancePurchaseLegacyListPayload(await dependencies.operationalAdmin.listMaintenancePurchases(actorUserId,issue.data));response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);}catch(error){next(error instanceof HttpError?error:operationalMaintenanceIssueError(error));}});
   app.post("/api/v1/maintenance/issues/:issueId/purchases",protectedRateLimit,authenticate,maintenanceReceiptRawBody,async(request,response,next)=>{
     const requestId=request.id;
+    const finishRequestParsing=startMaintenancePurchaseDiagnosticStage(requestId,"request_parsing");
     try{
       const issue=z.uuid().safeParse(request.params.issueId);
       let raw:unknown=request.body;
@@ -3105,58 +3112,60 @@ export function createApp(
           try{
             decoded=JSON.parse(request.body.toString("utf8"));
           }catch{
-            logMaintenancePurchaseDiagnostic({requestId,stage:"receipt_validation",status:"error",errorClass:"SyntaxError",payload:summarizeMaintenancePurchasePayload(null,0)});
+            finishRequestParsing("failure","validation");
             throw new HttpError(400,"bad_request","The request is invalid.");
           }
           const envelope=maintenancePurchaseUploadEnvelopeSchema.safeParse(decoded);
           if(!envelope.success){
-            logMaintenancePurchaseDiagnostic({requestId,stage:"receipt_validation",status:"error",errorClass:"ZodError",payload:summarizeMaintenancePurchasePayload(decoded,0)});
+            finishRequestParsing("failure","validation");
             throw new HttpError(400,"bad_request","The request is invalid.");
           }
           raw=envelope.data.purchase;
           receipts=envelope.data.attachments.map((attachment)=>({bytes:Buffer.from(attachment.content_base64,"base64"),mimeType:attachment.mime_type,originalName:attachment.original_name?.trim()||"receipt"}));
-          logMaintenancePurchaseDiagnostic({requestId,stage:"receipt_validation",status:"ok",payload:summarizeMaintenancePurchasePayload(raw,receipts.length)});
         }else{
           const encoded=request.header("X-Maintenance-Purchase-Payload"),name=decodeUploadFilename(request.header("X-Maintenance-Purchase-Filename-B64"))??"receipt";
           if(!encoded){
-            logMaintenancePurchaseDiagnostic({requestId,stage:"receipt_validation",status:"error",errorClass:"MissingPayloadHeader",payload:summarizeMaintenancePurchasePayload(null,0)});
+            finishRequestParsing("failure","validation");
             throw new HttpError(400,"bad_request","The request is invalid.");
           }
           try{
             raw=JSON.parse(Buffer.from(encoded,"base64url").toString("utf8"));
           }catch{
-            logMaintenancePurchaseDiagnostic({requestId,stage:"receipt_validation",status:"error",errorClass:"SyntaxError",payload:summarizeMaintenancePurchasePayload(null,0)});
+            finishRequestParsing("failure","validation");
             throw new HttpError(400,"bad_request","The request is invalid.");
           }
           const mime=maintenancePurchaseReceiptMime.safeParse(contentType);
           if(!mime.success){
-            logMaintenancePurchaseDiagnostic({requestId,stage:"receipt_validation",status:"error",errorClass:"ZodError",payload:summarizeMaintenancePurchasePayload(raw,0)});
+            finishRequestParsing("failure","validation");
             throw new HttpError(400,"bad_request","The request is invalid.");
           }
           receipts=[{bytes:request.body,mimeType:mime.data,originalName:name}];
-          logMaintenancePurchaseDiagnostic({requestId,stage:"receipt_validation",status:"ok",payload:summarizeMaintenancePurchasePayload(raw,receipts.length)});
         }
       }
-      const payloadDiagnostic=summarizeMaintenancePurchasePayload(raw,receipts.length);
       const body=maintenancePurchaseBodySchema.safeParse(raw);
       const query=emptyQuerySchema.safeParse(request.query);
       if(!issue.success||!body.success||!query.success||!dependencies.operationalAdmin){
-        logMaintenancePurchaseDiagnostic({requestId,stage:"request_validation",status:"error",errorClass:!issue.success?"InvalidIssueId":!body.success?"ZodError":!query.success?"InvalidQuery":"MissingOperationalAdmin",payload:payloadDiagnostic});
+        finishRequestParsing("failure",!dependencies.operationalAdmin?"unexpected":"validation");
         throw new HttpError(400,"bad_request","The request is invalid.");
       }
       const idempotencyHeader=request.header("Idempotency-Key");
       const idempotencyKey=idempotencyHeader?idempotencySchema.safeParse(idempotencyHeader):null;
-      if(idempotencyKey&&!idempotencyKey.success)throw new HttpError(400,"bad_request","The request is invalid.");
-      logMaintenancePurchaseDiagnostic({requestId,stage:"request_validation",status:"ok",payload:payloadDiagnostic});
-      const actorUserId=await loadAuthenticatedMaintenanceUser(request);
-      const operationalResult=await dependencies.operationalAdmin.createMaintenancePurchase({actorUserId,issueId:issue.data,idempotencyKey:idempotencyKey?.success?idempotencyKey.data:null,payload:body.data,receipts,diagnostics:{requestId,payload:payloadDiagnostic,log:logMaintenancePurchaseDiagnostic}});
+      if(idempotencyKey&&!idempotencyKey.success){finishRequestParsing("failure","validation");throw new HttpError(400,"bad_request","The request is invalid.");}
+      finishRequestParsing("success");
+      const finishAuthContext=startMaintenancePurchaseDiagnosticStage(requestId,"auth_context");
+      let actorUserId:string;
+      try{actorUserId=await loadAuthenticatedMaintenanceUser(request);finishAuthContext("success");}
+      catch(error){finishAuthContext("failure","authentication");throw error;}
+      const operationalResult=await dependencies.operationalAdmin.createMaintenancePurchase({actorUserId,issueId:issue.data,idempotencyKey:idempotencyKey?.success?idempotencyKey.data:null,payload:body.data,receipts,diagnostics:{requestId,log:logMaintenancePurchaseDiagnostic}});
+      const finishResponseParse=startMaintenancePurchaseDiagnosticStage(requestId,"response_parse");
       let result:z.infer<typeof maintenancePurchaseMutationSchema>|z.infer<typeof maintenancePurchaseLegacyMutationSchema>;
       try{
         result=idempotencyKey?.success
           ? maintenancePurchaseMutationSchema.parse(maintenancePurchaseCreateResponsePayload(operationalResult))
           : maintenancePurchaseLegacyMutationPayload(operationalResult);
+        finishResponseParse("success");
       }catch(error){
-        logMaintenancePurchaseDiagnostic({requestId,stage:"rpc_parse",status:"error",errorClass:error instanceof Error?error.constructor.name:typeof error,payload:payloadDiagnostic});
+        finishResponseParse("failure","response");
         throw error;
       }
       response.setHeader("Cache-Control","private, no-store");

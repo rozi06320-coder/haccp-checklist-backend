@@ -551,6 +551,7 @@ describe("managed maintenance operational adapter", () => {
 
   it("validates full Maintenance purchase mutation rows and preserves exact RPC arguments",async()=>{
     const requests:Array<{path:string;body:Record<string,unknown>}>=[];
+    const diagnostics:Array<Record<string,unknown>>=[];
     const rpc=createServer(async(request,response)=>{
       let raw="";for await(const chunk of request)raw+=chunk;
       requests.push({path:request.url??"",body:JSON.parse(raw)as Record<string,unknown>});
@@ -566,7 +567,7 @@ describe("managed maintenance operational adapter", () => {
     await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
     try{
       const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
-      const created=await admin.createMaintenancePurchase?.({actorUserId:id.staffAccount,issueId:id.maintenanceIssue,payload:{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null}});
+      const created=await admin.createMaintenancePurchase?.({actorUserId:id.staffAccount,issueId:id.maintenanceIssue,payload:{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null},diagnostics:{requestId:"request-success",log:(event)=>diagnostics.push(event)}});
       assert.equal((created as{maintenance_purchase:{payment_status:string}}).maintenance_purchase.payment_status,"unpaid");
       const reimbursed=await admin.reimburseMaintenancePurchase?.({actorUserId:id.staffAccount,purchaseId:id.purchaseLog,reimbursementNote:"Paid"});
       assert.equal((reimbursed as{maintenance_purchase:{payment_status:string}}).maintenance_purchase.payment_status,"reimbursed");
@@ -576,12 +577,21 @@ describe("managed maintenance operational adapter", () => {
       assert.match(String((requests[0]?.body.payload as {purchase_id:string}).purchase_id),/^[0-9a-f-]{36}$/);
       assert.deepEqual({...(requests[0]?.body.payload as Record<string,unknown>),purchase_id:"<uuid>"},{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null,purchase_id:"<uuid>",idempotency_key:null,request_hash:null,receipt_storage_path:null,receipt_original_name:null,attachments:[]});
       assert.deepEqual(requests[1],{path:"/rest/v1/rpc/reimburse_maintenance_purchase_log_v2",body:{actor_user_id:id.staffAccount,target_purchase_id:id.purchaseLog,new_note:"Paid"}});
+      assert.deepEqual(diagnostics.map((event)=>({stage:event.stage,outcome:event.outcome})),[
+        {stage:"evidence_validation",outcome:"start"},
+        {stage:"evidence_validation",outcome:"success"},
+        {stage:"storage_upload",outcome:"start"},
+        {stage:"storage_upload",outcome:"success"},
+        {stage:"purchase_rpc",outcome:"start"},
+        {stage:"purchase_rpc",outcome:"success"},
+        {stage:"response_parse",outcome:"start"},
+        {stage:"response_parse",outcome:"success"},
+      ]);
     }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
   });
 
   it("emits Maintenance purchase RPC diagnostics with safe error codes",async()=>{
     const diagnostics:Array<Record<string,unknown>>=[];
-    const safePayload={hasCategory:true,category:"spare_parts",hasPaymentMethod:true,paymentMethod:"pay_later",unit:"meter",hasPurchaseDate:true,hasItemName:true,attachmentCount:0};
     const rpc=createServer(async(_request,response)=>{
       response.setHeader("content-type","application/json");
       response.statusCode=400;
@@ -590,12 +600,14 @@ describe("managed maintenance operational adapter", () => {
     await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
     try{
       const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
-      await assert.rejects(()=>admin.createMaintenancePurchase?.({actorUserId:id.staffAccount,issueId:id.maintenanceIssue,payload:{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:"Do not log",payment_method:"pay_later"},diagnostics:{requestId:"request-1",payload:safePayload,log:(event)=>diagnostics.push(event)}}));
-      assert.deepEqual(diagnostics.map((event)=>({stage:event.stage,status:event.status,errorClass:event.errorClass,errorCode:event.errorCode,payload:event.payload})),[
-        {stage:"receipt_upload",status:"start",errorClass:undefined,errorCode:undefined,payload:safePayload},
-        {stage:"receipt_upload",status:"ok",errorClass:undefined,errorCode:undefined,payload:safePayload},
-        {stage:"rpc_create",status:"start",errorClass:undefined,errorCode:undefined,payload:safePayload},
-        {stage:"rpc_create",status:"error",errorClass:"PostgrestError",errorCode:"22023",payload:safePayload},
+      await assert.rejects(()=>admin.createMaintenancePurchase?.({actorUserId:id.staffAccount,issueId:id.maintenanceIssue,payload:{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:"Do not log",payment_method:"pay_later"},diagnostics:{requestId:"request-1",log:(event)=>diagnostics.push(event)}}));
+      assert.deepEqual(diagnostics.map((event)=>({stage:event.stage,outcome:event.outcome,safeErrorCategory:event.safeErrorCategory,safeCode:event.safeCode})),[
+        {stage:"evidence_validation",outcome:"start",safeErrorCategory:undefined,safeCode:null},
+        {stage:"evidence_validation",outcome:"success",safeErrorCategory:undefined,safeCode:null},
+        {stage:"storage_upload",outcome:"start",safeErrorCategory:undefined,safeCode:null},
+        {stage:"storage_upload",outcome:"success",safeErrorCategory:undefined,safeCode:null},
+        {stage:"purchase_rpc",outcome:"start",safeErrorCategory:undefined,safeCode:null},
+        {stage:"purchase_rpc",outcome:"failure",safeErrorCategory:"rpc",safeCode:"22023"},
       ]);
       assert.doesNotMatch(JSON.stringify(diagnostics),/Replacement seal|Parts Shop|Do not log|service-key/);
     }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
@@ -603,7 +615,6 @@ describe("managed maintenance operational adapter", () => {
 
   it("emits Maintenance purchase parser diagnostics when Phase 2 RPC rows are malformed",async()=>{
     const diagnostics:Array<Record<string,unknown>>=[];
-    const safePayload={hasCategory:true,category:"spare_parts",hasPaymentMethod:true,paymentMethod:"credit_card",unit:"meter",hasPurchaseDate:true,hasItemName:true,attachmentCount:0};
     const rpc=createServer(async(_request,response)=>{
       response.setHeader("content-type","application/json");
       response.end(JSON.stringify([{id:id.purchaseLog,purchase_type:"issue"}]));
@@ -611,15 +622,50 @@ describe("managed maintenance operational adapter", () => {
     await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
     try{
       const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
-      await assert.rejects(()=>admin.createMaintenancePurchase?.({actorUserId:id.staffAccount,issueId:id.maintenanceIssue,payload:{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null,payment_method:"credit_card"},diagnostics:{requestId:"request-2",payload:safePayload,log:(event)=>diagnostics.push(event)}}));
-      assert.deepEqual(diagnostics.map((event)=>({stage:event.stage,status:event.status,errorClass:event.errorClass,payload:event.payload})),[
-        {stage:"receipt_upload",status:"start",errorClass:undefined,payload:safePayload},
-        {stage:"receipt_upload",status:"ok",errorClass:undefined,payload:safePayload},
-        {stage:"rpc_create",status:"start",errorClass:undefined,payload:safePayload},
-        {stage:"rpc_create",status:"ok",errorClass:undefined,payload:safePayload},
-        {stage:"rpc_parse",status:"start",errorClass:undefined,payload:safePayload},
-        {stage:"rpc_parse",status:"error",errorClass:"ZodError",payload:safePayload},
+      await assert.rejects(()=>admin.createMaintenancePurchase?.({actorUserId:id.staffAccount,issueId:id.maintenanceIssue,payload:{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null,payment_method:"credit_card"},diagnostics:{requestId:"request-2",log:(event)=>diagnostics.push(event)}}));
+      assert.deepEqual(diagnostics.map((event)=>({stage:event.stage,outcome:event.outcome,safeErrorCategory:event.safeErrorCategory})),[
+        {stage:"evidence_validation",outcome:"start",safeErrorCategory:undefined},
+        {stage:"evidence_validation",outcome:"success",safeErrorCategory:undefined},
+        {stage:"storage_upload",outcome:"start",safeErrorCategory:undefined},
+        {stage:"storage_upload",outcome:"success",safeErrorCategory:undefined},
+        {stage:"purchase_rpc",outcome:"start",safeErrorCategory:undefined},
+        {stage:"purchase_rpc",outcome:"success",safeErrorCategory:undefined},
+        {stage:"response_parse",outcome:"start",safeErrorCategory:undefined},
+        {stage:"response_parse",outcome:"failure",safeErrorCategory:"response"},
       ]);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("attributes Maintenance purchase Storage failures without logging receipt data",async()=>{
+    const diagnostics:Array<Record<string,unknown>>=[];
+    const rpc=createServer(async(request,response)=>{
+      response.setHeader("content-type","application/json");
+      if(request.url?.includes("/rest/v1/rpc/resolve_maintenance_purchase_scope")){
+        response.end(JSON.stringify([{organization_id:id.organization}]));
+        return;
+      }
+      response.statusCode=500;
+      response.end(JSON.stringify({message:"private storage failure detail"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await assert.rejects(()=>admin.createMaintenancePurchase?.({
+        actorUserId:id.staffAccount,
+        issueId:id.maintenanceIssue,
+        payload:{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:"Do not log"},
+        receipts:[{bytes:Buffer.from("%PDF-private-receipt-bytes"),mimeType:"application/pdf",originalName:"private-receipt.pdf"}],
+        diagnostics:{requestId:"request-storage",log:(event)=>diagnostics.push(event)},
+      }));
+      assert.deepEqual(diagnostics.map((event)=>({stage:event.stage,outcome:event.outcome,safeErrorCategory:event.safeErrorCategory,safeCode:event.safeCode})),[
+        {stage:"scope_resolution",outcome:"start",safeErrorCategory:undefined,safeCode:null},
+        {stage:"scope_resolution",outcome:"success",safeErrorCategory:undefined,safeCode:null},
+        {stage:"evidence_validation",outcome:"start",safeErrorCategory:undefined,safeCode:null},
+        {stage:"evidence_validation",outcome:"success",safeErrorCategory:undefined,safeCode:null},
+        {stage:"storage_upload",outcome:"start",safeErrorCategory:undefined,safeCode:null},
+        {stage:"storage_upload",outcome:"failure",safeErrorCategory:"storage",safeCode:"500"},
+      ]);
+      assert.doesNotMatch(JSON.stringify(diagnostics),/private storage|private-receipt|PDF|Replacement seal|Parts Shop|Do not log|service-key/);
     }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
   });
 
@@ -867,16 +913,19 @@ describe("Maintenance purchase diagnostic API", () => {
   async function captureMaintenancePurchaseDiagnostics<T>(run: () => Promise<T>) {
     const original = console.info;
     const events: Array<Record<string, unknown>> = [];
+    const lines: Array<{ argumentCount: number; value: string }> = [];
     console.info = (...args: unknown[]) => {
-      if (args[0] === "MAINTENANCE_PURCHASE_DIAGNOSTIC" && typeof args[1] === "object" && args[1] !== null) {
-        events.push(args[1] as Record<string, unknown>);
+      if (typeof args[0] === "string" && args[0].startsWith("MAINTENANCE_PURCHASE_DIAGNOSTIC ")) {
+        const value=args[0];
+        lines.push({argumentCount:args.length,value});
+        events.push(JSON.parse(value.slice("MAINTENANCE_PURCHASE_DIAGNOSTIC ".length)) as Record<string,unknown>);
         return;
       }
       original(...args);
     };
     try {
       const value = await run();
-      return { value, events };
+      return { value, events, lines };
     } finally {
       console.info = original;
     }
@@ -900,27 +949,11 @@ describe("Maintenance purchase diagnostic API", () => {
       }));
       assert.equal(invalid.value.status, 400);
       assert.equal(calls.length, 0);
-      assert.equal(invalid.events.length, 1);
-      assert.deepEqual({
-        stage: invalid.events[0]?.stage,
-        status: invalid.events[0]?.status,
-        errorClass: invalid.events[0]?.errorClass,
-        payload: invalid.events[0]?.payload,
-      }, {
-        stage: "request_validation",
-        status: "error",
-        errorClass: "ZodError",
-        payload: {
-          hasCategory: false,
-          category: null,
-          hasPaymentMethod: false,
-          paymentMethod: null,
-          unit: "meter",
-          hasPurchaseDate: true,
-          hasItemName: true,
-          attachmentCount: 0,
-        },
-      });
+      assert.equal(invalid.events.length, 2);
+      assert.deepEqual(invalid.events.map((event)=>({stage:event.stage,outcome:event.outcome,safeErrorCategory:event.safeErrorCategory})),[
+        {stage:"request_parsing",outcome:"start",safeErrorCategory:null},
+        {stage:"request_parsing",outcome:"failure",safeErrorCategory:"validation"},
+      ]);
 
       const success = await captureMaintenancePurchaseDiagnostics(() => fetch(`${baseUrl}/api/v1/maintenance/issues/${id.maintenanceIssue}/purchases`, {
         method: "POST",
@@ -935,15 +968,44 @@ describe("Maintenance purchase diagnostic API", () => {
       assert.equal(created.maintenance_purchase.id, id.purchaseLog);
       assert.equal(created.maintenance_purchase.payment_method, "cash");
       assert.equal(created.maintenance_purchase.payment_status, "unpaid");
-      assert.deepEqual(success.events.map((event) => ({ stage: event.stage, status: event.status, payload: event.payload })), [
-        { stage: "receipt_validation", status: "ok", payload: { hasCategory: true, category: "spare_parts", hasPaymentMethod: true, paymentMethod: "cash", unit: "meter", hasPurchaseDate: true, hasItemName: true, attachmentCount: 1 } },
-        { stage: "request_validation", status: "ok", payload: { hasCategory: true, category: "spare_parts", hasPaymentMethod: true, paymentMethod: "cash", unit: "meter", hasPurchaseDate: true, hasItemName: true, attachmentCount: 1 } },
+      assert.deepEqual(success.events.map((event) => ({ stage: event.stage, outcome: event.outcome })), [
+        {stage:"request_parsing",outcome:"start"},
+        {stage:"request_parsing",outcome:"success"},
+        {stage:"auth_context",outcome:"start"},
+        {stage:"auth_context",outcome:"success"},
+        {stage:"response_parse",outcome:"start"},
+        {stage:"response_parse",outcome:"success"},
       ]);
-      const serialized = JSON.stringify(success.events);
+      assert.ok(success.lines.every((line)=>line.argumentCount===1&&line.value.startsWith("MAINTENANCE_PURCHASE_DIAGNOSTIC ")));
+      assert.ok(success.events.every((event)=>typeof event.timestamp==="string"&&event.requestId!==undefined&&(event.outcome==="start"?event.durationMs===null:typeof event.durationMs==="number")));
+      const serialized = JSON.stringify({events:success.events,lines:success.lines});
       assert.doesNotMatch(serialized, /maintenance|Authorization|Bearer|pdf-bytes|private-receipt|Replacement seal|Parts Shop|Do not log this/);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     }
+  });
+
+  it("keeps unexpected purchase failures generic and diagnostics payload-free",async()=>{
+    const calls:Array<Record<string,unknown>>=[];
+    const fixture=dependencies(calls);
+    if(!fixture.operationalAdmin)throw new Error("missing test adapter");
+    fixture.operationalAdmin.createMaintenancePurchase=async()=>{throw new Error("raw SQL secret receipt-bytes bearer-token");};
+    const config=loadBackendConfig({NODE_ENV:"test",SUPABASE_URL:"http://127.0.0.1:54321",SUPABASE_PUBLISHABLE_KEY:"placeholder",DAILY_AUDIT_GRANT_SECRET:"test-daily-audit-grant-secret-placeholder-32-bytes"});
+    const server=createServer(createApp(config,fixture));
+    await new Promise<void>((resolve)=>server.listen(0,"127.0.0.1",resolve));
+    try{
+      const baseUrl=`http://127.0.0.1:${(server.address()as AddressInfo).port}`;
+      const result=await captureMaintenancePurchaseDiagnostics(()=>fetch(`${baseUrl}/api/v1/maintenance/issues/${id.maintenanceIssue}/purchases`,{
+        method:"POST",headers:headers("maintenance"),body:JSON.stringify({category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:"Do not expose"}),
+      }));
+      assert.equal(result.value.status,503);
+      const body=await result.value.text();
+      assert.match(body,/temporarily unavailable/i);
+      assert.doesNotMatch(body,/raw SQL|secret|receipt-bytes|bearer-token|Replacement seal|Parts Shop|Do not expose/);
+      const serialized=JSON.stringify({events:result.events,lines:result.lines});
+      assert.doesNotMatch(serialized,/raw SQL|secret|receipt-bytes|bearer-token|Replacement seal|Parts Shop|Do not expose/);
+      assert.ok(result.lines.every((line)=>line.argumentCount===1));
+    }finally{await new Promise<void>((resolve,reject)=>server.close((error)=>error?reject(error):resolve()));}
   });
 });
 
