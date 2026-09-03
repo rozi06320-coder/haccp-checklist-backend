@@ -648,6 +648,7 @@ export type OperationalAdmin = {
     role?: OperationalRole; employmentStatus?: "active" | "inactive"; date?: string;
   }): Promise<unknown>;
   listManagedEmployeeTeam?(input: { actorUserId: string; organizationId: string; branchId?: string; month: string }): Promise<unknown>;
+  listManagedPeopleDirectory?(input: { actorUserId: string; organizationId: string; branchId?: string; month: string; search?: string; code?: string }): Promise<unknown>;
   startManagedOperationalStaffSupervisorTraining?(input:{actorUserId:string;organizationId:string;staffId:string}):Promise<unknown>;
   cancelManagedOperationalStaffSupervisorTraining?(input:{actorUserId:string;organizationId:string;staffId:string}):Promise<unknown>;
   getManagedOperationalStaffSupervisorTrainingPromotionState?(input:{actorUserId:string;organizationId:string;staffId:string}):Promise<unknown>;
@@ -1842,6 +1843,93 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         actor_user_id: input.actorUserId, target_organization_id: input.organizationId,
         branch_filter: input.branchId ?? null, requested_month: `${input.month}-01`,
       }));
+    },
+    async listManagedPeopleDirectory(input) {
+      const branch = z.object({
+        id: uuid, name: z.string(), name_ar: optionalStaffText, code: z.string(),
+      }).strict();
+      const common = {
+        person_id: uuid,
+        person_code: optionalStaffText,
+        phone_number: optionalStaffText,
+        email: optionalStaffText,
+        iqama_number: optionalStaffText,
+        iqama_expiry_date: optionalStaffDate,
+        joined_at: z.string(),
+        new_until: z.string(),
+        is_new: z.boolean(),
+      } as const;
+      const staff = z.object({
+        person_type: z.literal("staff"),
+        ...common,
+        display_name: z.string(),
+        country_code: countryCode,
+        display_name_ar: z.null(),
+        branches: z.array(branch).length(1),
+        status: z.enum(["active", "on_vacation", "left_company"]),
+        staff_id: uuid,
+        employment_status: employment,
+        company_name: optionalStaffText,
+        supervisor_name: optionalStaffText,
+        supervisor_name_ar: optionalStaffText,
+        assignment_id: uuid.nullable(),
+        operational_team_id: uuid.nullable(),
+        operational_team_name: optionalStaffText,
+        operational_roles: roles.nullable(),
+        duty_status: duty.nullable(),
+        supervisor_training_status: z.literal("training").nullable(),
+      }).strict();
+      const supervisor = z.object({
+        person_type: z.literal("supervisor"),
+        ...common,
+        display_name: z.string().nullable(),
+        country_code: z.string().regex(/^[A-Z]{2}$/).nullable(),
+        display_name_ar: optionalStaffText,
+        branches: z.array(branch).min(1),
+        status: z.enum(["active", "disabled", "password_change_required"]),
+      }).strict();
+      const result = z.object({
+        people: z.array(z.discriminatedUnion("person_type", [staff, supervisor])).max(1000),
+        people_total: z.number().int().nonnegative(),
+        people_limit: z.literal(1000),
+        people_truncated: z.boolean(),
+        operational_teams: z.array(z.object({
+          id: uuid, branch_id: uuid, branch_name: z.string(), branch_name_ar: optionalStaffText,
+          name: z.string(), active: z.boolean(),
+        }).strict()),
+        health_cards: z.array(z.object({
+          id: uuid, operational_staff_id: uuid, display_name: z.string(), branch_id: uuid,
+          branch_name: z.string(), branch_name_ar: optionalStaffText,
+          certificate_number: optionalStaffText, status: healthCardStatus,
+          place_of_issue: optionalStaffText, expiry_date: optionalStaffDate,
+          date_issue: optionalStaffDate, occupation: optionalStaffText,
+          company: optionalStaffText, branch_name_snapshot: optionalStaffText,
+          notes: optionalStaffText, updated_at: z.string(),
+        }).strict()),
+        monthly_evaluations: z.array(z.object({
+          id: uuid, operational_staff_id: uuid, display_name: z.string(), branch_id: uuid,
+          branch_name: z.string(), branch_name_ar: optionalStaffText,
+          evaluation_month: z.iso.date(), evaluator_name: optionalStaffText,
+          status: monthlyEvaluationStatus,
+          average_score: z.number().nullable(),
+          scores: z.array(monthlyEvaluationScore).max(100), updated_at: z.string(),
+        }).strict()),
+      }).strict().superRefine((value, context) => {
+        if (value.people.length !== Math.min(value.people_total, value.people_limit)) {
+          context.addIssue({ code: "custom", path: ["people"], message: "Invalid people result count." });
+        }
+        if (value.people_truncated !== (value.people_total > value.people_limit)) {
+          context.addIssue({ code: "custom", path: ["people_truncated"], message: "Invalid people truncation state." });
+        }
+      }).parse(await rpcObject("list_managed_people_directory", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        branch_filter: input.branchId ?? null,
+        requested_month: `${input.month}-01`,
+        search_term: input.search ?? null,
+        code_filter: input.code ?? null,
+      }));
+      return result;
     },
     async startManagedOperationalStaffSupervisorTraining(input) {
       return rpcObject("start_managed_operational_staff_supervisor_training",{

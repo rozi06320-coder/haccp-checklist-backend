@@ -623,6 +623,12 @@ const operationalStaffListQuerySchema = z.object({
   date: dateOnlySchema.optional(),
 }).strict();
 const managedEmployeeTeamQuerySchema=z.object({branch_id:z.uuid().optional(),month:z.string().regex(/^\d{4}-(?:0[1-9]|1[0-2])$/)}).strict();
+const managedPeopleDirectoryQuerySchema=z.object({
+  branch_id:z.uuid().optional(),
+  month:monthOnlySchema.optional(),
+  search:z.string().trim().max(120).optional().transform(value=>value||undefined),
+  code:z.string().trim().max(64).optional().transform(value=>value||undefined),
+}).strict();
 const managedAnnualEvaluationQuerySchema=z.object({evaluation_year:z.coerce.number().int().min(2000).max(2200),branch_id:z.uuid().optional(),subject_type:annualEvaluationSubjectTypeSchema.optional(),subject_id:z.uuid().optional(),state:z.enum(["draft","submitted"]).optional()}).strict().refine(value=>(value.subject_type===undefined)===(value.subject_id===undefined));
 const managedAnnualEvaluationDraftSchema=z.object({branch_id:z.uuid(),evaluation_year:z.number().int().min(2000).max(2200),subject_type:annualEvaluationSubjectTypeSchema,subject_id:z.uuid(),expected_revision:z.number().int().nonnegative(),scores:z.array(annualEvaluationScoreSchema).max(20)}).strict();
 const managedAnnualEvaluationSubmitSchema=z.object({expected_revision:z.number().int().nonnegative()}).strict();
@@ -5584,6 +5590,31 @@ export function createApp(
         if(error instanceof HttpError)next(error);
         else if(error instanceof OperationalAccessError)next(new HttpError(403,"forbidden","Access is denied."));
         else next(new HttpError(503,"service_unavailable","Employee team data is temporarily unavailable."));
+      }
+    });
+
+  app.get("/api/v1/management/organizations/:organizationId/people", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId=organizationIdSchema.safeParse(request.params.organizationId);
+        const query=managedPeopleDirectoryQuerySchema.safeParse(request.query);
+        if(!organizationId.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const auth=requireAuthContext(request);const context=await loadActiveUser(request);
+        if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.listManagedPeopleDirectory)throw new HttpError(403,"forbidden","Access is denied.");
+        const result=await dependencies.operationalAdmin.listManagedPeopleDirectory({
+          actorUserId:auth.userId,
+          organizationId:organizationId.data,
+          branchId:query.data.branch_id,
+          month:query.data.month??managerInventoryCurrentMonth().slice(0,7),
+          search:query.data.search,
+          code:query.data.code,
+        });
+        response.setHeader("Cache-Control","private, no-store");response.json(result);
+      } catch(error) {
+        if(error instanceof HttpError)next(error);
+        else if(error instanceof OperationalAccessError)next(new HttpError(403,"forbidden","Access is denied."));
+        else if(error instanceof OperationalInputError)next(new HttpError(400,"bad_request","The request is invalid."));
+        else next(new HttpError(503,"service_unavailable","People directory is temporarily unavailable."));
       }
     });
 
