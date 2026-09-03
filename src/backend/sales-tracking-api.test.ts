@@ -102,6 +102,7 @@ const persistence={
   calls.push({name:"sales-draft",input});
   if(input.branchId!==branch)throw new ChecklistAccessError();
   if(currentState==="submitted"||input.expectedRevision!==currentRevision||currentPeriods.some((period)=>period.entry_period===input.entryPeriod))throw new ChecklistConflictError();
+  if(input.entryPeriod==="middle_shift"&&currentPeriods.some((period)=>period.entry_period==="closing_shift"))throw new ChecklistConflictError();
   const attribution={entry_period:input.entryPeriod,entered_by_user_id:supervisor,entered_by_name:"S",entered_at:"2026-08-08T10:00:00.000Z"};
   currentPeriods.push({id:`56000000-0000-4000-8000-00000000030${currentPeriods.length}`,...attribution});
   currentRevision+=1;
@@ -131,7 +132,7 @@ const persistence={
   if(existing&&existing!==hash)throw new ChecklistConflictError();
   if(existing)return current();
   if(currentState==="submitted"||input.expectedRevision!==currentRevision)throw new ChecklistConflictError();
-  if(currentPeriods.length<1||currentPeriods.length>2)throw new ChecklistInputError();
+  if(!currentPeriods.some((period)=>period.entry_period==="closing_shift")||currentPeriods.length>2)throw new ChecklistInputError();
   replay.set(input.idempotencyKey,hash);
   currentState="submitted";
   currentRevision+=1;
@@ -321,21 +322,17 @@ describe("Sales Tracking API integration",()=>{
   assert.equal((await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/submit`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":"not-a-uuid"},body:JSON.stringify({expected_revision:0})})).status,400);
  });
  it("rejects daily submit when no period is saved",async()=>{
-  const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/submit`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":"66000000-0000-4000-8000-000000000099"},body:JSON.stringify({expected_revision:0})});
+  const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/submit`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":"66000000-0000-4000-8000-000000000096"},body:JSON.stringify({expected_revision:0})});
   assert.equal(response.status,422);
   assert.doesNotMatch(JSON.stringify(await response.json()),/Supabase|database|periods incomplete/i);
  });
- it("submits a Middle Shift-only day and keeps the missing Closing Shift immutable",async()=>{
-  const draftPath=`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/draft`;
-  assert.equal((await request(draftPath,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(draftPayload)})).status,200);
-  const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/submit`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":"66000000-0000-4000-8000-000000000098"},body:JSON.stringify({expected_revision:1})});
-  assert.equal(response.status,201);
-  const body=await response.json();
-  assert.equal(body.current.state,"submitted");
-  assert.deepEqual(body.current.periods.map((period:Record<string,unknown>)=>period.entry_period),["middle_shift"]);
-  assert.equal((await request(draftPath,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...closingPayload,expected_revision:2})})).status,409);
+ it("rejects Middle-only daily submit",async()=>{
+  assert.equal((await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/draft`,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(draftPayload)})).status,200);
+  const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/submit`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":"66000000-0000-4000-8000-000000000099"},body:JSON.stringify({expected_revision:1})});
+  assert.equal(response.status,422);
+  assert.doesNotMatch(JSON.stringify(await response.json()),/Supabase|database|periods incomplete/i);
  });
- it("submits a Closing Shift-only day and keeps the missing Middle Shift immutable",async()=>{
+ it("submits a Closing-only day and keeps it immutable",async()=>{
   const draftPath=`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/draft`;
   assert.equal((await request(draftPath,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...closingPayload,expected_revision:0})})).status,200);
   const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/submit`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":"66000000-0000-4000-8000-000000000097"},body:JSON.stringify({expected_revision:1})});
@@ -343,6 +340,21 @@ describe("Sales Tracking API integration",()=>{
   const body=await response.json();
   assert.deepEqual(body.current.periods.map((period:Record<string,unknown>)=>period.entry_period),["closing_shift"]);
   assert.equal((await request(draftPath,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...draftPayload,expected_revision:2})})).status,409);
+ });
+ it("rejects a new Middle period after Closing is saved before final submit",async()=>{
+  const draftPath=`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/draft`;
+  assert.equal((await request(draftPath,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...closingPayload,expected_revision:0})})).status,200);
+  const response=await request(draftPath,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...draftPayload,expected_revision:1})});
+  assert.equal(response.status,409);
+  assert.deepEqual(currentPeriods.map((period)=>period.entry_period),["closing_shift"]);
+ });
+ it("serializes concurrent duplicate Middle and duplicate Closing periods",async()=>{
+  const draftPath=`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/draft`;
+  const middleResponses=await Promise.all([draftPayload,draftPayload].map((payload)=>request(draftPath,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})));
+  assert.deepEqual(middleResponses.map((response)=>response.status).sort(),[200,409]);
+  const closingResponses=await Promise.all([closingPayload,closingPayload].map((payload)=>request(draftPath,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})));
+  assert.deepEqual(closingResponses.map((response)=>response.status).sort(),[200,409]);
+  assert.deepEqual(currentPeriods.map((period)=>period.entry_period),["middle_shift","closing_shift"]);
  });
  it("submits once and returns submitted current state",async()=>{
   const response=await submitSavedDay("66000000-0000-4000-8000-000000000001");

@@ -1,5 +1,5 @@
 begin;
-select plan(63);
+select plan(73);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000',id,'authenticated','authenticated',id||'@sales-period.invalid','{}','{}',now(),now()
@@ -92,21 +92,36 @@ select throws_ok($$update public.sales_tracking_sales_rows set actual_cash=999 w
 select throws_ok($$delete from public.sales_tracking_reports where id='6a000000-0000-4000-8000-000000000001'$$,'55000','submitted sales tracking report is immutable','submitted legacy report cannot be deleted');
 
 select lives_ok(format($$select public.save_sales_tracking_draft('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000002',0,'middle_shift','[{"entry_date":"%s","actual_cash":1}]','[{"entry_date":"%s","remaining_cash":0}]')$$,private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh')),'A covers Middle Shift on another branch');
-select lives_ok($$select public.submit_sales_tracking('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000002',1,'5a000000-0000-4000-8000-000000000002',repeat('b',64))$$,'Middle-only day may be finalized');
-select lives_ok($$select public.submit_sales_tracking('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000002',1,'5a000000-0000-4000-8000-000000000002',repeat('b',64))$$,'Middle-only final submit replay is idempotent');
-select is(public.get_sales_tracking_current_state('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000002')->>'state','submitted','Middle-only day is final');
-select throws_ok(format($$select public.save_sales_tracking_draft('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000002',2,'closing_shift','[{"entry_date":"%s","actual_cash":2}]','[{"entry_date":"%s","remaining_cash":0}]')$$,private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh')),'23505','sales tracking already submitted','Middle-only final day cannot add Closing later');
+select throws_ok($$select public.submit_sales_tracking('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000002',1,'5a000000-0000-4000-8000-000000000002',repeat('b',64))$$,'22023','sales tracking periods incomplete','Middle-only day cannot be finalized');
+select lives_ok(format($$select public.save_sales_tracking_draft('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000002',1,'closing_shift','[{"entry_date":"%s","actual_cash":2}]','[{"entry_date":"%s","remaining_cash":0}]')$$,private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh')),'A also covers Closing Shift');
+select is((select count(distinct entered_by_user_id)from public.sales_tracking_period_entries p join public.sales_tracking_reports r on r.id=p.report_id where r.branch_id='3a000000-0000-4000-8000-000000000002'),1::bigint,'one supervisor may cover both periods');
+select is((select count(*)from public.sales_tracking_period_entries p join public.sales_tracking_reports r on r.id=p.report_id where r.branch_id='3a000000-0000-4000-8000-000000000002'),2::bigint,'cover branch still has exactly two canonical periods');
+select lives_ok($$select public.submit_sales_tracking('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000002',2,'5a000000-0000-4000-8000-000000000002',repeat('b',64))$$,'Middle plus Closing day may be finalized');
 
 select lives_ok(format($$select public.save_sales_tracking_draft('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000005',0,'closing_shift','[{"entry_date":"%s","actual_cash":3}]','[{"entry_date":"%s","remaining_cash":0}]')$$,private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh')),'Closing Shift may be the only saved period');
-select throws_ok($$select public.submit_sales_tracking('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000005',0,'5a000000-0000-4000-8000-000000000003',repeat('c',64))$$,'40001','sales tracking changed','Closing-only submit still enforces optimistic revision');
+select throws_ok(format($$select public.save_sales_tracking_draft('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000005',1,'closing_shift','[{"entry_date":"%s","actual_cash":4}]','[{"entry_date":"%s","remaining_cash":0}]')$$,private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh')),'23505','sales tracking period already saved','duplicate Closing Shift is rejected');
+select throws_ok(format($$select public.save_sales_tracking_draft('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000005',1,'middle_shift','[{"entry_date":"%s","actual_cash":4}]','[{"entry_date":"%s","remaining_cash":0}]')$$,private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh')),'23505','sales tracking closing period already saved','Middle Shift cannot be created after Closing');
 select lives_ok($$select public.submit_sales_tracking('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000005',1,'5a000000-0000-4000-8000-000000000003',repeat('c',64))$$,'Closing-only day may be finalized');
-select is(jsonb_array_length(public.get_sales_tracking_current_state('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000005')->'periods'),1,'Closing-only final day keeps exactly one period');
-select throws_ok(format($$select public.save_sales_tracking_draft('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000005',2,'middle_shift','[{"entry_date":"%s","actual_cash":4}]','[{"entry_date":"%s","remaining_cash":0}]')$$,private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh')),'23505','sales tracking already submitted','Closing-only final day cannot add Middle later');
+select is(jsonb_array_length(public.get_sales_tracking_current_state('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000005')->'periods'),1,'Closing-only final day keeps exactly one additive interval');
 
 insert into public.sales_tracking_reports(id,organization_id,branch_id,supervisor_user_id,supervisor_team_id,business_date,state,branch_name_snapshot,supervisor_name_snapshot,supervisor_team_name_snapshot)
 values('6a000000-0000-4000-8000-000000000006','2a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000006','1a000000-0000-4000-8000-000000000001','4a000000-0000-4000-8000-000000000007',private.phase4a_business_date('Asia/Riyadh'),'draft','Empty Branch','Supervisor A','Empty Branch Team');
 select throws_ok($$select public.submit_sales_tracking('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000006',0,'5a000000-0000-4000-8000-000000000004',repeat('d',64))$$,'22023','sales tracking periods incomplete','empty day cannot be finalized');
-select is(public.get_managed_sales_tracking_monthly_summary('1a000000-0000-4000-8000-000000000003','2a000000-0000-4000-8000-000000000001',date_trunc('month',private.phase4a_business_date('Asia/Riyadh'))::date,null)->'totals'->>'submitted_report_count','3','Middle-only and Closing-only days each count as one completed report');
+select is(public.get_managed_sales_tracking_monthly_summary('1a000000-0000-4000-8000-000000000003','2a000000-0000-4000-8000-000000000001',date_trunc('month',private.phase4a_business_date('Asia/Riyadh'))::date,null)->'totals'->>'submitted_report_count','3','Manager counts Closing-only and Middle-plus-Closing reports once each');
+
+select is(private.phase4a_business_date_at('Asia/Riyadh','2026-09-03 20:00:00+00'::timestamptz),'2026-09-03'::date,'23:00 branch-local remains on the same business date');
+select is(private.phase4a_business_date_at('Asia/Riyadh','2026-09-03 22:30:00+00'::timestamptz),'2026-09-03'::date,'01:30 branch-local remains on the prior business date');
+select is(private.phase4a_business_date_at('Asia/Riyadh','2026-09-04 00:00:00+00'::timestamptz),'2026-09-04'::date,'03:00 branch-local starts the new business date');
+select ok((select prosecdef from pg_catalog.pg_proc where oid='public.submit_sales_tracking(uuid,uuid,bigint,uuid,text)'::regprocedure),'submit RPC remains SECURITY DEFINER');
+select is((select proconfig from pg_catalog.pg_proc where oid='public.submit_sales_tracking(uuid,uuid,bigint,uuid,text)'::regprocedure),array['search_path=']::text[],'submit RPC keeps an empty search_path');
+select ok(has_function_privilege('service_role','public.submit_sales_tracking(uuid,uuid,bigint,uuid,text)','execute'),'service role retains submit execution');
+select ok(not has_function_privilege('anon','public.submit_sales_tracking(uuid,uuid,bigint,uuid,text)','execute')and not has_function_privilege('authenticated','public.submit_sales_tracking(uuid,uuid,bigint,uuid,text)','execute'),'browser roles and PUBLIC cannot execute submit directly');
+select lives_ok($$with reports as(
+ insert into public.sales_tracking_reports(id,organization_id,branch_id,supervisor_user_id,supervisor_team_id,business_date,state,branch_name_snapshot,supervisor_name_snapshot,supervisor_team_name_snapshot)
+ values('6a000000-0000-4000-8000-000000000021','2a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000003','1a000000-0000-4000-8000-000000000003','4a000000-0000-4000-8000-000000000004','2026-08-30','draft','Other Branch','Other Branch','Other Branch Team'),
+ ('6a000000-0000-4000-8000-000000000022','2a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000003','1a000000-0000-4000-8000-000000000003','4a000000-0000-4000-8000-000000000004','2026-08-31','draft','Other Branch','Other Branch','Other Branch Team')returning id)
+ insert into public.sales_tracking_period_entries(report_id,entry_period,entered_by_user_id,entered_by_name_snapshot)select id,'middle_shift','1a000000-0000-4000-8000-000000000003','Other Branch'from reports$$,'the same period is accepted on different business dates');
+select ok((select count(distinct r.branch_id)from public.sales_tracking_period_entries p join public.sales_tracking_reports r on r.id=p.report_id where p.entry_period='middle_shift')>=2,'the same period is accepted on different branches');
 
 select * from finish();
 rollback;
