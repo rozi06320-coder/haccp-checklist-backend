@@ -95,11 +95,11 @@ export type ChecklistPersistence = {
   getColdStorageCurrentState?(actorUserId:string,branchId:string):Promise<unknown>;
   saveColdStorageDraft?(input:{actorUserId:string;branchId:string;expectedRevision:number;equipment:unknown[];readings:unknown[];diagnostics?:ColdStorageDraftDiagnostics}):Promise<unknown>;
   submitColdStorageSlot?(input:{actorUserId:string;branchId:string;expectedRevision:number;slot:string;idempotencyKey:string;equipment:unknown[];readings:unknown[]}):Promise<unknown>;
-  getSalesTrackingCurrentState?(actorUserId:string,branchId:string):Promise<unknown>;
+  getSalesTrackingCurrentState?(actorUserId:string,branchId:string,businessDate?:string|null):Promise<unknown>;
   listSalesTrackingOnlineOrderProviders?(actorUserId:string,branchId:string):Promise<unknown>;
   createSalesTrackingOnlineOrderProvider?(input:{actorUserId:string;branchId:string;name:string}):Promise<unknown>;
-  saveSalesTrackingDraft?(input:{actorUserId:string;branchId:string;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:SalesTrackingDraftPayload}):Promise<unknown>;
-  submitSalesTracking?(input:{actorUserId:string;branchId:string;expectedRevision:number;idempotencyKey:string}):Promise<unknown>;
+  saveSalesTrackingDraft?(input:{actorUserId:string;branchId:string;businessDate?:string|null;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:SalesTrackingDraftPayload}):Promise<unknown>;
+  submitSalesTracking?(input:{actorUserId:string;branchId:string;businessDate?:string|null;expectedRevision:number;idempotencyKey:string}):Promise<unknown>;
   getFinancialClosingCurrentState?(actorUserId:string,branchId:string):Promise<unknown>;
   saveFinancialClosingDraft?(input:{actorUserId:string;branchId:string;expectedRevision:number;items:unknown[]}):Promise<unknown>;
   submitFinancialClosing?(input:{actorUserId:string;branchId:string;expectedRevision:number;items:unknown[]}):Promise<unknown>;
@@ -453,13 +453,14 @@ function salesTrackingRpcPayload(payload:SalesTrackingDraftPayload){
   };
 }
 
-export function salesTrackingDraftRpcArgs(actorUserId:string,branchId:string,expectedRevision:number,entryPeriod:"middle_shift"|"closing_shift",payload:SalesTrackingDraftPayload){
+export function salesTrackingDraftRpcArgs(actorUserId:string,branchId:string,expectedRevision:number,entryPeriod:"middle_shift"|"closing_shift",payload:SalesTrackingDraftPayload,businessDate?:string|null){
  const rows=salesTrackingRpcPayload(payload);
- return{actor_user_id:actorUserId,target_branch_id:branchId,expected_revision:expectedRevision,entry_period:entryPeriod,sales_rows:rows.sales_rows,cash_rows:rows.cash_rows};
+ return businessDate?{actor_user_id:actorUserId,target_branch_id:branchId,target_business_date:businessDate,expected_revision:expectedRevision,entry_period:entryPeriod,sales_rows:rows.sales_rows,cash_rows:rows.cash_rows}:{actor_user_id:actorUserId,target_branch_id:branchId,expected_revision:expectedRevision,entry_period:entryPeriod,sales_rows:rows.sales_rows,cash_rows:rows.cash_rows};
 }
 
-export function salesTrackingSubmitRpcArgs(actorUserId:string,branchId:string,expectedRevision:number,idempotencyKey:string){
- return{actor_user_id:actorUserId,target_branch_id:branchId,expected_revision:expectedRevision,idempotency_key:idempotencyKey,request_hash:checklistRequestHash({type:"sales_tracking",branch_id:branchId,expected_revision:expectedRevision})};
+export function salesTrackingSubmitRpcArgs(actorUserId:string,branchId:string,expectedRevision:number,idempotencyKey:string,businessDate?:string|null){
+ const requestHash=businessDate?checklistRequestHash({type:"sales_tracking",branch_id:branchId,business_date:businessDate,expected_revision:expectedRevision}):checklistRequestHash({type:"sales_tracking",branch_id:branchId,expected_revision:expectedRevision});
+ return businessDate?{actor_user_id:actorUserId,target_branch_id:branchId,target_business_date:businessDate,expected_revision:expectedRevision,idempotency_key:idempotencyKey,request_hash:requestHash}:{actor_user_id:actorUserId,target_branch_id:branchId,expected_revision:expectedRevision,idempotency_key:idempotencyKey,request_hash:requestHash};
 }
 
 export function createChecklistPersistence(url:string,secretKey:string):ChecklistPersistence{
@@ -501,7 +502,7 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   getColdStorageCurrentState:(actorUserId,branchId)=>rpc("get_cold_storage_current_state",{actor_user_id:actorUserId,target_branch_id:branchId}),
   saveColdStorageDraft:coldStorageDraftRpc,
   submitColdStorageSlot:(input)=>rpc("submit_cold_storage_slot",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,slot:input.slot,idempotency_key:input.idempotencyKey,request_hash:checklistRequestHash({type:"cold_storage",slot:input.slot,equipment:input.equipment,readings:input.readings}),equipment:input.equipment,readings:input.readings}),
-  async getSalesTrackingCurrentState(actorUserId,branchId){return salesTrackingCurrent.parse(await rpc("get_sales_tracking_current_state",{actor_user_id:actorUserId,target_branch_id:branchId}));},
+  async getSalesTrackingCurrentState(actorUserId,branchId,businessDate){const args=businessDate?{actor_user_id:actorUserId,target_branch_id:branchId,target_business_date:businessDate}:{actor_user_id:actorUserId,target_branch_id:branchId};return salesTrackingCurrent.parse(await rpc("get_sales_tracking_current_state",args));},
   async listSalesTrackingOnlineOrderProviders(actorUserId,branchId){
    return salesTrackingOnlineOrderProviders.parse(await rpc("list_sales_tracking_online_order_providers",{actor_user_id:actorUserId,target_branch_id:branchId}));
   },
@@ -509,10 +510,10 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
    return salesTrackingOnlineOrderProviderMutation.parse(await rpc("create_sales_tracking_online_order_provider",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,provider_name:input.name}));
   },
   async saveSalesTrackingDraft(input){
-   return salesTrackingCurrent.parse(await rpc("save_sales_tracking_draft",salesTrackingDraftRpcArgs(input.actorUserId,input.branchId,input.expectedRevision,input.entryPeriod,input.payload)));
+   return salesTrackingCurrent.parse(await rpc("save_sales_tracking_draft",salesTrackingDraftRpcArgs(input.actorUserId,input.branchId,input.expectedRevision,input.entryPeriod,input.payload,input.businessDate)));
   },
 	  async submitSalesTracking(input){
-	   return salesTrackingCurrent.parse(await rpc("submit_sales_tracking",salesTrackingSubmitRpcArgs(input.actorUserId,input.branchId,input.expectedRevision,input.idempotencyKey)));
+	   return salesTrackingCurrent.parse(await rpc("submit_sales_tracking",salesTrackingSubmitRpcArgs(input.actorUserId,input.branchId,input.expectedRevision,input.idempotencyKey,input.businessDate)));
 	  },
 	  getFinancialClosingCurrentState:(actorUserId,branchId)=>rpc("get_financial_closing_current_state",{actor_user_id:actorUserId,target_branch_id:branchId}),
 	  saveFinancialClosingDraft:(input)=>rpc("save_financial_closing_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,report_items:input.items}),

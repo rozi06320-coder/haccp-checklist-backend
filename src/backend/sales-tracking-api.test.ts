@@ -83,7 +83,7 @@ const persistence={
  async getOilTrackingCurrentState(){throw new Error("unused");},async saveOilTrackingDraft(){throw new Error("unused");},async submitOilTrackingOpening(){throw new Error("unused");},async submitOilTrackingClosing(){throw new Error("unused");},
  async getColdStorageCurrentState(){throw new Error("unused");},async saveColdStorageDraft(){throw new Error("unused");},async submitColdStorageSlot(){throw new Error("unused");},
  async listSupervisor(){throw new Error("unused");},async getReport(){throw new Error("unused");},async listManagedReports(){throw new Error("unused");},async listManagedIssues(){throw new Error("unused");},async getManagedIssue(){throw new Error("unused");},
- async getSalesTrackingCurrentState(actorUserId:string,branchId:string){calls.push({name:"sales-current",input:{actorUserId,branchId}});if(branchId!==branch)throw new ChecklistAccessError();return current();},
+ async getSalesTrackingCurrentState(actorUserId:string,branchId:string,businessDate?:string|null){calls.push({name:"sales-current",input:{actorUserId,branchId,businessDate:businessDate??null}});if(branchId!==branch)throw new ChecklistAccessError();return current();},
  async listSalesTrackingOnlineOrderProviders(actorUserId:string,branchId:string){
   calls.push({name:"sales-online-providers",input:{actorUserId,branchId}});
   if(branchId!==branch)throw new ChecklistAccessError();
@@ -99,7 +99,7 @@ const persistence={
   providers.push(provider);
   return{provider};
  },
- async saveSalesTrackingDraft(input:{actorUserId:string;branchId:string;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:{sales_rows:Array<Record<string,unknown>>;cash_rows:Array<{entry_date:string;denominations:Record<string,number>;remaining_cash:unknown;remarks:string}>}}){
+ async saveSalesTrackingDraft(input:{actorUserId:string;branchId:string;businessDate?:string|null;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:{sales_rows:Array<Record<string,unknown>>;cash_rows:Array<{entry_date:string;denominations:Record<string,number>;remaining_cash:unknown;remarks:string}>}}){
   calls.push({name:"sales-draft",input});
   if(input.branchId!==branch)throw new ChecklistAccessError();
   if(currentState==="submitted"||input.expectedRevision!==currentRevision||currentPeriods.some((period)=>period.entry_period===input.entryPeriod))throw new ChecklistConflictError();
@@ -125,7 +125,7 @@ const persistence={
   })));
   return current();
  },
- async submitSalesTracking(input:{actorUserId:string;branchId:string;expectedRevision:number;idempotencyKey:string}){
+ async submitSalesTracking(input:{actorUserId:string;branchId:string;businessDate?:string|null;expectedRevision:number;idempotencyKey:string}){
   calls.push({name:"sales-submit",input});
   if(input.branchId!==branch)throw new ChecklistAccessError();
   const hash=String(input.expectedRevision);
@@ -244,6 +244,21 @@ describe("Sales Tracking API integration",()=>{
   assert.equal(response.status,200);
   assert.deepEqual(await response.json(),{current:{report_id:null,business_date:"2026-08-08",currency_code:"SAR",state:"draft",revision:0,submitted_at:null,submitted_by_user_id:null,submitted_by_name_snapshot:null,periods:[],sales_rows:[],cash_rows:[],totals:{actual_cash:0,actual_credit:0,pos_cash:0,pos_credit:0,online_delivery:0,actual_total:0,pos_total:0,variance:0,cash_total:0,remaining_cash:0}}});
  });
+
+ it("passes an explicit Sales Tracking business date through current, draft, and submit",async()=>{
+  const currentResponse=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/current-state?business_date=2026-08-07`,"supervisor");
+  assert.equal(currentResponse.status,200);
+  assert.deepEqual(calls.at(-1),{name:"sales-current",input:{actorUserId:supervisor,branchId:branch,businessDate:"2026-08-07"}});
+  const draft=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/draft`,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...draftPayload,business_date:"2026-08-07",sales_rows:[{...draftPayload.sales_rows[0],entry_date:"2026-08-07"}],cash_rows:[{...draftPayload.cash_rows[0],entry_date:"2026-08-07"}]})});
+  assert.equal(draft.status,200);
+  assert.equal((calls.at(-1)?.input as {businessDate?:string|null}).businessDate,"2026-08-07");
+  const closing=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/draft`,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...closingPayload,business_date:"2026-08-07",sales_rows:[{...closingPayload.sales_rows[0],entry_date:"2026-08-07"}],cash_rows:[{...closingPayload.cash_rows[0],entry_date:"2026-08-07"}]})});
+  assert.equal(closing.status,200);
+  const submit=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/submit`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":"66000000-0000-4000-8000-000000000088"},body:JSON.stringify({business_date:"2026-08-07",expected_revision:2})});
+  assert.equal(submit.status,201);
+  assert.equal((calls.at(-1)?.input as {businessDate?:string|null}).businessDate,"2026-08-07");
+ });
+
  it("lists default Online Order providers for a Supervisor branch",async()=>{
   const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/online-order-providers`,"supervisor");
   assert.equal(response.status,200);

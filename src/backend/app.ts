@@ -1061,13 +1061,15 @@ const salesTrackingCashRowInputSchema=z.object({
 }).strict();
 const salesTrackingPeriodSchema=z.enum(["middle_shift","closing_shift"]);
 const salesTrackingTotalsSchema=z.object({actual_cash:z.union([z.number(),z.string()]),actual_credit:z.union([z.number(),z.string()]),pos_cash:z.union([z.number(),z.string()]),pos_credit:z.union([z.number(),z.string()]),online_delivery:z.union([z.number(),z.string()]),actual_total:z.union([z.number(),z.string()]),pos_total:z.union([z.number(),z.string()]),variance:z.union([z.number(),z.string()]),cash_total:z.union([z.number(),z.string()]),remaining_cash:z.union([z.number(),z.string()])}).strict();
+const salesTrackingCurrentQuerySchema=z.object({business_date:dateOnlySchema.optional()}).strict();
 const salesTrackingBodySchema=z.object({
+  business_date:dateOnlySchema.optional(),
   expected_revision:z.number().int().nonnegative().default(0),
   entry_period:salesTrackingPeriodSchema,
   sales_rows:z.array(salesTrackingSalesRowInputSchema).length(1),
   cash_rows:z.array(salesTrackingCashRowInputSchema).length(1),
 }).strict();
-const salesTrackingSubmitBodySchema=z.object({expected_revision:z.number().int().nonnegative()}).strict();
+const salesTrackingSubmitBodySchema=z.object({business_date:dateOnlySchema.optional(),expected_revision:z.number().int().nonnegative()}).strict();
 const salesTrackingOnlineProviderBodySchema=z.object({name:normalizedNameSchema}).strict();
 const salesTrackingOnlineProviderSchema=z.object({
   id:z.uuid(),
@@ -6073,11 +6075,11 @@ export function createApp(
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
   app.get("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/current-state",protectedRateLimit,authenticate,async(request,response,next)=>{try{
-    const branch=branchIdSchema.safeParse(request.params.branchId);
-    if(!branch.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const branch=branchIdSchema.safeParse(request.params.branchId),query=salesTrackingCurrentQuerySchema.safeParse(request.query);
+    if(!branch.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request);
     if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.getSalesTrackingCurrentState)throw new HttpError(403,"forbidden","Access is denied.");
-    const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.getSalesTrackingCurrentState(auth.userId,branch.data));
+    const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.getSalesTrackingCurrentState(auth.userId,branch.data,query.data.business_date??null));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
@@ -6104,7 +6106,7 @@ export function createApp(
     if(!branch.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request);
     if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.saveSalesTrackingDraft)throw new HttpError(403,"forbidden","Access is denied.");
-    const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.saveSalesTrackingDraft({actorUserId:auth.userId,branchId:branch.data,expectedRevision:body.data.expected_revision,entryPeriod:body.data.entry_period,payload:body.data}));
+    const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.saveSalesTrackingDraft({actorUserId:auth.userId,branchId:branch.data,businessDate:body.data.business_date??null,expectedRevision:body.data.expected_revision,entryPeriod:body.data.entry_period,payload:body.data}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
@@ -6140,7 +6142,7 @@ export function createApp(
 	    if(!branch.success||!key.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
 	    const auth=requireAuthContext(request),context=await loadActiveUser(request);
 	    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.submitSalesTracking)throw new HttpError(403,"forbidden","Access is denied.");
-	    const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.submitSalesTracking({actorUserId:auth.userId,branchId:branch.data,expectedRevision:body.data.expected_revision,idempotencyKey:key.data}));
+	    const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.submitSalesTracking({actorUserId:auth.userId,branchId:branch.data,businessDate:body.data.business_date??null,expectedRevision:body.data.expected_revision,idempotencyKey:key.data}));
 	    response.setHeader("Cache-Control","private, no-store");response.status(201).json({current});
 	  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 

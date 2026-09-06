@@ -6,6 +6,7 @@ import { checklistRequestHash,salesTrackingDraftRpcArgs,salesTrackingSubmitRpcAr
 
 const actor="17000000-0000-4000-8000-000000000011",branch="27000000-0000-4000-8000-000000000011",key="47000000-0000-4000-8000-000000000011";
 const payload:SalesTrackingDraftPayload={sales_rows:[{entry_date:"2026-08-12",actual_cash:"10",actual_credit:"5",pos_cash:"10",pos_credit:"5",online_delivery:"2",remarks:""}],cash_rows:[{entry_date:"2026-08-12",denominations:{"1":0,"2":0,"5":0,"10":0,"20":0,"50":0,"100":0,"200":0,"500":0},remaining_cash:"0",remarks:""}]};
+const backdatedPayload:SalesTrackingDraftPayload={sales_rows:[{...payload.sales_rows[0],entry_date:"2026-08-11"}],cash_rows:[{...payload.cash_rows[0],entry_date:"2026-08-11"}]};
 
 describe("Sales Tracking PostgREST RPC argument contract",()=>{
  it("uses the exact period-save signature and canonical period value",()=>{
@@ -25,6 +26,16 @@ describe("Sales Tracking PostgREST RPC argument contract",()=>{
    request_hash:checklistRequestHash({type:"sales_tracking",branch_id:branch,expected_revision:4}),
   });
  });
+ it("adds explicit business dates only for the new Sales Tracking RPC overloads",()=>{
+  assert.deepEqual(salesTrackingDraftRpcArgs(actor,branch,3,"middle_shift",backdatedPayload,"2026-08-11"),{
+   actor_user_id:actor,target_branch_id:branch,target_business_date:"2026-08-11",expected_revision:3,entry_period:"middle_shift",sales_rows:backdatedPayload.sales_rows,cash_rows:[{entry_date:"2026-08-11",denom_1:0,denom_2:0,denom_5:0,denom_10:0,denom_20:0,denom_50:0,denom_100:0,denom_200:0,denom_500:0,remaining_cash:"0",remarks:""}],
+  });
+  const dated=salesTrackingSubmitRpcArgs(actor,branch,4,key,"2026-08-11");
+  assert.equal(dated.target_business_date,"2026-08-11");
+  assert.equal(dated.request_hash,checklistRequestHash({type:"sales_tracking",branch_id:branch,business_date:"2026-08-11",expected_revision:4}));
+  assert.notEqual(dated.request_hash,salesTrackingSubmitRpcArgs(actor,branch,4,key,"2026-08-12").request_hash);
+ });
+
  it("allows one or two saved periods while preserving submit concurrency and grants",async()=>{
   const migration=await readFile(path.resolve("supabase/migrations/20260901090000_sales_tracking_flexible_daily_submit.sql"),"utf8");
   assert.match(migration,/create or replace function public\.submit_sales_tracking\(actor_user_id uuid,target_branch_id uuid,expected_revision bigint,idempotency_key uuid,request_hash text\)/);
