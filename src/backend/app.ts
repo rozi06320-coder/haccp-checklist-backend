@@ -586,7 +586,8 @@ const createInternalAdminBranchTeamBodySchema = z.object({
     context.addIssue({ code: "custom", path: ["backup_supervisor_user_id"], message: "Choose a different backup supervisor." });
   }
 });
-const managedBranchTimezoneSchema = z.enum(["Asia/Riyadh", "UTC"]);
+const managedBranchTimezoneSchema = z.enum(["Asia/Riyadh", "Asia/Dubai", "UTC"]);
+const branchCountryCodeSchema = z.enum(["SA", "AE"]);
 const createBranchBodySchema = z.object({
   name: normalizedNameSchema,
   name_ar: optionalStaffTextSchema(120),
@@ -595,6 +596,7 @@ const createBranchBodySchema = z.object({
   area: optionalDisplayNameSchema,
   address: optionalStaffTextSchema(240),
   timezone: managedBranchTimezoneSchema.default("Asia/Riyadh"),
+  country_code: branchCountryCodeSchema.default("SA"),
   active: z.boolean().default(true),
 }).strict();
 const updateBranchBodySchema = z.object({
@@ -605,6 +607,7 @@ const updateBranchBodySchema = z.object({
   area: optionalDisplayNameSchema,
   address: optionalStaffTextSchema(240),
   timezone: managedBranchTimezoneSchema,
+  country_code: branchCountryCodeSchema,
 }).strict();
 const createOrganizationBodySchema = z.object({
   name: normalizedNameSchema,
@@ -1152,17 +1155,17 @@ const phase4aIssueListSchema=z.object({issues:z.array(z.object({id:uuidLikeSchem
 const managedSalesTrackingOnlineProviderAmountSchema=z.object({provider_id:z.uuid().nullable().optional(),provider_key:z.string().nullable().optional(),provider_name:z.string().min(1).max(120),amount:z.union([z.number(),z.string()])}).strict();
 const managedSalesTrackingSchema=z.object({
   sales_rows:z.array(z.object({
-    report_id:z.uuid(),row_id:z.uuid(),business_date:dateOnlySchema,entry_date:dateOnlySchema,entry_period:salesTrackingPeriodSchema.nullable(),entered_by:z.string().nullable(),entered_at:z.string().nullable(),branch_id:z.uuid(),branch_name:z.string(),supervisor_user_id:z.uuid(),submitted_by:z.string().nullable(),supervisor_team_id:z.uuid(),supervisor_team_name:z.string(),submitted_at:z.string(),
+    report_id:z.uuid(),row_id:z.uuid(),currency_code:z.enum(["SAR","AED"]),business_date:dateOnlySchema,entry_date:dateOnlySchema,entry_period:salesTrackingPeriodSchema.nullable(),entered_by:z.string().nullable(),entered_at:z.string().nullable(),branch_id:z.uuid(),branch_name:z.string(),supervisor_user_id:z.uuid(),submitted_by:z.string().nullable(),supervisor_team_id:z.uuid(),supervisor_team_name:z.string(),submitted_at:z.string(),
     actual_cash:z.union([z.number(),z.string()]),actual_credit:z.union([z.number(),z.string()]),pos_cash:z.union([z.number(),z.string()]),pos_credit:z.union([z.number(),z.string()]),online_delivery:z.union([z.number(),z.string()]),online_provider_breakdown:z.array(managedSalesTrackingOnlineProviderAmountSchema).optional().default([]),actual_total:z.union([z.number(),z.string()]),pos_total:z.union([z.number(),z.string()]),variance:z.union([z.number(),z.string()]),remarks:z.string().nullable().optional(),
   }).strict()).max(1000),
   cash_rows:z.array(z.object({
-    report_id:z.uuid(),row_id:z.uuid(),business_date:dateOnlySchema,entry_date:dateOnlySchema,entry_period:salesTrackingPeriodSchema.nullable(),entered_by:z.string().nullable(),entered_at:z.string().nullable(),branch_id:z.uuid(),branch_name:z.string(),supervisor_user_id:z.uuid(),submitted_by:z.string().nullable(),supervisor_team_id:z.uuid(),supervisor_team_name:z.string(),submitted_at:z.string(),
+    report_id:z.uuid(),row_id:z.uuid(),currency_code:z.enum(["SAR","AED"]),business_date:dateOnlySchema,entry_date:dateOnlySchema,entry_period:salesTrackingPeriodSchema.nullable(),entered_by:z.string().nullable(),entered_at:z.string().nullable(),branch_id:z.uuid(),branch_name:z.string(),supervisor_user_id:z.uuid(),submitted_by:z.string().nullable(),supervisor_team_id:z.uuid(),supervisor_team_name:z.string(),submitted_at:z.string(),
     denom_1:z.number().int().nonnegative(),denom_2:z.number().int().nonnegative(),denom_5:z.number().int().nonnegative(),denom_10:z.number().int().nonnegative(),denom_20:z.number().int().nonnegative(),denom_50:z.number().int().nonnegative(),denom_100:z.number().int().nonnegative(),denom_200:z.number().int().nonnegative(),denom_500:z.number().int().nonnegative(),cash_total:z.union([z.number(),z.string()]),remaining_cash:z.union([z.number(),z.string()]),remarks:z.string().nullable().optional(),
   }).strict()).max(1000),
 }).strict().transform((result)=>({
   sales_rows:result.sales_rows,
   cash_rows:result.cash_rows.map((row)=>({
-    report_id:row.report_id,row_id:row.row_id,business_date:row.business_date,entry_date:row.entry_date,entry_period:row.entry_period,entered_by:row.entered_by,entered_at:row.entered_at,branch_id:row.branch_id,branch_name:row.branch_name,supervisor_user_id:row.supervisor_user_id,submitted_by:row.submitted_by,supervisor_team_id:row.supervisor_team_id,supervisor_team_name:row.supervisor_team_name,submitted_at:row.submitted_at,
+    report_id:row.report_id,row_id:row.row_id,currency_code:row.currency_code,business_date:row.business_date,entry_date:row.entry_date,entry_period:row.entry_period,entered_by:row.entered_by,entered_at:row.entered_at,branch_id:row.branch_id,branch_name:row.branch_name,supervisor_user_id:row.supervisor_user_id,submitted_by:row.submitted_by,supervisor_team_id:row.supervisor_team_id,supervisor_team_name:row.supervisor_team_name,submitted_at:row.submitted_at,
     denominations:{"1":row.denom_1,"2":row.denom_2,"5":row.denom_5,"10":row.denom_10,"20":row.denom_20,"50":row.denom_50,"100":row.denom_100,"200":row.denom_200,"500":row.denom_500},
     cash_total:row.cash_total,remaining_cash:row.remaining_cash,remarks:row.remarks,
   })),
@@ -1244,6 +1247,7 @@ const coldStorageCurrentSchema=z.object({
 const salesTrackingCurrentSchema=z.object({
   report_id:z.uuid().nullable(),
   business_date:dateOnlySchema,
+  currency_code:z.enum(["SAR","AED"]),
   state:z.enum(["draft","submitted"]),
   revision:z.number().int().nonnegative().default(0),
   submitted_at:z.string().nullable(),
@@ -3401,6 +3405,7 @@ export function createApp(
           area: branch.area ?? null,
           address: branch.address ?? null,
           timezone: branch.timezone,
+          country_code: branch.country_code,
           active: branch.active,
           logo_configured: Boolean(branch.logo_path),
           logo_url: dependencies.brandingService
@@ -3476,6 +3481,7 @@ export function createApp(
           area: body.data.area,
           address: body.data.address,
           timezone: body.data.timezone,
+          countryCode: body.data.country_code,
         });
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json({ branch: { ...branch, name_ar: branch.name_ar ?? null } });
@@ -3573,6 +3579,7 @@ export function createApp(
           area: body.data.area,
           address: body.data.address,
           timezone: body.data.timezone,
+          countryCode: body.data.country_code,
           active: body.data.active,
         });
         response.setHeader("Cache-Control", "private, no-store");
@@ -4696,6 +4703,7 @@ export function createApp(
           area: body.data.area,
           address: body.data.address,
           timezone: body.data.timezone,
+          countryCode: body.data.country_code,
           active: body.data.active,
         });
         response.setHeader("Cache-Control", "private, no-store");

@@ -19,6 +19,7 @@ const onlineProviderBreakdownSchema = z.object({
 }).strict();
 
 const monthlyMetricsSchema = z.object({
+  currency_code: z.enum(["SAR", "AED"]).optional(),
   submitted_report_count: nonnegativeCount,
   submitted_day_count: nonnegativeCount,
   sales_entry_count: nonnegativeCount,
@@ -33,6 +34,11 @@ const monthlyMetricsSchema = z.object({
   legacy_online_delivery: decimal.default("0"),
 }).strict();
 
+const aggregateMetricsSchema = monthlyMetricsSchema.extend({
+  submitted_branch_day_count: nonnegativeCount,
+  reporting_branch_count: nonnegativeCount,
+}).omit({ submitted_day_count: true }).strict();
+
 export const managementSalesTrackingMonthlySummarySchema = z.object({
   generated_at: z.iso.datetime({ offset: true }),
   scope: z.object({
@@ -42,10 +48,8 @@ export const managementSalesTrackingMonthlySummarySchema = z.object({
     date_from: z.iso.date(),
     date_to: z.iso.date(),
   }).strict(),
-  totals: monthlyMetricsSchema.extend({
-    submitted_branch_day_count: nonnegativeCount,
-    reporting_branch_count: nonnegativeCount,
-  }).omit({ submitted_day_count: true }).strict(),
+  totals: aggregateMetricsSchema.optional(),
+  currency_totals: z.array(aggregateMetricsSchema).max(2).optional(),
   branches: z.array(monthlyMetricsSchema.extend({
     branch_id: z.uuid(),
     branch_name: z.string().min(1),

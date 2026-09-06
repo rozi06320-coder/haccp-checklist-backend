@@ -128,7 +128,7 @@ function deps(options: {
       },
       async listBranchesForInternalAdmin(_actorUserId, organizationId) {
         if (!(options.branches ?? true) || organizationId !== ids.orgA) return [];
-        return [{ id: ids.branch, name: "Branch", code: "BR", city: null, area: null, address: null, timezone: "Asia/Riyadh", active: true }];
+        return [{ id: ids.branch, name: "Branch", code: "BR", city: null, area: null, address: null, timezone: "Asia/Riyadh", country_code: "SA", active: true }];
       },
       async createBranch(input) {
         calls.createBranch = input;
@@ -147,6 +147,7 @@ function deps(options: {
           area: input.area ?? null,
           address: input.address ?? null,
           timezone: input.timezone,
+          country_code: input.countryCode,
           active: input.active,
         };
       },
@@ -163,6 +164,7 @@ function deps(options: {
           area: input.area ?? null,
           address: input.address ?? null,
           timezone: input.timezone,
+          country_code: input.countryCode,
           active: true,
         };
       },
@@ -175,6 +177,7 @@ function deps(options: {
           name: "Branch",
           code: "BR",
           timezone: "Asia/Riyadh",
+          country_code: "SA",
           active: false,
         };
       },
@@ -187,6 +190,7 @@ function deps(options: {
           name: "Branch",
           code: "BR",
           timezone: "Asia/Riyadh",
+          country_code: "SA",
           active: true,
         };
       },
@@ -664,7 +668,8 @@ describe("internal-admin supervisor provisioning", () => {
       city: "  Riyadh   North ",
       area: " Al   Takhassusi ",
       address: " 123 King Road ",
-      timezone: "Asia/Riyadh",
+      timezone: "Asia/Dubai",
+      country_code: "AE",
       active: true,
     });
     const text = await response.text();
@@ -678,7 +683,8 @@ describe("internal-admin supervisor provisioning", () => {
       city: "Riyadh North",
       area: "Al Takhassusi",
       address: "123 King Road",
-      timezone: "Asia/Riyadh",
+      timezone: "Asia/Dubai",
+      countryCode: "AE",
       active: true,
     });
     assert.deepEqual(JSON.parse(text), {
@@ -691,7 +697,8 @@ describe("internal-admin supervisor provisioning", () => {
         city: "Riyadh North",
         area: "Al Takhassusi",
         address: "123 King Road",
-        timezone: "Asia/Riyadh",
+        timezone: "Asia/Dubai",
+        country_code: "AE",
         active: true,
       },
     });
@@ -700,7 +707,7 @@ describe("internal-admin supervisor provisioning", () => {
 
   it("lets Internal Admin edit branch code and deactivate/reactivate branches without changing branch id", async () => {
     const calls: Record<string, unknown> = {};
-    const update = await patchInternalAdminBranch(deps({ calls }), { name: "  Renamed   Branch ", name_ar: " فرع ", code: " hun-ruh-001 ", city: " Jeddah ", area: " Al   Hamra ", address: "  Sea Road  ", timezone: "UTC" });
+    const update = await patchInternalAdminBranch(deps({ calls }), { name: "  Renamed   Branch ", name_ar: " فرع ", code: " hun-ruh-001 ", city: " Jeddah ", area: " Al   Hamra ", address: "  Sea Road  ", timezone: "UTC", country_code: "AE" });
     assert.equal(update.status, 200);
     assert.deepEqual(calls.updateBranchForInternalAdmin, {
       actorUserId: ids.actor,
@@ -713,6 +720,7 @@ describe("internal-admin supervisor provisioning", () => {
       area: "Al Hamra",
       address: "Sea Road",
       timezone: "UTC",
+      countryCode: "AE",
     });
     assert.deepEqual(await update.json(), {
       branch: {
@@ -725,6 +733,7 @@ describe("internal-admin supervisor provisioning", () => {
         area: "Al Hamra",
         address: "Sea Road",
         timezone: "UTC",
+        country_code: "AE",
         active: true,
       },
     });
@@ -741,7 +750,7 @@ describe("internal-admin supervisor provisioning", () => {
   });
 
   it("maps Internal Admin branch lifecycle errors safely", async () => {
-    const validUpdateBody = { name: "Branch", code: "HUN-RUH-001", city: "Riyadh", timezone: "UTC" };
+    const validUpdateBody = { name: "Branch", code: "HUN-RUH-001", city: "Riyadh", timezone: "UTC", country_code: "SA" };
     assert.equal((await patchInternalAdminBranch(deps(), validUpdateBody, ids.orgA, ids.branch, "invalid")).status, 401);
     assert.equal((await patchInternalAdminBranch(deps({ internalAdmin: false }), validUpdateBody)).status, 403);
     assert.equal((await patchInternalAdminBranch(deps(), { name: " ", code: "HUN-RUH-001", city: "Riyadh", timezone: "UTC" })).status, 400);

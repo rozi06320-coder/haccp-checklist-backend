@@ -109,6 +109,7 @@ export type InternalAdminBranch = {
   area?: string | null;
   address?: string | null;
   timezone: string;
+  country_code?: "SA" | "AE";
   active: boolean;
   logo_path?: string | null;
   logo_url?: string | null;
@@ -217,6 +218,7 @@ export type ManagedBranch = {
   area?: string | null;
   address?: string | null;
   timezone: string;
+  country_code?: "SA" | "AE";
   active: boolean;
 };
 export type InternalAdminOrganization = {
@@ -363,6 +365,7 @@ export type ManagementAdmin = {
     area?: string | null;
     address?: string | null;
     timezone: string;
+    countryCode: "SA" | "AE";
   }): Promise<InternalAdminBranch>;
   deactivateBranchForInternalAdmin?(input: {
     actorUserId: string;
@@ -457,6 +460,7 @@ export type ManagementAdmin = {
     area?: string | null;
     address?: string | null;
     timezone: string;
+    countryCode: "SA" | "AE";
     active: boolean;
   }): Promise<ManagedBranch>;
   createBranchForInternalAdmin?(input: {
@@ -469,6 +473,7 @@ export type ManagementAdmin = {
     area?: string | null;
     address?: string | null;
     timezone: string;
+    countryCode: "SA" | "AE";
     active: boolean;
   }): Promise<ManagedBranch>;
   listMaintenanceUsers?(actorUserId: string, organizationId: string): Promise<ManagedMaintenanceUser[]>;
@@ -812,6 +817,7 @@ export function createManagementAdmin(
         area: z.string().nullable().optional(),
         address: z.string().nullable().optional(),
         timezone: z.string(),
+        country_code: z.enum(["SA", "AE"]),
         active: z.boolean(),
         logo_path: z.string().nullable(),
       }).strict()).max(500).safeParse(data);
@@ -1287,10 +1293,14 @@ export function createManagementAdmin(
         area: z.string().nullable().optional(),
         address: z.string().nullable().optional(),
         timezone: z.string(),
+        country_code: z.enum(["SA", "AE"]).optional(),
         active: z.boolean(),
       }).strict()).length(1).safeParse(data);
       if (!rows.success) throw new AdminOperationError();
-      return rows.data[0];
+      const row = rows.data[0];
+      const countryCode = row.country_code ?? "SA";
+      if (countryCode !== input.countryCode) throw new AdminOperationError();
+      return { ...row, country_code: countryCode };
     },
     async createBranchForInternalAdmin(input) {
       const { data, error } = await admin.rpc("create_internal_admin_branch", {
@@ -1303,6 +1313,7 @@ export function createManagementAdmin(
         p_branch_area: input.area ?? null,
         p_branch_address: input.address ?? null,
         p_branch_timezone: input.timezone,
+        p_branch_country_code: input.countryCode,
         p_branch_active: input.active,
       });
       if (error) {
@@ -1324,6 +1335,7 @@ export function createManagementAdmin(
         area: z.string().nullable().optional(),
         address: z.string().nullable().optional(),
         timezone: z.string(),
+        country_code: z.enum(["SA", "AE"]),
         active: z.boolean(),
       }).strict()).length(1).safeParse(data);
       if (!rows.success) throw new AdminOperationError();
@@ -1341,6 +1353,7 @@ export function createManagementAdmin(
         p_branch_area: input.area ?? null,
         p_branch_address: input.address ?? null,
         p_branch_timezone: input.timezone,
+        p_branch_country_code: input.countryCode,
       });
       if (error) {
         if (error.code === "23505") {
@@ -1361,6 +1374,7 @@ export function createManagementAdmin(
         area: z.string().nullable().optional(),
         address: z.string().nullable().optional(),
         timezone: z.string(),
+        country_code: z.enum(["SA", "AE"]),
         active: z.boolean(),
       }).strict()).length(1).safeParse(data);
       if (!rows.success) throw new AdminOperationError();

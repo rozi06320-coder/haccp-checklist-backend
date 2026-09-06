@@ -51,6 +51,7 @@ function current(){
   return {
     report_id:currentRevision===0?null:"56000000-0000-4000-8000-000000000001",
     business_date:"2026-08-08",
+    currency_code:"SAR",
     state:currentState,
     revision:currentRevision,
     submitted_at:submittedAt,
@@ -145,7 +146,7 @@ const persistence={
   calls.push({name:"managed-sales-tracking",input});
   if(input.actorUserId!==manager||input.organizationId!==org)throw new ChecklistAccessError();
   if(malformedManagedSalesTracking)return{sales_rows:[{bad:"shape"}],cash_rows:[]};
-  const base={report_id:"56000000-0000-4000-8000-000000000001",business_date:"2026-08-08",branch_id:branch,branch_name:"A",supervisor_user_id:supervisor,submitted_by:"S",supervisor_team_id:"46000000-0000-4000-8000-000000000001",supervisor_team_name:"S Team",submitted_at:"2026-08-08T12:00:00.000Z"};
+  const base={report_id:"56000000-0000-4000-8000-000000000001",business_date:"2026-08-08",currency_code:"SAR",branch_id:branch,branch_name:"A",supervisor_user_id:supervisor,submitted_by:"S",supervisor_team_id:"46000000-0000-4000-8000-000000000001",supervisor_team_name:"S Team",submitted_at:"2026-08-08T12:00:00.000Z"};
   if((input.dateFrom&&input.dateFrom>base.business_date)||(input.dateTo&&input.dateTo<base.business_date)||input.branchId&&input.branchId!==branch)return{sales_rows:[],cash_rows:[]};
   return {
     sales_rows:currentState==="submitted"?currentSalesRows.map((row,index)=>({
@@ -241,7 +242,7 @@ describe("Sales Tracking API integration",()=>{
  it("returns empty current state for a Supervisor",async()=>{
   const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/current-state`,"supervisor");
   assert.equal(response.status,200);
-  assert.deepEqual(await response.json(),{current:{report_id:null,business_date:"2026-08-08",state:"draft",revision:0,submitted_at:null,submitted_by_user_id:null,submitted_by_name_snapshot:null,periods:[],sales_rows:[],cash_rows:[],totals:{actual_cash:0,actual_credit:0,pos_cash:0,pos_credit:0,online_delivery:0,actual_total:0,pos_total:0,variance:0,cash_total:0,remaining_cash:0}}});
+  assert.deepEqual(await response.json(),{current:{report_id:null,business_date:"2026-08-08",currency_code:"SAR",state:"draft",revision:0,submitted_at:null,submitted_by_user_id:null,submitted_by_name_snapshot:null,periods:[],sales_rows:[],cash_rows:[],totals:{actual_cash:0,actual_credit:0,pos_cash:0,pos_credit:0,online_delivery:0,actual_total:0,pos_total:0,variance:0,cash_total:0,remaining_cash:0}}});
  });
  it("lists default Online Order providers for a Supervisor branch",async()=>{
   const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/online-order-providers`,"supervisor");
