@@ -108,6 +108,11 @@ export type ChecklistPersistence = {
   getInventoryItemsCurrentState?(actorUserId:string,branchId:string,inventoryMonth?:string|null):Promise<unknown>;
   saveInventoryItemsDraft?(input:{actorUserId:string;branchId:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
   submitInventoryItems?(input:{actorUserId:string;branchId:string;idempotencyKey:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
+  listBranchCatalog?(actorUserId:string,branchId:string):Promise<unknown>;
+  createBranchCatalogProduct?(input:{actorUserId:string;branchId:string;payload:BranchCatalogProductInput}):Promise<unknown>;
+  createBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;payload:BranchCatalogInventoryItemInput}):Promise<unknown>;
+  updateBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;inventoryItemId:string;payload:BranchCatalogInventoryItemInput}):Promise<unknown>;
+  saveBranchProductUsageMappings?(input:{actorUserId:string;branchId:string;productId:string;recipeRows:BranchCatalogRecipeInput}):Promise<unknown>;
   listManagedSalesTrackingReports?(input:{actorUserId:string;organizationId:string;dateFrom?:string|null;dateTo?:string|null;branchId?:string|null}):Promise<unknown>;
   getManagedSalesTrackingMonthlySummary?(input:{actorUserId:string;organizationId:string;month:string;branchId?:string|null}):Promise<unknown>;
   listManagedInventoryItemsReports?(input:{actorUserId:string;organizationId:string;inventoryMonth:string;branchId?:string|null}):Promise<unknown>;
@@ -164,6 +169,16 @@ export type SalesTrackingDraftPayload = {
     remarks:string;
   }>;
 };
+
+
+export type BranchCatalogProductInput = {
+  name:string;
+  inventoryBehavior:"recipe"|"standalone_stock"|"non_stock";
+  unit?:"pcs"|"kg"|"g"|"L"|"ml";
+  recipeRows?:Array<{ingredient:string;quantity:number|string;unit:"pcs"|"kg"|"g"|"L"|"ml"}>;
+};
+export type BranchCatalogInventoryItemInput = {name:string;unit:"pcs"|"kg"|"g"|"L"|"ml"};
+export type BranchCatalogRecipeInput = Array<{ingredient:string;quantity:number|string;unit:"pcs"|"kg"|"g"|"L"|"ml"}>;
 
 export type InventoryItemsDraftPayload = {
   beef_rows:Array<{
@@ -530,6 +545,11 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   async submitInventoryItems(input){
    return inventoryItemsCurrent.parse(await rpc("submit_inventory_items",inventoryItemsSubmitRpcArgs(input.actorUserId,input.branchId,input.idempotencyKey,input.payload)));
   },
+  listBranchCatalog:(actorUserId,branchId)=>rpc("list_branch_catalog",{actor_user_id:actorUserId,target_branch_id:branchId}),
+  createBranchCatalogProduct:(input)=>rpc("create_branch_catalog_product",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,payload:{name:input.payload.name,inventory_behavior:input.payload.inventoryBehavior,unit:input.payload.unit??null,recipe_rows:input.payload.recipeRows??[]}}),
+  createBranchCatalogInventoryItem:(input)=>rpc("create_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,payload:input.payload}),
+  updateBranchCatalogInventoryItem:(input)=>rpc("update_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_inventory_item_id:input.inventoryItemId,payload:input.payload}),
+  saveBranchProductUsageMappings:(input)=>rpc("save_branch_product_usage_mappings",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_product_id:input.productId,recipe_rows:input.recipeRows}),
   async listManagedSalesTrackingReports(input){
    const reports=managedSalesTrackingReports.parse(await rpc("list_managed_sales_tracking_reports",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,from_date:input.dateFrom??null,to_date:input.dateTo??null}));
    if(!input.branchId)return reports;
