@@ -1141,6 +1141,63 @@ const branchCatalogSchema=z.object({
   inventory_items:z.array(z.object({id:z.uuid(),branch_id:z.uuid(),name:z.string(),unit:catalogUnitSchema,kind:z.enum(["ingredient","standalone_stock"]),is_active:z.boolean(),created_at:z.string(),updated_at:z.string()}).strict()).max(2000),
   product_usage_mappings:z.array(z.object({id:z.uuid(),product_id:z.uuid(),inventory_item_id:z.uuid(),quantity:z.union([z.number(),z.string()]),created_at:z.string(),updated_at:z.string()}).strict()).max(5000),
 }).strict();
+const productSalesQuerySchema=z.object({
+  business_date:dateOnlySchema,
+}).strict();
+const productSaleItemBodySchema=z.object({
+  product_id:z.uuid(),
+  quantity:z.number().min(0),
+}).strict();
+const productSalesBodySchema=z.object({
+  business_date:dateOnlySchema,
+  expected_revision:z.number().int().min(0),
+  sales:z.array(productSaleItemBodySchema).max(1000).refine((items)=>{
+    const ids=new Set<string>();
+    for(const item of items){
+      if(ids.has(item.product_id))return false;
+      ids.add(item.product_id);
+    }
+    return true;
+  },{message:"Duplicate product_id in sales payload."}),
+}).strict();
+const productSalesQuantityResponseSchema=z.union([z.number(),z.string()]).transform(Number).pipe(z.number());
+const productSalesSaleItemResponseSchema=z.object({
+  id:z.uuid(),
+  product_id:z.uuid(),
+  product_name_snapshot:z.string(),
+  inventory_behavior_snapshot:z.enum(["recipe","standalone_stock","non_stock"]),
+  product_unit_snapshot:z.string().nullable(),
+  quantity:productSalesQuantityResponseSchema,
+  created_at:z.string(),
+  updated_at:z.string(),
+}).strict();
+const productSalesUsageSnapshotResponseSchema=z.object({
+  id:z.uuid(),
+  product_sale_id:z.uuid(),
+  product_id:z.uuid(),
+  product_name_snapshot:z.string(),
+  inventory_behavior_snapshot:z.enum(["recipe","standalone_stock","non_stock"]),
+  inventory_item_id:z.uuid(),
+  inventory_item_name_snapshot:z.string(),
+  inventory_item_unit_snapshot:z.string(),
+  quantity_per_sale_snapshot:productSalesQuantityResponseSchema,
+  sales_quantity_snapshot:productSalesQuantityResponseSchema,
+  total_usage_quantity:productSalesQuantityResponseSchema,
+  recipe_mapping_id:z.uuid().nullable(),
+  created_at:z.string(),
+}).strict();
+const productSalesResponseSchema=z.object({
+  report_id:z.uuid().nullable(),
+  organization_id:z.uuid(),
+  branch_id:z.uuid(),
+  business_date:dateOnlySchema,
+  current_business_date:dateOnlySchema,
+  revision:z.number().int().nonnegative(),
+  created_at:z.string().nullable(),
+  updated_at:z.string().nullable(),
+  sales:z.array(productSalesSaleItemResponseSchema),
+  usage_snapshots:z.array(productSalesUsageSnapshotResponseSchema),
+}).strict();
 const idempotencySchema=z.uuid();
 const uuidLikeSchema=z.string().regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/);
 const pageQuerySchema=z.object({page:z.coerce.number().int().min(1).max(1000000).default(1),page_size:z.coerce.number().int().min(1).max(50).default(20),checklist_type:supervisorChecklistTypeSchema.optional()}).strict();
@@ -1510,6 +1567,17 @@ function catalogError(error:unknown){
  if(error instanceof ChecklistInputError)return new HttpError(422,"unprocessable_entity","The catalog request is invalid or violates a business rule.");
  if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
  return new HttpError(503,"service_unavailable","The service is unavailable.");
+}
+
+function productSalesError(error:unknown){
+ if(error instanceof ChecklistConflictError)return new HttpError(409,"conflict","Product sales data has been modified by another request.");
+ if(error instanceof ChecklistInputError)return new HttpError(422,"unprocessable_entity","The product sales request is invalid or violates a business rule.");
+ if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
+ return new HttpError(503,"service_unavailable","The service is unavailable.");
+}
+
+function hasTargetBranchManagerAccess(context:{branches:Array<{id:string;role:string}>},branchId:string){
+ return context.branches.some((branch)=>branch.id===branchId&&branch.role==="branch_manager");
 }
 
 const oilTrackingCorrelationPrefix = "OIL_TRACKING_CORRELATION";
@@ -6202,6 +6270,36 @@ export function createApp(
     const catalog=branchCatalogSchema.parse(await dependencies.checklistPersistence.saveBranchProductUsageMappings({actorUserId:auth.userId,branchId:branch.data,productId:productId.data,recipeRows:body.data.recipe_rows}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json(catalog);
   }catch(error){next(error instanceof HttpError?error:catalogError(error));}});
+
+  app.get("/api/v1/supervisor/branches/:branchId/inventory/product-sales",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),query=productSalesQuerySchema.safeParse(request.query);
+    if(!branch.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||!hasTargetBranchManagerAccess(context,branch.data)||!dependencies.checklistPersistence?.getBranchProductSales)throw new HttpError(403,"forbidden","Access is denied.");
+    const productSales=productSalesResponseSchema.parse(await dependencies.checklistPersistence.getBranchProductSales(auth.userId,branch.data,query.data.business_date));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json(productSales);
+  }catch(error){next(error instanceof HttpError?error:productSalesError(error));}});
+
+  const handleSaveProductSales = async (request: Request, response: Response, next: NextFunction) => {
+    try {
+      const branch=branchIdSchema.safeParse(request.params.branchId),body=productSalesBodySchema.safeParse(request.body);
+      if(!branch.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request),context=await loadActiveUser(request);
+      if(context.must_change_password||!hasTargetBranchManagerAccess(context,branch.data)||!dependencies.checklistPersistence?.saveBranchProductSales)throw new HttpError(403,"forbidden","Access is denied.");
+      const productSales=productSalesResponseSchema.parse(await dependencies.checklistPersistence.saveBranchProductSales({
+        actorUserId:auth.userId,
+        branchId:branch.data,
+        businessDate:body.data.business_date,
+        expectedRevision:body.data.expected_revision,
+        sales:body.data.sales,
+      }));
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json(productSales);
+    } catch(error) {
+      next(error instanceof HttpError?error:productSalesError(error));
+    }
+  };
+
+  app.patch("/api/v1/supervisor/branches/:branchId/inventory/product-sales",protectedRateLimit,authenticate,handleSaveProductSales);
 
 	  app.post("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/submit",protectedRateLimit,authenticate,async(request,response,next)=>{try{
 	    const branch=branchIdSchema.safeParse(request.params.branchId),key=idempotencySchema.safeParse(request.header("Idempotency-Key")),body=salesTrackingSubmitBodySchema.safeParse(request.body);

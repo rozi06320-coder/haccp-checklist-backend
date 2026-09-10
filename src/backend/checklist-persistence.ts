@@ -51,6 +51,13 @@ function throwChecklistRpcError(code:string|undefined):never{
  throw new Error("Checklist persistence unavailable.");
 }
 
+function throwProductSalesRpcError(code:string|undefined):never{
+ if(code==="40001"||code==="23505")throw new ChecklistConflictError(code);
+ if(code==="22023"||code==="22004")throw new ChecklistInputError();
+ if(code==="42501")throw new ChecklistAccessError();
+ throw new Error("Checklist persistence unavailable.");
+}
+
 function safeColdStorageErrorCode(value:unknown){
  return typeof value==="string"&&/^[A-Za-z0-9_-]{1,32}$/.test(value)?value:null;
 }
@@ -113,6 +120,8 @@ export type ChecklistPersistence = {
   createBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;payload:BranchCatalogInventoryItemInput}):Promise<unknown>;
   updateBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;inventoryItemId:string;payload:BranchCatalogInventoryItemInput}):Promise<unknown>;
   saveBranchProductUsageMappings?(input:{actorUserId:string;branchId:string;productId:string;recipeRows:BranchCatalogRecipeInput}):Promise<unknown>;
+  getBranchProductSales?(actorUserId:string,branchId:string,businessDate:string):Promise<unknown>;
+  saveBranchProductSales?(input:SaveBranchProductSalesInput):Promise<unknown>;
   listManagedSalesTrackingReports?(input:{actorUserId:string;organizationId:string;dateFrom?:string|null;dateTo?:string|null;branchId?:string|null}):Promise<unknown>;
   getManagedSalesTrackingMonthlySummary?(input:{actorUserId:string;organizationId:string;month:string;branchId?:string|null}):Promise<unknown>;
   listManagedInventoryItemsReports?(input:{actorUserId:string;organizationId:string;inventoryMonth:string;branchId?:string|null}):Promise<unknown>;
@@ -179,6 +188,8 @@ export type BranchCatalogProductInput = {
 };
 export type BranchCatalogInventoryItemInput = {name:string;unit:"pcs"|"kg"|"g"|"L"|"ml"};
 export type BranchCatalogRecipeInput = Array<{ingredient:string;quantity:number|string;unit:"pcs"|"kg"|"g"|"L"|"ml"}>;
+export type BranchProductSaleItem = {product_id:string;quantity:number};
+export type SaveBranchProductSalesInput = {actorUserId:string;branchId:string;businessDate:string;expectedRevision:number;sales:BranchProductSaleItem[]};
 
 export type InventoryItemsDraftPayload = {
   beef_rows:Array<{
@@ -485,6 +496,11 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   if(result.error)throwChecklistRpcError(result.error.code);
   return result.data;
  }
+ async function productSalesRpc(name:string,args:Record<string,unknown>){
+  const result=await client.rpc(name,args);
+  if(result.error)throwProductSalesRpcError(result.error.code);
+  return result.data;
+ }
  async function coldStorageDraftRpc(input:Parameters<NonNullable<ChecklistPersistence["saveColdStorageDraft"]>>[0]){
   return runColdStorageDraftRpc(()=>client.rpc("save_cold_storage_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,equipment:input.equipment,readings:input.readings}),input.diagnostics);
  }
@@ -550,6 +566,8 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   createBranchCatalogInventoryItem:(input)=>rpc("create_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,payload:input.payload}),
   updateBranchCatalogInventoryItem:(input)=>rpc("update_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_inventory_item_id:input.inventoryItemId,payload:input.payload}),
   saveBranchProductUsageMappings:(input)=>rpc("save_branch_product_usage_mappings",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_product_id:input.productId,recipe_rows:input.recipeRows}),
+  getBranchProductSales:(actorUserId,branchId,businessDate)=>productSalesRpc("get_branch_product_sales",{actor_user_id:actorUserId,target_branch_id:branchId,target_business_date:businessDate}),
+  saveBranchProductSales:(input)=>productSalesRpc("save_branch_product_sales",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,sales:input.sales}),
   async listManagedSalesTrackingReports(input){
    const reports=managedSalesTrackingReports.parse(await rpc("list_managed_sales_tracking_reports",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,from_date:input.dateFrom??null,to_date:input.dateTo??null}));
    if(!input.branchId)return reports;
