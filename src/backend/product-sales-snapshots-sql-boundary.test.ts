@@ -1,0 +1,81 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { describe, it } from "node:test";
+
+const migrationPath = new URL("../../supabase/migrations/20260910100000_product_sales_snapshots_phase3b1.sql", import.meta.url);
+
+describe("Product Sales frozen usage snapshot SQL boundary", () => {
+  it("creates only the Phase 3B1 product sales tables with RLS", async () => {
+    const migration = await readFile(migrationPath, "utf8");
+    for (const table of ["branch_product_sales_daily_reports", "branch_product_sales", "branch_product_sales_usage_snapshots"]) {
+      assert.match(migration, new RegExp(`create table if not exists public\\.${table}`));
+      assert.match(migration, new RegExp(`${table}[\\s\\S]*organization_id uuid not null references public\\.organizations`));
+      assert.match(migration, new RegExp(`${table}[\\s\\S]*branch_id uuid not null references public\\.branches`));
+      assert.match(migration, new RegExp(`alter table public\\.${table} enable row level security`));
+      assert.match(migration, new RegExp(`create policy ${table}_select_authorized[\\s\\S]*private\\.has_branch_access\\(branch_id\\)`));
+    }
+    assert.doesNotMatch(migration, /daily_waste|transfer_in|transfer_out|actual_closing|expected_closing|variance|inventory_history/i);
+  });
+
+  it("keeps Product Sales writes service-role RPC only and rejects direct browser mutation", async () => {
+    const migration = await readFile(migrationPath, "utf8");
+    assert.match(migration, /revoke all on table public\.branch_product_sales_daily_reports, public\.branch_product_sales, public\.branch_product_sales_usage_snapshots from public, anon, authenticated, service_role/);
+    assert.match(migration, /grant select on table public\.branch_product_sales_daily_reports, public\.branch_product_sales, public\.branch_product_sales_usage_snapshots to authenticated, service_role/);
+    assert.match(migration, /create or replace function public\.save_branch_product_sales/);
+    assert.match(migration, /create or replace function public\.get_branch_product_sales/);
+    assert.match(migration, /revoke all on function public\.get_branch_product_sales\(uuid, uuid, date\), public\.save_branch_product_sales\(uuid, uuid, date, bigint, jsonb\) from public, anon, authenticated/);
+    assert.match(migration, /grant execute on function public\.get_branch_product_sales\(uuid, uuid, date\), public\.save_branch_product_sales\(uuid, uuid, date, bigint, jsonb\) to service_role/);
+  });
+
+  it("authorizes and validates only server-side canonical data", async () => {
+    const migration = await readFile(migrationPath, "utf8");
+    assert.match(migration, /private\.phase2_branch_context\(actor_user_id, target_branch_id\)/);
+    assert.match(migration, /target_business_date > ctx\.business_date/);
+    assert.match(migration, /pg_advisory_xact_lock/);
+    assert.match(migration, /expected_revision/);
+    assert.match(migration, /product\.organization_id = ctx\.organization_id/);
+    assert.match(migration, /product\.branch_id = ctx\.branch_id/);
+    assert.match(migration, /product\.is_active/);
+    assert.match(migration, /duplicate product sale/);
+    assert.doesNotMatch(migration, /inventory_item_id.*sale_row|quantity_per_sale.*sale_row|total_usage.*sale_row/);
+  });
+
+  it("creates frozen usage snapshots for new sales, including zero quantities", async () => {
+    const migration = await readFile(migrationPath, "utf8");
+    assert.match(migration, /product_name_snapshot/);
+    assert.match(migration, /inventory_behavior_snapshot/);
+    assert.match(migration, /inventory_item_name_snapshot/);
+    assert.match(migration, /inventory_item_unit_snapshot/);
+    assert.match(migration, /quantity_per_sale_snapshot/);
+    assert.match(migration, /sales_quantity_snapshot/);
+    assert.match(migration, /total_usage_quantity/);
+    assert.match(migration, /sale\.quantity \* mapping\.quantity/);
+    assert.match(migration, /recipe product has no inventory mappings/);
+    assert.match(migration, /sale\.inventory_behavior_snapshot = 'standalone_stock'/);
+    assert.match(migration, /branch_product_sales_usage_sales_quantity_check check \(sales_quantity_snapshot >= 0\)/);
+    assert.match(migration, /branch_product_sales_usage_total_usage_check check \(total_usage_quantity >= 0\)/);
+    assert.doesNotMatch(migration, /sale\.quantity > 0/);
+  });
+
+  it("implements patch semantics with daily revision and no-op preservation", async () => {
+    const migration = await readFile(migrationPath, "utf8");
+    assert.match(migration, /create temp table branch_product_sales_stage/);
+    assert.match(migration, /left join public\.branch_product_sales existing[\s\S]*existing\.report_id = report\.id[\s\S]*existing\.product_id = stage\.product_id/);
+    assert.match(migration, /where existing\.id is null[\s\S]*or existing\.quantity <> stage\.quantity/);
+    assert.doesNotMatch(migration, /delete from public\.branch_product_sales sale[\s\S]*not exists \([\s\S]*branch_product_sales_stage/);
+    assert.doesNotMatch(migration, /delete from public\.branch_product_sales_usage_snapshots usage[\s\S]*where usage\.report_id = report\.id/);
+    assert.doesNotMatch(migration, /select product_id, quantity[\s\S]*except[\s\S]*select product_id, quantity from branch_product_sales_stage/);
+    assert.match(migration, /if not changed then[\s\S]*private\.branch_product_sales_payload/);
+    assert.match(migration, /set revision = existing\.revision \+ 1/);
+  });
+
+  it("preserves existing historical snapshots instead of regenerating from current catalog", async () => {
+    const migration = await readFile(migrationPath, "utf8");
+    assert.match(migration, /create temp table branch_product_sales_existing/);
+    assert.match(migration, /existing\.id is null[\s\S]*product\.is_active/);
+    assert.match(migration, /update public\.branch_product_sales_usage_snapshots usage[\s\S]*total_usage_quantity = usage\.quantity_per_sale_snapshot \* sale\.quantity/);
+    assert.match(migration, /product sales frozen usage snapshot missing/);
+    assert.doesNotMatch(migration, /on conflict \(report_id, product_id\) do update set[\s\S]*product_name_snapshot = excluded\.product_name_snapshot/);
+    assert.doesNotMatch(migration, /delete from public\.branch_product_sales_usage_snapshots/);
+  });
+});
