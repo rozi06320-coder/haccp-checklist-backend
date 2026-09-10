@@ -938,8 +938,8 @@ const oilRowInputSchema=z.object({
   };
 });
 const oilTrackingBodySchema=z.object({expected_revision:z.number().int().nonnegative().default(0),rows:z.array(oilRowInputSchema).max(50)}).strict();
-const coldSlotSchema=z.enum(["12","20","02","12:00","20:00","02:00"]).transform(value=>value.includes(":")?value:`${value}:00` as "12:00"|"20:00"|"02:00");
-const coldPersistedSlotSchema=z.enum(["12:00","20:00","02:00","3:00","8:00"]);
+const coldSlotSchema=z.string().regex(/^(?:(?:[01][0-9]|2[0-3])(?::[0-5][0-9])?)$/).transform(value=>value.includes(":")?value:`${value}:00`);
+const coldPersistedSlotSchema=z.union([z.string().regex(/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/),z.enum(["3:00","8:00"])]);
 const coldNumberInputSchema=z.union([z.number(),z.string().trim().max(40),z.null()]).optional();
 const coldTextInputSchema=z.string().max(2000).optional().nullable().transform(value=>value??"");
 const coldEquipmentInputSchema=z.object({
@@ -986,7 +986,7 @@ const coldReadingInputSchema=z.object({
     corrective_action:value.corrective_action??value.correctiveAction??"",
   };
 });
-const coldStorageBodySchema=z.object({expected_revision:z.number().int().nonnegative().default(0),equipment:z.array(coldEquipmentInputSchema).max(100),readings:z.array(coldReadingInputSchema).max(300)}).strict();
+const coldStorageBodySchema=z.object({expected_revision:z.number().int().nonnegative().default(0),equipment:z.array(coldEquipmentInputSchema).max(100),readings:z.array(coldReadingInputSchema).max(1200)}).strict();
 const financialClosingItemKeySchema=z.enum(["sales_closing","collections","exceptions","purchases","transfers","production","waste","petty_cash","pending_documents","exception_escalation"]);
 const financialClosingStatusSchema=z.enum(["completed","not_completed","not_applicable"]);
 const financialClosingItemInputSchema=z.object({
@@ -1294,6 +1294,8 @@ const coldStorageCurrentSchema=z.object({
   business_date:dateOnlySchema,
   revision:z.number().int().nonnegative().default(0),
   state:z.enum(["none","draft","submitted"]),
+  schedule:z.object({schedule_version_id:z.uuid(),schedule_code:z.string().min(1).max(40),schedule_name:z.string().min(1).max(120),slots:z.array(z.object({slot:coldSlotSchema,ordinal:z.number().int().positive().max(48)}).strict()).max(48)}).strict().optional(),
+  active_slot:coldSlotSchema.nullable().optional(),next_slot:coldSlotSchema.nullable().optional(),next_transition_at:z.string().nullable().optional(),management_locked:z.boolean().optional(),
   issue_count:z.number().int().nonnegative().optional(),
   equipment:z.array(z.object({
     id:z.uuid().optional(),
@@ -1304,7 +1306,7 @@ const coldStorageCurrentSchema=z.object({
     active:z.boolean(),
     created_at:z.string().nullable().optional(),
     first_eligible_business_date:dateOnlySchema.nullable().optional(),
-    first_eligible_slot:z.enum(["12:00","20:00","02:00"]).nullable().optional(),
+    first_eligible_slot:coldSlotSchema.nullable().optional(),
     eligible_for_active_slot:z.boolean().optional(),
   }).strict()).max(100),
   readings:z.array(z.object({
@@ -1315,7 +1317,8 @@ const coldStorageCurrentSchema=z.object({
     status:z.enum(["pending","pass","fail"]),
     corrective_action:z.string().max(2000),
     submitted_at:z.string().nullable().optional(),
-  }).strict()).max(300),
+    snapshot_equipment_code:z.string().min(1).max(24).nullable().optional(),snapshot_equipment_name:z.string().min(1).max(120).nullable().optional(),snapshot_equipment_type:z.enum(["refrigerator","freezer"]).nullable().optional(),
+  }).strict()).max(1200),
 }).strict();
 const salesTrackingCurrentSchema=z.object({
   report_id:z.uuid().nullable(),
