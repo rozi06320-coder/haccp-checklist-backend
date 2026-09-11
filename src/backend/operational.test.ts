@@ -1614,6 +1614,34 @@ describe("Phase 3A operational API", () => {
       },
       invoice: null,
     });
+
+    const createdOther = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs`, {
+      method: "POST", headers: headers("supervisor"),
+      body: JSON.stringify({ category: "other", item_name: "  Cleaning Supplies  ", quantity: "1", amount: "25.00", vendor_name: "   ", purchase_date: "2026-08-09", notes: "  Other note  ", payment_status: "unpaid", reimbursement_note: "" }),
+    });
+    assert.equal(createdOther.status, 201);
+    const otherBody = await createdOther.json() as { purchase_log: { id: string; category: string; amount: number } };
+    assert.equal(otherBody.purchase_log.id, id.purchaseLog);
+    assert.equal(otherBody.purchase_log.category, "other");
+    assert.equal(otherBody.purchase_log.amount, 25);
+    assert.deepEqual(calls.at(-1), {
+      method: "createPurchaseLog",
+      hasInvoice: false,
+      actorUserId: id.supervisor,
+      branchId: id.branch,
+      payload: {
+        category: "other",
+        item_name: "Cleaning Supplies",
+        quantity: 1,
+        amount: 25,
+        vendor_name: "N/A",
+        purchase_date: "2026-08-09",
+        notes: "Other note",
+        payment_status: "unpaid",
+        reimbursement_note: null,
+      },
+      invoice: null,
+    });
   });
   it("updates Purchase Log reimbursement status", async () => {
     const updated = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs/${id.purchaseLog}/payment-status`, {
@@ -1638,6 +1666,7 @@ describe("Phase 3A operational API", () => {
     assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs`, { headers: headers("manager") })).status, 403);
     for (const body of [
       { category: "bad", item_name: "Book", quantity: "1", amount: "1", purchase_date: "2026-08-08" },
+      { category: "unknown", item_name: "Book", quantity: "1", amount: "1", purchase_date: "2026-08-08" },
       { category: "kitchen", item_name: "", quantity: "1", amount: "1", purchase_date: "2026-08-08" },
       { category: "kitchen", item_name: "Book", quantity: "0", amount: "1", purchase_date: "2026-08-08" },
       { category: "kitchen", item_name: "Book", quantity: "1", amount: "-1", purchase_date: "2026-08-08" },
@@ -2220,6 +2249,12 @@ describe("Phase 3A operational API", () => {
     assert.equal(body.purchase_logs[0]?.invoice_url, "https://storage.example.invalid/signed-invoice");
     assert.equal(body.purchase_logs[0]?.payment_status, "unpaid");
     assert.deepEqual(calls.at(-1), { method: "managedPurchaseLogs", actorUserId: id.manager, organizationId: id.organization, branchId: id.branch, category: "kitchen", paymentStatus: "unpaid", dateFrom: "2026-08-01", dateTo: "2026-08-31" });
+
+    const listOther = await fetch(`${baseUrl}/api/v1/management/organizations/${id.organization}/purchase-logs?branch_id=${id.branch}&category=other&payment_status=unpaid&date_from=2026-08-01&date_to=2026-08-31`, { headers: headers("manager") });
+    assert.equal(listOther.status, 200);
+    assert.deepEqual(calls.at(-1), { method: "managedPurchaseLogs", actorUserId: id.manager, organizationId: id.organization, branchId: id.branch, category: "other", paymentStatus: "unpaid", dateFrom: "2026-08-01", dateTo: "2026-08-31" });
+
+    assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/${id.organization}/purchase-logs?branch_id=${id.branch}&category=bad`, { headers: headers("manager") })).status, 400);
 
     assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/30000000-0000-4000-8000-000000000099/purchase-logs`, { headers: headers("manager") })).status, 403);
     assert.equal((await fetch(`${baseUrl}/api/v1/management/organizations/30000000-0000-4000-8000-000000000099/purchase-logs/${id.purchaseLog}/payment-status`, { method: "PATCH", headers: headers("manager"), body: JSON.stringify({}) })).status, 404);

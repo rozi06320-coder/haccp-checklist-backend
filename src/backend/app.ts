@@ -214,7 +214,7 @@ const monthlyEvaluationBodySchema = z.object({
   status: z.enum(["draft", "completed"]),
   scores: z.array(monthlyEvaluationScoreBodySchema).min(1).max(100),
 }).strict();
-const purchaseLogCategorySchema = z.enum(["stationery", "kitchen", "equipment", "food_item"]);
+const purchaseLogCategorySchema = z.enum(["stationery", "kitchen", "equipment", "food_item", "other"]);
 const purchaseLogPaymentStatusSchema = z.enum(["unpaid", "reimbursed"]);
 const purchaseLogBodySchema = z.object({
   category: purchaseLogCategorySchema,
@@ -637,7 +637,7 @@ const managedAnnualEvaluationDraftSchema=z.object({branch_id:z.uuid(),evaluation
 const managedAnnualEvaluationSubmitSchema=z.object({expected_revision:z.number().int().nonnegative()}).strict();
 const supervisorPurchaseLogQuerySchema=z.object({date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const supervisorSupplierReceivingQuerySchema=z.object({date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
-const managedPurchaseLogQuerySchema=z.object({branch_id:z.uuid().optional(),category:z.enum(["stationery","kitchen","equipment","food_item"]).optional(),payment_status:z.enum(["unpaid","reimbursed"]).optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
+const managedPurchaseLogQuerySchema=z.object({branch_id:z.uuid().optional(),category:z.enum(["stationery","kitchen","equipment","food_item","other"]).optional(),payment_status:z.enum(["unpaid","reimbursed"]).optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const managedSupplierReceivingQuerySchema=z.object({branch_id:z.uuid().optional(),category:supplierReceivingCategorySchema.optional(),supplier_id:z.uuid().optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const managedMaintenanceIssueQuerySchema=z.object({branch_id:z.uuid().optional(),status:maintenanceIssueStatusSchema.optional(),priority:maintenanceIssuePrioritySchema.optional(),category:maintenanceIssueCategorySchema.optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const managedMaintenancePurchaseQuerySchema=z.object({branch_id:z.uuid().optional(),issue_status:maintenanceIssueStatusSchema.optional(),payment_status:z.enum(["unpaid","reimbursed"]).optional(),vendor:z.string().trim().min(1).max(120).optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional(),purchase_type:maintenancePurchaseTypeSchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
