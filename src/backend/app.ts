@@ -17,7 +17,7 @@ import {
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
 import { branchLocalDate, canonicalizeMaintenancePurchasePayload, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime } from "./operational";
-import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ManagementOverviewUnavailableError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
+import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ChecklistNotFoundError, ManagementOverviewUnavailableError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
 import { MaintenancePushAccessError, MaintenancePushConflictError, MaintenancePushInputError, MaintenancePushUnavailableError } from "./maintenance-push";
@@ -1135,6 +1135,7 @@ const catalogProductStandaloneStockBodySchema=z.object({name:normalizedNameSchem
 const catalogProductNonStockBodySchema=z.object({name:normalizedNameSchema,inventory_behavior:z.literal("non_stock"),unit:z.null().optional().transform(()=>undefined),recipe_rows:z.array(catalogRecipeRowBodySchema).max(0).optional().default([])}).strict();
 const catalogProductBodySchema=z.discriminatedUnion("inventory_behavior",[catalogProductRecipeBodySchema,catalogProductStandaloneStockBodySchema,catalogProductNonStockBodySchema]);
 const catalogInventoryItemBodySchema=z.object({name:normalizedNameSchema,unit:catalogUnitSchema}).strict();
+const catalogUpdateInventoryItemBodySchema=z.object({name:normalizedNameSchema,unit:catalogUnitSchema,is_active:z.boolean().optional()}).strict();
 const catalogRecipeBodySchema=z.object({recipe_rows:z.array(catalogRecipeRowBodySchema).max(200)}).strict();
 const branchCatalogSchema=z.object({
   products:z.array(z.object({id:z.uuid(),branch_id:z.uuid(),name:z.string(),inventory_behavior:catalogProductBehaviorSchema,unit:catalogUnitSchema.nullable(),standalone_inventory_item_id:z.uuid().nullable(),is_active:z.boolean(),created_at:z.string(),updated_at:z.string()}).strict()).max(1000),
@@ -1709,6 +1710,7 @@ function catalogError(error:unknown){
  if(error instanceof ChecklistConflictError)return new HttpError(409,"conflict","Catalog data conflicts with an existing product or inventory item.");
  if(error instanceof ChecklistInputError)return new HttpError(422,"unprocessable_entity","The catalog request is invalid or violates a business rule.");
  if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
+ if(error instanceof ChecklistNotFoundError)return new HttpError(404,"not_found","The catalog resource was not found.");
  return new HttpError(503,"service_unavailable","The service is unavailable.");
 }
 
@@ -6411,10 +6413,10 @@ export function createApp(
   }catch(error){next(error instanceof HttpError?error:catalogError(error));}});
 
   app.patch("/api/v1/supervisor/branches/:branchId/catalog/inventory-items/:inventoryItemId",protectedRateLimit,authenticate,async(request,response,next)=>{try{
-    const branch=branchIdSchema.safeParse(request.params.branchId),inventoryItemId=branchIdSchema.safeParse(request.params.inventoryItemId),body=catalogInventoryItemBodySchema.safeParse(request.body);
+    const branch=branchIdSchema.safeParse(request.params.branchId),inventoryItemId=branchIdSchema.safeParse(request.params.inventoryItemId),body=catalogUpdateInventoryItemBodySchema.safeParse(request.body);
     if(!branch.success||!inventoryItemId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request);
-    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.updateBranchCatalogInventoryItem)throw new HttpError(403,"forbidden","Access is denied.");
+    if(context.must_change_password||context.managed_organizations.length>0||!hasTargetBranchManagerAccess(context,branch.data)||!dependencies.checklistPersistence?.updateBranchCatalogInventoryItem)throw new HttpError(403,"forbidden","Access is denied.");
     const catalog=branchCatalogSchema.parse(await dependencies.checklistPersistence.updateBranchCatalogInventoryItem({actorUserId:auth.userId,branchId:branch.data,inventoryItemId:inventoryItemId.data,payload:body.data}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json(catalog);
   }catch(error){next(error instanceof HttpError?error:catalogError(error));}});

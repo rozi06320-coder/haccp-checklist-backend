@@ -12,6 +12,7 @@ export class ChecklistConflictError extends Error {
 }
 export class ChecklistInputError extends Error {}
 export class ChecklistAccessError extends Error {}
+export class ChecklistNotFoundError extends Error {}
 export class ManagementOverviewUnavailableError extends Error {}
 
 export type ColdStorageDraftEventSource = "temperature_blur" | "remarks_blur" | "equipment_fallback";
@@ -48,6 +49,7 @@ function throwChecklistRpcError(code:string|undefined):never{
  if(code==="23505"||code==="23514"||code==="40001"||code==="55000")throw new ChecklistConflictError(code);
  if(code==="22023")throw new ChecklistInputError();
  if(code==="42501")throw new ChecklistAccessError();
+ if(code==="P0002")throw new ChecklistNotFoundError();
  throw new Error("Checklist persistence unavailable.");
 }
 
@@ -204,7 +206,7 @@ export type BranchCatalogProductInput = {
   unit?:"pcs"|"kg"|"g"|"L"|"ml";
   recipeRows?:Array<{ingredient:string;quantity:number|string;unit:"pcs"|"kg"|"g"|"L"|"ml"}>;
 };
-export type BranchCatalogInventoryItemInput = {name:string;unit:"pcs"|"kg"|"g"|"L"|"ml"};
+export type BranchCatalogInventoryItemInput = {name:string;unit:"pcs"|"kg"|"g"|"L"|"ml";is_active?:boolean};
 export type BranchCatalogRecipeInput = Array<{ingredient:string;quantity:number|string;unit:"pcs"|"kg"|"g"|"L"|"ml"}>;
 export type BranchProductSaleItem = {product_id:string;quantity:number};
 export type SaveBranchProductSalesInput = {actorUserId:string;branchId:string;businessDate:string;expectedRevision:number;sales:BranchProductSaleItem[]};
