@@ -1259,6 +1259,85 @@ const dailyWasteSaveResponseSchema=z.object({
   updated_at:z.string().nullable(),
   entries:z.array(dailyWasteEntryResponseSchema),
 }).strict();
+const dailyInventorySingleDateQuerySchema=z.object({
+  business_date:dateOnlySchema,
+}).strict();
+const dailyInventoryRangeQuerySchema=z.object({
+  start_date:dateOnlySchema,
+  end_date:dateOnlySchema,
+}).strict().refine((data)=>data.start_date<=data.end_date,{
+  message:"start_date must be less than or equal to end_date",
+});
+const dailyInventoryQuerySchema=z.union([
+  dailyInventorySingleDateQuerySchema,
+  dailyInventoryRangeQuerySchema,
+]);
+const dailyInventoryEntryBodySchema=z.object({
+  inventory_item_id:z.uuid(),
+  manual_opening_quantity:z.number().min(0).nullable().optional(),
+  receiving_quantity:z.number().min(0),
+  transfer_in_quantity:z.number().min(0),
+  transfer_out_quantity:z.number().min(0),
+  actual_closing_quantity:z.number().min(0).nullable().optional(),
+}).strict();
+const dailyInventoryBodySchema=z.object({
+  business_date:dateOnlySchema,
+  expected_revision:z.number().int().min(0),
+  entries:z.array(dailyInventoryEntryBodySchema).max(1000).refine((items)=>{
+    const ids=new Set<string>();
+    for(const item of items){
+      if(ids.has(item.inventory_item_id))return false;
+      ids.add(item.inventory_item_id);
+    }
+    return true;
+  },{message:"Duplicate inventory_item_id in daily inventory payload."}),
+}).strict();
+const dailyInventoryQuantityResponseSchema=z.union([z.number(),z.string()]).transform(Number).pipe(z.number());
+const dailyInventoryNullableQuantityResponseSchema=z.union([z.number(),z.string()]).transform(Number).pipe(z.number()).nullable();
+const dailyInventoryEntryResponseSchema=z.object({
+  id:z.uuid(),
+  inventory_item_id:z.uuid(),
+  inventory_item_name_snapshot:z.string(),
+  inventory_item_unit_snapshot:z.string(),
+  manual_opening_quantity:dailyInventoryNullableQuantityResponseSchema,
+  opening_quantity:dailyInventoryNullableQuantityResponseSchema,
+  is_opening_manual:z.boolean(),
+  receiving_quantity:dailyInventoryQuantityResponseSchema,
+  transfer_in_quantity:dailyInventoryQuantityResponseSchema,
+  transfer_out_quantity:dailyInventoryQuantityResponseSchema,
+  actual_closing_quantity:dailyInventoryNullableQuantityResponseSchema,
+  created_at:z.string(),
+  updated_at:z.string(),
+}).strict();
+const dailyInventorySingleReportResponseSchema=z.object({
+  report_id:z.uuid().nullable(),
+  organization_id:z.uuid(),
+  branch_id:z.uuid(),
+  business_date:dateOnlySchema,
+  current_business_date:dateOnlySchema,
+  revision:z.number().int().nonnegative(),
+  created_at:z.string().nullable(),
+  updated_at:z.string().nullable(),
+  entries:z.array(dailyInventoryEntryResponseSchema),
+}).strict();
+const dailyInventoryRangeReportItemResponseSchema=z.object({
+  report_id:z.uuid().nullable(),
+  organization_id:z.uuid(),
+  branch_id:z.uuid(),
+  business_date:dateOnlySchema,
+  revision:z.number().int().nonnegative(),
+  created_at:z.string().nullable(),
+  updated_at:z.string().nullable(),
+  entries:z.array(dailyInventoryEntryResponseSchema),
+}).strict();
+const dailyInventoryRangeResponseSchema=z.object({
+  organization_id:z.uuid(),
+  branch_id:z.uuid(),
+  start_date:dateOnlySchema,
+  end_date:dateOnlySchema,
+  current_business_date:dateOnlySchema,
+  reports:z.array(dailyInventoryRangeReportItemResponseSchema),
+}).strict();
 const idempotencySchema=z.uuid();
 const uuidLikeSchema=z.string().regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/);
 const pageQuerySchema=z.object({page:z.coerce.number().int().min(1).max(1000000).default(1),page_size:z.coerce.number().int().min(1).max(50).default(20),checklist_type:supervisorChecklistTypeSchema.optional()}).strict();
@@ -1643,6 +1722,13 @@ function productSalesError(error:unknown){
 function dailyWasteError(error:unknown){
  if(error instanceof ChecklistConflictError)return new HttpError(409,"conflict","Daily waste data has been modified by another request.");
  if(error instanceof ChecklistInputError)return new HttpError(422,"unprocessable_entity","The daily waste request is invalid or violates a business rule.");
+ if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
+ return new HttpError(503,"service_unavailable","The service is unavailable.");
+}
+
+function dailyInventoryError(error:unknown){
+ if(error instanceof ChecklistConflictError)return new HttpError(409,"conflict","Daily inventory data has been modified by another request.");
+ if(error instanceof ChecklistInputError)return new HttpError(422,"unprocessable_entity","The daily inventory request is invalid or violates a business rule.");
  if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
  return new HttpError(503,"service_unavailable","The service is unavailable.");
 }
@@ -6405,6 +6491,57 @@ export function createApp(
   };
 
   app.patch("/api/v1/supervisor/branches/:branchId/inventory/daily-waste",protectedRateLimit,authenticate,handleSaveDailyWaste);
+
+  app.get("/api/v1/supervisor/branches/:branchId/inventory/daily-inventory",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),query=dailyInventoryQuerySchema.safeParse(request.query);
+    if(!branch.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||!hasTargetBranchManagerAccess(context,branch.data)||!dependencies.checklistPersistence?.getBranchDailyInventory)throw new HttpError(403,"forbidden","Access is denied.");
+    if("business_date" in query.data){
+      const dailyInventory=dailyInventorySingleReportResponseSchema.parse(await dependencies.checklistPersistence.getBranchDailyInventory({
+        actorUserId:auth.userId,
+        branchId:branch.data,
+        businessDate:query.data.business_date,
+      }));
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json(dailyInventory);
+    }else{
+      const dailyInventory=dailyInventoryRangeResponseSchema.parse(await dependencies.checklistPersistence.getBranchDailyInventory({
+        actorUserId:auth.userId,
+        branchId:branch.data,
+        startDate:query.data.start_date,
+        endDate:query.data.end_date,
+      }));
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json(dailyInventory);
+    }
+  }catch(error){next(error instanceof HttpError?error:dailyInventoryError(error));}});
+
+  const handleSaveDailyInventory = async (request: Request, response: Response, next: NextFunction) => {
+    try {
+      const branch=branchIdSchema.safeParse(request.params.branchId),body=dailyInventoryBodySchema.safeParse(request.body);
+      if(!branch.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request),context=await loadActiveUser(request);
+      if(context.must_change_password||!hasTargetBranchManagerAccess(context,branch.data)||!dependencies.checklistPersistence?.saveBranchDailyInventory)throw new HttpError(403,"forbidden","Access is denied.");
+      const dailyInventory=dailyInventorySingleReportResponseSchema.parse(await dependencies.checklistPersistence.saveBranchDailyInventory({
+        actorUserId:auth.userId,
+        branchId:branch.data,
+        businessDate:body.data.business_date,
+        expectedRevision:body.data.expected_revision,
+        entries:body.data.entries.map((item) => ({
+          inventory_item_id:item.inventory_item_id,
+          manual_opening_quantity:item.manual_opening_quantity??null,
+          receiving_quantity:item.receiving_quantity,
+          transfer_in_quantity:item.transfer_in_quantity,
+          transfer_out_quantity:item.transfer_out_quantity,
+          actual_closing_quantity:item.actual_closing_quantity??null,
+        })),
+      }));
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json(dailyInventory);
+    } catch(error) {
+      next(error instanceof HttpError?error:dailyInventoryError(error));
+    }
+  };
+
+  app.patch("/api/v1/supervisor/branches/:branchId/inventory/daily-inventory",protectedRateLimit,authenticate,handleSaveDailyInventory);
 
 	  app.post("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/submit",protectedRateLimit,authenticate,async(request,response,next)=>{try{
 	    const branch=branchIdSchema.safeParse(request.params.branchId),key=idempotencySchema.safeParse(request.header("Idempotency-Key")),body=salesTrackingSubmitBodySchema.safeParse(request.body);

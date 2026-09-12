@@ -65,6 +65,13 @@ function throwDailyWasteRpcError(code:string|undefined):never{
  throw new Error("Checklist persistence unavailable.");
 }
 
+function throwDailyInventoryRpcError(code:string|undefined):never{
+ if(code==="40001"||code==="23505")throw new ChecklistConflictError(code);
+ if(code==="22023"||code==="22004")throw new ChecklistInputError();
+ if(code==="42501")throw new ChecklistAccessError();
+ throw new Error("Checklist persistence unavailable.");
+}
+
 function safeColdStorageErrorCode(value:unknown){
  return typeof value==="string"&&/^[A-Za-z0-9_-]{1,32}$/.test(value)?value:null;
 }
@@ -131,6 +138,8 @@ export type ChecklistPersistence = {
   saveBranchProductSales?(input:SaveBranchProductSalesInput):Promise<unknown>;
   getBranchDailyWaste?(actorUserId:string,branchId:string,startDate:string,endDate:string):Promise<unknown>;
   saveBranchDailyWaste?(input:SaveBranchDailyWasteInput):Promise<unknown>;
+  getBranchDailyInventory?(input:GetBranchDailyInventoryInput):Promise<unknown>;
+  saveBranchDailyInventory?(input:SaveBranchDailyInventoryInput):Promise<unknown>;
   listManagedSalesTrackingReports?(input:{actorUserId:string;organizationId:string;dateFrom?:string|null;dateTo?:string|null;branchId?:string|null}):Promise<unknown>;
   getManagedSalesTrackingMonthlySummary?(input:{actorUserId:string;organizationId:string;month:string;branchId?:string|null}):Promise<unknown>;
   listManagedInventoryItemsReports?(input:{actorUserId:string;organizationId:string;inventoryMonth:string;branchId?:string|null}):Promise<unknown>;
@@ -201,6 +210,9 @@ export type BranchProductSaleItem = {product_id:string;quantity:number};
 export type SaveBranchProductSalesInput = {actorUserId:string;branchId:string;businessDate:string;expectedRevision:number;sales:BranchProductSaleItem[]};
 export type BranchDailyWasteItem = {inventory_item_id:string;quantity:number;note?:string|null};
 export type SaveBranchDailyWasteInput = {actorUserId:string;branchId:string;businessDate:string;expectedRevision:number;waste:BranchDailyWasteItem[]};
+export type GetBranchDailyInventoryInput = {actorUserId:string;branchId:string;businessDate?:string|null;startDate?:string|null;endDate?:string|null};
+export type BranchDailyInventoryEntryItem = {inventory_item_id:string;manual_opening_quantity:number|null;receiving_quantity:number;transfer_in_quantity:number;transfer_out_quantity:number;actual_closing_quantity:number|null};
+export type SaveBranchDailyInventoryInput = {actorUserId:string;branchId:string;businessDate:string;expectedRevision:number;entries:BranchDailyInventoryEntryItem[]};
 
 export type InventoryItemsDraftPayload = {
   beef_rows:Array<{
@@ -517,6 +529,11 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   if(result.error)throwDailyWasteRpcError(result.error.code);
   return result.data;
  }
+ async function dailyInventoryRpc(name:string,args:Record<string,unknown>){
+  const result=await client.rpc(name,args);
+  if(result.error)throwDailyInventoryRpcError(result.error.code);
+  return result.data;
+ }
  async function coldStorageDraftRpc(input:Parameters<NonNullable<ChecklistPersistence["saveColdStorageDraft"]>>[0]){
   return runColdStorageDraftRpc(()=>client.rpc("save_cold_storage_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,equipment:input.equipment,readings:input.readings}),input.diagnostics);
  }
@@ -586,6 +603,17 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   saveBranchProductSales:(input)=>productSalesRpc("save_branch_product_sales",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,sales:input.sales}),
   getBranchDailyWaste:(actorUserId,branchId,startDate,endDate)=>dailyWasteRpc("get_branch_daily_waste",{actor_user_id:actorUserId,target_branch_id:branchId,start_date:startDate,end_date:endDate}),
   saveBranchDailyWaste:(input)=>dailyWasteRpc("save_branch_daily_waste",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,waste:input.waste}),
+  async getBranchDailyInventory(input:GetBranchDailyInventoryInput){
+   if(input.businessDate&&(input.startDate||input.endDate))throw new ChecklistInputError();
+   if(input.businessDate){
+    return dailyInventoryRpc("get_branch_daily_inventory",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate});
+   }
+   if(input.startDate&&input.endDate){
+    return dailyInventoryRpc("get_branch_daily_inventory",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,start_date:input.startDate,end_date:input.endDate});
+   }
+   throw new ChecklistInputError();
+  },
+  saveBranchDailyInventory:(input:SaveBranchDailyInventoryInput)=>dailyInventoryRpc("save_branch_daily_inventory",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,entries:input.entries}),
   async listManagedSalesTrackingReports(input){
    const reports=managedSalesTrackingReports.parse(await rpc("list_managed_sales_tracking_reports",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,from_date:input.dateFrom??null,to_date:input.dateTo??null}));
    if(!input.branchId)return reports;
