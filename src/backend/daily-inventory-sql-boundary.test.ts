@@ -66,15 +66,15 @@ describe("Daily Inventory Phase 1 canonical DB migration SQL boundary", () => {
   // 5. Day 1 manual opening accepted
   it("5. Day 1 manual opening accepted in check constraint and save logic", async () => {
     const migration = await readFile(migrationPath, "utf8");
-    assert.match(migration, /pg_catalog\.extract\(day from business_date\) = 1 and \(manual_opening_quantity is null or manual_opening_quantity >= 0\)/);
-    assert.match(migration, /is_day_one := \(pg_catalog\.extract\(day from target_business_date\) = 1\)/);
-    assert.match(migration, /when pg_catalog\.extract\(day from target_business_date\) = 1 then entry\.manual_opening_quantity/);
+    assert.match(migration, /extract\(day from business_date\) = 1 and \(manual_opening_quantity is null or manual_opening_quantity >= 0\)/);
+    assert.match(migration, /is_day_one := \(extract\(day from target_business_date\) = 1\)/);
+    assert.match(migration, /when extract\(day from target_business_date\) = 1 then entry\.manual_opening_quantity/);
   });
 
   // 6. Day 2 manual opening rejected
   it("6. Day 2 manual opening rejected by check constraint and save validation", async () => {
     const migration = await readFile(migrationPath, "utf8");
-    assert.match(migration, /pg_catalog\.extract\(day from business_date\) <> 1 and manual_opening_quantity is null/);
+    assert.match(migration, /extract\(day from business_date\) <> 1 and manual_opening_quantity is null/);
     assert.match(migration, /if not is_day_one then[\s\S]*raise exception 'manual opening quantity allowed only on day 1' using errcode = '22023'/);
   });
 
@@ -82,7 +82,7 @@ describe("Daily Inventory Phase 1 canonical DB migration SQL boundary", () => {
   it("7. Day 2 opening derived from previous day's actual closing", async () => {
     const migration = await readFile(migrationPath, "utf8");
     assert.match(migration, /select prev_entry\.actual_closing_quantity[\s\S]*from public\.branch_daily_inventory_entries prev_entry[\s\S]*where prev_entry\.organization_id = ctx\.organization_id[\s\S]*and prev_entry\.branch_id = ctx\.branch_id[\s\S]*and prev_entry\.business_date = \(target_business_date - 1\)[\s\S]*and prev_entry\.inventory_item_id = entry\.inventory_item_id/);
-    assert.match(migration, /'is_opening_manual', \(pg_catalog\.extract\(day from target_business_date\) = 1\)/);
+    assert.match(migration, /'is_opening_manual', \(extract\(day from target_business_date\) = 1\)/);
   });
 
   // 8. missing previous closing returns opening null, not zero
@@ -210,7 +210,7 @@ describe("Daily Inventory Phase 1 canonical DB migration SQL boundary", () => {
   // 24. range GET opening derivation works across dates
   it("24. range GET opening derivation works across dates", async () => {
     const migration = await readFile(migrationPath, "utf8");
-    assert.match(migration, /when pg_catalog\.extract\(day from cal\.day_date\) = 1 then entry\.manual_opening_quantity/);
+    assert.match(migration, /when extract\(day from cal\.day_date\) = 1 then entry\.manual_opening_quantity/);
     assert.match(migration, /and prev_entry\.business_date = \(cal\.day_date - 1\)/);
     assert.match(migration, /and prev_entry\.inventory_item_id = entry\.inventory_item_id/);
   });
@@ -219,8 +219,8 @@ describe("Daily Inventory Phase 1 canonical DB migration SQL boundary", () => {
   it("25. month boundary: Sep 30 actual closing does NOT automatically become Oct 1 manual opening", async () => {
     const migration = await readFile(migrationPath, "utf8");
     // Day 1 branch returns entry.manual_opening_quantity directly without inspecting previous calendar day
-    assert.match(migration, /when pg_catalog\.extract\(day from target_business_date\) = 1 then entry\.manual_opening_quantity/);
-    assert.match(migration, /when pg_catalog\.extract\(day from cal\.day_date\) = 1 then entry\.manual_opening_quantity/);
+    assert.match(migration, /when extract\(day from target_business_date\) = 1 then entry\.manual_opening_quantity/);
+    assert.match(migration, /when extract\(day from cal\.day_date\) = 1 then entry\.manual_opening_quantity/);
   });
 
   // 26. no Waste/Sales/Expected/Variance columns exist
@@ -291,5 +291,11 @@ describe("Daily Inventory Phase 1 canonical DB migration SQL boundary", () => {
     assert.match(migration, /update public\.branch_daily_inventory_reports existing[\s\S]*set revision = existing\.revision \+ 1/);
     // Report header is NEVER deleted when all entries are removed
     assert.doesNotMatch(migration, /delete from public\.branch_daily_inventory_reports/);
+  });
+
+  // 34. regression guard: rejects invalid schema-qualified extract syntax
+  it("34. regression guard: migration SQL does not contain invalid pg_catalog.extract syntax", async () => {
+    const migration = await readFile(migrationPath, "utf8");
+    assert.doesNotMatch(migration, /pg_catalog\.extract\s*\(/);
   });
 });

@@ -31,9 +31,9 @@ create table if not exists public.branch_daily_inventory_entries (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   constraint branch_daily_inventory_entries_manual_opening_check check (
-    (pg_catalog.extract(day from business_date) = 1 and (manual_opening_quantity is null or manual_opening_quantity >= 0))
+    (extract(day from business_date) = 1 and (manual_opening_quantity is null or manual_opening_quantity >= 0))
     or
-    (pg_catalog.extract(day from business_date) <> 1 and manual_opening_quantity is null)
+    (extract(day from business_date) <> 1 and manual_opening_quantity is null)
   ),
   constraint branch_daily_inventory_entries_receiving_check check (receiving_quantity >= 0),
   constraint branch_daily_inventory_entries_transfer_in_check check (transfer_in_quantity >= 0),
@@ -155,7 +155,7 @@ begin
           'inventory_item_unit_snapshot', entry.inventory_item_unit_snapshot,
           'manual_opening_quantity', entry.manual_opening_quantity,
           'opening_quantity', case
-            when pg_catalog.extract(day from target_business_date) = 1 then entry.manual_opening_quantity
+            when extract(day from target_business_date) = 1 then entry.manual_opening_quantity
             else (
               select prev_entry.actual_closing_quantity
               from public.branch_daily_inventory_entries prev_entry
@@ -165,7 +165,7 @@ begin
                 and prev_entry.inventory_item_id = entry.inventory_item_id
             )
           end,
-          'is_opening_manual', (pg_catalog.extract(day from target_business_date) = 1),
+          'is_opening_manual', (extract(day from target_business_date) = 1),
           'receiving_quantity', entry.receiving_quantity,
           'transfer_in_quantity', entry.transfer_in_quantity,
           'transfer_out_quantity', entry.transfer_out_quantity,
@@ -254,7 +254,7 @@ begin
                 'inventory_item_unit_snapshot', entry.inventory_item_unit_snapshot,
                 'manual_opening_quantity', entry.manual_opening_quantity,
                 'opening_quantity', case
-                  when pg_catalog.extract(day from cal.day_date) = 1 then entry.manual_opening_quantity
+                  when extract(day from cal.day_date) = 1 then entry.manual_opening_quantity
                   else (
                     select prev_entry.actual_closing_quantity
                     from public.branch_daily_inventory_entries prev_entry
@@ -264,7 +264,7 @@ begin
                       and prev_entry.inventory_item_id = entry.inventory_item_id
                   )
                 end,
-                'is_opening_manual', (pg_catalog.extract(day from cal.day_date) = 1),
+                'is_opening_manual', (extract(day from cal.day_date) = 1),
                 'receiving_quantity', entry.receiving_quantity,
                 'transfer_in_quantity', entry.transfer_in_quantity,
                 'transfer_out_quantity', entry.transfer_out_quantity,
@@ -336,7 +336,7 @@ begin
     raise exception 'invalid daily inventory payload' using errcode = '22023';
   end if;
 
-  is_day_one := (pg_catalog.extract(day from target_business_date) = 1);
+  is_day_one := (extract(day from target_business_date) = 1);
 
   drop table if exists pg_temp.branch_daily_inventory_stage;
   drop table if exists pg_temp.branch_daily_inventory_existing;
