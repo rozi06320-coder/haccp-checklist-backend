@@ -122,4 +122,17 @@ describe("Product / Inventory / Recipe catalog persistence SQL boundary", () => 
     assert.doesNotMatch(mergeMigration, /delete from public\.branch_inventory_catalog_items/i);
     assert.doesNotMatch(mergeMigration, /update public\.branch_product_catalog_products/i);
   });
+
+  it("permits recipe replacement via ON DELETE SET NULL on snapshot foreign key in 20260913140000", async () => {
+    const setNullMigrationPath = new URL("../../supabase/migrations/20260913140000_product_usage_mapping_snapshot_fk_set_null.sql", import.meta.url);
+    const setNullMigration = await readFile(setNullMigrationPath, "utf8");
+
+    // Drops RESTRICT constraint and adds ON DELETE SET NULL constraint
+    assert.match(setNullMigration, /drop\s+constraint\s+if\s+exists\s+branch_product_sales_usage_snapshots_recipe_mapping_id_fkey/i);
+    assert.match(setNullMigration, /foreign\s+key\s*\(recipe_mapping_id\)\s+references\s+public\.branch_product_usage_mappings\(id\)\s+on\s+delete\s+set\s+null/i);
+
+    // Guaranteed: does NOT alter frozen snapshot business data or delete snapshots
+    assert.doesNotMatch(setNullMigration, /delete\s+from/i);
+    assert.doesNotMatch(setNullMigration, /update\s+public/i);
+  });
 });

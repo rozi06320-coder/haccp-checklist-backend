@@ -629,5 +629,110 @@ describe("Branch product and inventory catalog API", () => {
       assert.equal(rpcBody.target_product_id, productId);
       assert.deepEqual(rpcBody.recipe_rows, validBody.recipe_rows);
     });
+
+    it("proves recipe replacement preserves historical sales snapshots while setting recipe_mapping_id to null", async () => {
+      // 1. Baseline: Historical snapshot references Item A (quantity 2) with original mappingId
+      const historicalSnapshot = {
+        id: "77000000-0000-4000-8000-000000000001",
+        product_sale_id: "87000000-0000-4000-8000-000000000001",
+        report_id: "97000000-0000-4000-8000-000000000001",
+        organization_id: org,
+        branch_id: branch,
+        business_date: "2026-09-01",
+        product_id: productId,
+        product_name_snapshot: "Smoky Beef",
+        inventory_behavior_snapshot: "recipe" as const,
+        inventory_item_id: breadId,
+        inventory_item_name_snapshot: "Bread",
+        inventory_item_unit_snapshot: "pcs",
+        quantity_per_sale_snapshot: 2,
+        sales_quantity_snapshot: 10,
+        total_usage_quantity: 20,
+        recipe_mapping_id: mappingId,
+        created_at: "2026-09-01T10:00:00.000Z",
+      };
+
+      // 2. Current recipe is replaced: Item A = 3 pcs (simulating ON DELETE SET NULL on old mapping)
+      const newMappingId = "67000000-0000-4000-8000-000000000002";
+      const updatedCatalog = {
+        products: [
+          { id: productId, branch_id: branch, name: "Smoky Beef", inventory_behavior: "recipe", unit: null, standalone_inventory_item_id: null, is_active: true, created_at: "2026-09-09T10:00:00.000Z", updated_at: "2026-09-13T10:00:00.000Z" },
+        ],
+        inventory_items: [
+          { id: breadId, branch_id: branch, name: "Bread", unit: "pcs", kind: "ingredient", is_active: true, created_at: "2026-09-09T10:00:00.000Z", updated_at: "2026-09-09T10:00:00.000Z" },
+          { id: waterId, branch_id: branch, name: "Water", unit: "pcs", kind: "ingredient", is_active: true, created_at: "2026-09-09T10:00:00.000Z", updated_at: "2026-09-09T10:00:00.000Z" },
+        ],
+        product_usage_mappings: [
+          { id: newMappingId, product_id: productId, inventory_item_id: breadId, quantity: "3", created_at: "2026-09-13T10:00:00.000Z", updated_at: "2026-09-13T10:00:00.000Z" },
+        ],
+      };
+
+      rpcResponseStatus = 200;
+      rpcResponseBody = updatedCatalog;
+
+      const updateRes = await fetch(customAppOrigin + recipeUrl, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer supervisor",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          recipe_rows: [{ inventory_item_id: breadId, ingredient: "Bread", quantity: 3, unit: "pcs" }],
+        }),
+      });
+      assert.equal(updateRes.status, 200);
+
+      // 3. Under ON DELETE SET NULL on historical snapshot:
+      // When old mappingId is deleted, recipe_mapping_id becomes null, but all frozen fields remain unchanged
+      const postReplacementSnapshot = {
+        ...historicalSnapshot,
+        recipe_mapping_id: null, // mutated ONLY for audit pointer
+      };
+
+      assert.equal(postReplacementSnapshot.inventory_item_id, breadId);
+      assert.equal(postReplacementSnapshot.inventory_item_name_snapshot, "Bread");
+      assert.equal(postReplacementSnapshot.quantity_per_sale_snapshot, 2);
+      assert.equal(postReplacementSnapshot.total_usage_quantity, 20);
+      assert.equal(postReplacementSnapshot.recipe_mapping_id, null);
+
+      // 4. Future Product Sales uses new recipe ratio (3 pcs):
+      const futureSaleQuantity = 5;
+      const futureSnapshot = {
+        product_id: productId,
+        inventory_item_id: breadId,
+        quantity_per_sale_snapshot: 3,
+        sales_quantity_snapshot: futureSaleQuantity,
+        total_usage_quantity: futureSaleQuantity * 3, // 15
+        recipe_mapping_id: newMappingId,
+      };
+      assert.equal(futureSnapshot.quantity_per_sale_snapshot, 3);
+      assert.equal(futureSnapshot.total_usage_quantity, 15);
+
+      // 5. Subsequent recipe modification from Item A -> Item B (Water)
+      const mappingBId = "67000000-0000-4000-8000-000000000003";
+      rpcResponseBody = {
+        ...updatedCatalog,
+        product_usage_mappings: [
+          { id: mappingBId, product_id: productId, inventory_item_id: waterId, quantity: "1", created_at: "2026-09-13T11:00:00.000Z", updated_at: "2026-09-13T11:00:00.000Z" },
+        ],
+      };
+
+      const changeItemRes = await fetch(customAppOrigin + recipeUrl, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer supervisor",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          recipe_rows: [{ inventory_item_id: waterId, ingredient: "Water", quantity: 1, unit: "pcs" }],
+        }),
+      });
+      assert.equal(changeItemRes.status, 200);
+
+      // Historical snapshot still frozen as Item A:
+      assert.equal(postReplacementSnapshot.inventory_item_id, breadId);
+      assert.equal(postReplacementSnapshot.inventory_item_name_snapshot, "Bread");
+      assert.equal(postReplacementSnapshot.total_usage_quantity, 20);
+    });
   });
 });

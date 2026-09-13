@@ -101,4 +101,33 @@ describe("Product Sales frozen usage snapshot SQL boundary", () => {
     assert.match(payloadFn, /from public\.branch_product_sales_usage_snapshots usage[\s\S]*where usage\.report_id = report\.id/);
     assert.doesNotMatch(payloadFn, /join public\.branch_product_usage_mappings/);
   });
+
+  it("proves recipe_mapping_id is nullable and updates FK to ON DELETE SET NULL in 20260913140000 without altering frozen business fields", async () => {
+    const originalSalesMigration = await readFile(migrationPath, "utf8");
+    const setNullMigrationPath = new URL("../../supabase/migrations/20260913140000_product_usage_mapping_snapshot_fk_set_null.sql", import.meta.url);
+    const setNullMigration = await readFile(setNullMigrationPath, "utf8");
+
+    // 1. Proves recipe_mapping_id is already nullable in original table definition
+    assert.match(originalSalesMigration, /recipe_mapping_id\s+uuid\s+null\s+references\s+public\.branch_product_usage_mappings\(id\)\s+on\s+delete\s+restrict/i);
+
+    // 2. Migration drops existing RESTRICT constraint
+    assert.match(setNullMigration, /alter\s+table\s+public\.branch_product_sales_usage_snapshots[\s\S]*drop\s+constraint\s+if\s+exists\s+branch_product_sales_usage_snapshots_recipe_mapping_id_fkey/i);
+
+    // 3. Recreates FK with ON DELETE SET NULL
+    assert.match(setNullMigration, /add\s+constraint\s+branch_product_sales_usage_snapshots_recipe_mapping_id_fkey[\s\S]*foreign\s+key\s*\(recipe_mapping_id\)[\s\S]*references\s+public\.branch_product_usage_mappings\(id\)[\s\S]*on\s+delete\s+set\s+null/i);
+
+    // 4. Guaranteed NO ON DELETE CASCADE
+    assert.doesNotMatch(setNullMigration, /on\s+delete\s+cascade/i);
+
+    // 5. Guaranteed NO snapshot DELETE
+    assert.doesNotMatch(setNullMigration, /delete\s+from\s+public\.branch_product_sales_usage_snapshots/i);
+
+    // 6. Guaranteed NO UPDATE to frozen business snapshot fields
+    assert.doesNotMatch(setNullMigration, /update\s+public\.branch_product_sales_usage_snapshots/i);
+    assert.doesNotMatch(setNullMigration, /inventory_item_id|product_name_snapshot|quantity_per_sale_snapshot|sales_quantity_snapshot|total_usage_quantity/i);
+
+    // 7. Guaranteed NO applied migration modified
+    const originalAppliedMigration = await readFile(migrationPath, "utf8");
+    assert.match(originalAppliedMigration, /on delete restrict/);
+  });
 });
