@@ -2195,7 +2195,10 @@ export function createApp(
   const brandingRawBody=express.raw({type:()=>true,limit:MAX_BRANDING_BYTES});
   const purchaseInvoiceRawBody=express.raw({type:()=>true,limit:MAX_PURCHASE_INVOICE_BYTES});
   const maintenanceReceiptRawBody=express.raw({type:()=>true,limit:MAX_PURCHASE_INVOICE_BYTES*MAX_MAINTENANCE_PURCHASE_PHOTOS*2});
-  const maintenanceIssuePhotoRawBody=express.raw({type:()=>true,limit:MAX_MAINTENANCE_ISSUE_PHOTO_BYTES*MAX_MAINTENANCE_ISSUE_PHOTOS*2});
+  const maintenanceIssuePhotoRawBody=express.raw({
+    type:(req)=>String(req.headers["content-type"]??"").split(";")[0]?.trim().toLowerCase()==="application/vnd.maintenance-issue+json",
+    limit:MAX_MAINTENANCE_ISSUE_PHOTO_BYTES*MAX_MAINTENANCE_ISSUE_PHOTOS*2,
+  });
   const supplierReceivingPhotoRawBody=express.raw({type:()=>true,limit:MAX_SUPPLIER_RECEIVING_PHOTO_BYTES});
   const authenticate = requireAuthentication(
     dependencies.authVerifier,
