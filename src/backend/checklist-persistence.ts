@@ -66,7 +66,7 @@ export type CatalogRecipeSaveErrorDiagnostic = {
 
 export function logCatalogRecipeSaveError(diagnostic: CatalogRecipeSaveErrorDiagnostic): void {
   try {
-    console.error("CATALOG_RECIPE_SAVE_ERROR", diagnostic);
+    console.error(`CATALOG_RECIPE_SAVE_ERROR ${JSON.stringify(diagnostic)}`);
   } catch {
     /* Diagnostics must never affect request execution. */
   }

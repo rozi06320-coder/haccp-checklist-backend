@@ -500,13 +500,33 @@ describe("Branch product and inventory catalog API", () => {
         console.error = originalError;
       }
 
-      const serializedLogs = JSON.stringify(errorRecords);
-      assert.match(serializedLogs, /CATALOG_RECIPE_SAVE_ERROR/);
-      assert.match(serializedLogs, /"rpc":"save_branch_product_usage_mappings"/);
-      assert.match(serializedLogs, /"postgrestCode":"PGRST202"/);
-      assert.match(serializedLogs, /"detailsPresent":true/);
-      assert.doesNotMatch(serializedLogs, /supersecretpassword123/);
-      assert.match(serializedLogs, /Bearer \[REDACTED\]/);
+      // 1. Logger receives ONE string argument
+      assert.equal(errorRecords.length, 1);
+      assert.equal(errorRecords[0].length, 1);
+      assert.equal(typeof errorRecords[0][0], "string");
+
+      const logLine = errorRecords[0][0] as string;
+
+      // 2. String begins with CATALOG_RECIPE_SAVE_ERROR {
+      assert.match(logLine, /^CATALOG_RECIPE_SAVE_ERROR \{/);
+
+      // 3. JSON portion contains all required fields
+      const jsonPayload = JSON.parse(logLine.slice("CATALOG_RECIPE_SAVE_ERROR ".length));
+      assert.ok(jsonPayload.requestId);
+      assert.equal(jsonPayload.branchId, branch);
+      assert.equal(jsonPayload.productId, productId);
+      assert.equal(jsonPayload.rpc, "save_branch_product_usage_mappings");
+      assert.equal(jsonPayload.postgresCode, null);
+      assert.equal(jsonPayload.postgrestCode, "PGRST202");
+      assert.ok(typeof jsonPayload.safeMessage === "string");
+      assert.equal(jsonPayload.detailsPresent, true);
+
+      // 4. Secrets remain redacted
+      assert.doesNotMatch(logLine, /supersecretpassword123/);
+      assert.match(logLine, /Bearer \[REDACTED\]/);
+
+      // 5. Raw DB details are not present
+      assert.doesNotMatch(logLine, /branch_catalog_recipe_stage constraint info/);
     });
 
     it("returns safe 422 on 22023 business rule / item unavailable validation failure", async () => {
