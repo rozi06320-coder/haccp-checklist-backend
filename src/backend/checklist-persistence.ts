@@ -53,6 +53,50 @@ function throwChecklistRpcError(code:string|undefined):never{
  throw new Error("Checklist persistence unavailable.");
 }
 
+export type CatalogRecipeSaveErrorDiagnostic = {
+  requestId: string | null;
+  branchId: string;
+  productId: string;
+  rpc: "save_branch_product_usage_mappings";
+  postgresCode: string | null;
+  postgrestCode: string | null;
+  safeMessage: string | null;
+  detailsPresent: boolean;
+};
+
+export function logCatalogRecipeSaveError(diagnostic: CatalogRecipeSaveErrorDiagnostic): void {
+  try {
+    console.error("CATALOG_RECIPE_SAVE_ERROR", diagnostic);
+  } catch {
+    /* Diagnostics must never affect request execution. */
+  }
+}
+
+function sanitizeSafeDiagnosticMessage(message: unknown): string | null {
+  if (typeof message !== "string") return null;
+  const trimmed = message.trim();
+  if (!trimmed) return null;
+  return trimmed
+    .replace(/bearer\s+[^&\s]+/gi, "Bearer [REDACTED]")
+    .replace(/(key=|secret=|password=|token=)[^&\s]+/gi, "$1[REDACTED]")
+    .replace(/eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, "[JWT_REDACTED]")
+    .slice(0, 200);
+}
+
+function extractPostgresAndPostgrestCodes(code: unknown): { postgresCode: string | null; postgrestCode: string | null } {
+  if (typeof code !== "string" || !code.trim()) {
+    return { postgresCode: null, postgrestCode: null };
+  }
+  const cleanCode = code.trim();
+  if (/^PGRST\d+$/i.test(cleanCode)) {
+    return { postgresCode: null, postgrestCode: cleanCode };
+  }
+  if (/^[0-9A-Z]{5}$/i.test(cleanCode)) {
+    return { postgresCode: cleanCode, postgrestCode: null };
+  }
+  return { postgresCode: null, postgrestCode: cleanCode };
+}
+
 function throwProductSalesRpcError(code:string|undefined):never{
  if(code==="40001"||code==="23505")throw new ChecklistConflictError(code);
  if(code==="22023"||code==="22004")throw new ChecklistInputError();
@@ -136,7 +180,7 @@ export type ChecklistPersistence = {
   createBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;payload:BranchCatalogInventoryItemInput}):Promise<unknown>;
   updateBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;inventoryItemId:string;payload:BranchCatalogInventoryItemInput}):Promise<unknown>;
   mergeBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;duplicateInventoryItemId:string;targetInventoryItemId:string}):Promise<unknown>;
-  saveBranchProductUsageMappings?(input:{actorUserId:string;branchId:string;productId:string;recipeRows:BranchCatalogRecipeInput}):Promise<unknown>;
+  saveBranchProductUsageMappings?(input:{actorUserId:string;branchId:string;productId:string;recipeRows:BranchCatalogRecipeInput;requestId?:string|null}):Promise<unknown>;
   getBranchProductSales?(actorUserId:string,branchId:string,businessDate:string):Promise<unknown>;
   saveBranchProductSales?(input:SaveBranchProductSalesInput):Promise<unknown>;
   getBranchDailyWaste?(actorUserId:string,branchId:string,startDate:string,endDate:string):Promise<unknown>;
@@ -602,7 +646,43 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   createBranchCatalogInventoryItem:(input)=>rpc("create_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,payload:input.payload}),
   updateBranchCatalogInventoryItem:(input)=>rpc("update_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_inventory_item_id:input.inventoryItemId,payload:input.payload}),
   mergeBranchCatalogInventoryItem:(input)=>rpc("merge_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,duplicate_inventory_item_id:input.duplicateInventoryItemId,target_inventory_item_id:input.targetInventoryItemId}),
-  saveBranchProductUsageMappings:(input)=>rpc("save_branch_product_usage_mappings",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_product_id:input.productId,recipe_rows:input.recipeRows}),
+  saveBranchProductUsageMappings:async(input)=>{
+   let result;
+   try{
+    result=await client.rpc("save_branch_product_usage_mappings",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_product_id:input.productId,recipe_rows:input.recipeRows});
+   }catch(networkError){
+    logCatalogRecipeSaveError({
+     requestId:input.requestId??null,
+     branchId:input.branchId,
+     productId:input.productId,
+     rpc:"save_branch_product_usage_mappings",
+     postgresCode:null,
+     postgrestCode:null,
+     safeMessage:sanitizeSafeDiagnosticMessage(networkError instanceof Error?networkError.message:String(networkError)),
+     detailsPresent:false,
+    });
+    throw new Error("Checklist persistence unavailable.");
+   }
+   if(result.error){
+    const code=result.error.code;
+    const isKnownClientError=code==="23505"||code==="23514"||code==="40001"||code==="55000"||code==="22023"||code==="42501"||code==="P0002";
+    if(!isKnownClientError){
+     const {postgresCode,postgrestCode}=extractPostgresAndPostgrestCodes(code);
+     logCatalogRecipeSaveError({
+      requestId:input.requestId??null,
+      branchId:input.branchId,
+      productId:input.productId,
+      rpc:"save_branch_product_usage_mappings",
+      postgresCode,
+      postgrestCode,
+      safeMessage:sanitizeSafeDiagnosticMessage(result.error.message),
+      detailsPresent:Boolean(result.error.details&&typeof result.error.details==="string"&&result.error.details.trim().length>0),
+     });
+    }
+    throwChecklistRpcError(code);
+   }
+   return result.data;
+  },
   getBranchProductSales:(actorUserId,branchId,businessDate)=>productSalesRpc("get_branch_product_sales",{actor_user_id:actorUserId,target_branch_id:branchId,target_business_date:businessDate}),
   saveBranchProductSales:(input)=>productSalesRpc("save_branch_product_sales",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,sales:input.sales}),
   getBranchDailyWaste:(actorUserId,branchId,startDate,endDate)=>dailyWasteRpc("get_branch_daily_waste",{actor_user_id:actorUserId,target_branch_id:branchId,start_date:startDate,end_date:endDate}),

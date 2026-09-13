@@ -6436,7 +6436,7 @@ export function createApp(
     if(!branch.success||!productId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request);
     if(context.must_change_password||!hasTargetBranchManagerAccess(context,branch.data)||!dependencies.checklistPersistence?.saveBranchProductUsageMappings)throw new HttpError(403,"forbidden","Access is denied.");
-    const catalog=branchCatalogSchema.parse(await dependencies.checklistPersistence.saveBranchProductUsageMappings({actorUserId:auth.userId,branchId:branch.data,productId:productId.data,recipeRows:body.data.recipe_rows}));
+    const catalog=branchCatalogSchema.parse(await dependencies.checklistPersistence.saveBranchProductUsageMappings({actorUserId:auth.userId,branchId:branch.data,productId:productId.data,recipeRows:body.data.recipe_rows,requestId:request.id}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json(catalog);
   }catch(error){next(error instanceof HttpError?error:catalogError(error));}});
 

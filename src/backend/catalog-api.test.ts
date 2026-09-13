@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { createApp } from "./app";
-import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError } from "./checklist-persistence";
+import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, createChecklistPersistence } from "./checklist-persistence";
 import type { BackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
 
@@ -214,7 +214,13 @@ describe("Branch product and inventory catalog API", () => {
   it("saves one recipe atomically and rejects duplicate or invalid mapping payloads", async () => {
     const response = await request(`/api/v1/supervisor/branches/${branch}/catalog/products/${productId}/recipe`, "supervisor", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipe_rows: [{ ingredient: "Bread", quantity: 2, unit: "pcs" }] }) });
     assert.equal(response.status, 200);
-    assert.deepEqual(calls.at(-1), { name: "save-recipe", input: { actorUserId: supervisor, branchId: branch, productId, recipeRows: [{ ingredient: "Bread", quantity: 2, unit: "pcs" }] } });
+    const lastCall = calls.at(-1);
+    assert.equal(lastCall?.name, "save-recipe");
+    assert.deepEqual((lastCall?.input as Record<string, unknown> | undefined)?.actorUserId, supervisor);
+    assert.deepEqual((lastCall?.input as Record<string, unknown> | undefined)?.branchId, branch);
+    assert.deepEqual((lastCall?.input as Record<string, unknown> | undefined)?.productId, productId);
+    assert.deepEqual((lastCall?.input as Record<string, unknown> | undefined)?.recipeRows, [{ ingredient: "Bread", quantity: 2, unit: "pcs" }]);
+    assert.ok((lastCall?.input as Record<string, unknown> | undefined)?.requestId);
     assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products/${productId}/recipe`, "supervisor", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipe_rows: [{ ingredient: "Bread", quantity: 0, unit: "pcs" }] }) })).status, 400);
     mode = "invalid";
     const invalid = await request(`/api/v1/supervisor/branches/${branch}/catalog/products/${productId}/recipe`, "supervisor", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ recipe_rows: [{ ingredient: "Bread", quantity: 1, unit: "pcs" }] }) });
@@ -402,6 +408,206 @@ describe("Branch product and inventory catalog API", () => {
       assert.equal((await request(mergePath, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })).status, 400);
       // Extraneous fields (strict schema)
       assert.equal((await request(mergePath, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...validBody, actor_user_id: supervisor }) })).status, 400);
+    });
+  });
+
+  describe("Product usage recipe RPC diagnostics and error boundaries", () => {
+    let mockRpcServer: Server;
+    let rpcOrigin: string;
+    let rpcResponseStatus: number;
+    let rpcResponseBody: unknown;
+    let rpcRecordedRequests: Array<{ url?: string; method?: string; body: unknown }>;
+    let customAppServer: Server;
+    let customAppOrigin: string;
+
+    before(async () => {
+      mockRpcServer = createServer(async (req, res) => {
+        let body = "";
+        for await (const chunk of req) body += chunk;
+        let parsedBody: unknown = null;
+        try { parsedBody = JSON.parse(body); } catch {}
+        rpcRecordedRequests.push({ url: req.url, method: req.method, body: parsedBody });
+        res.statusCode = rpcResponseStatus;
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify(rpcResponseBody));
+      });
+      await new Promise<void>((resolve, reject) => mockRpcServer.listen(0, "127.0.0.1", resolve).once("error", reject));
+      rpcOrigin = `http://127.0.0.1:${(mockRpcServer.address() as AddressInfo).port}`;
+
+      const customPersistence = createChecklistPersistence(rpcOrigin, "test-secret-key");
+      const customDeps: BackendDependencies = {
+        ...deps(),
+        checklistPersistence: customPersistence,
+      };
+      customAppServer = createServer(createApp(config, customDeps));
+      await new Promise<void>((resolve, reject) => customAppServer.listen(0, "127.0.0.1", resolve).once("error", reject));
+      customAppOrigin = `http://127.0.0.1:${(customAppServer.address() as AddressInfo).port}`;
+    });
+
+    after(async () => {
+      await new Promise<void>((resolve) => customAppServer.close(() => resolve()));
+      await new Promise<void>((resolve) => mockRpcServer.close(() => resolve()));
+    });
+
+    beforeEach(() => {
+      rpcResponseStatus = 200;
+      mode = "recipe";
+      rpcResponseBody = catalog();
+      rpcRecordedRequests = [];
+    });
+
+    const recipeUrl = `/api/v1/supervisor/branches/${branch}/catalog/products/${productId}/recipe`;
+    const validBody = {
+      recipe_rows: [
+        { inventory_item_id: breadId, ingredient: "Bread", quantity: 2, unit: "pcs" },
+      ],
+    };
+
+    it("logs sanitized diagnostic and returns safe 503 on unknown Supabase RPC failure", async () => {
+      rpcResponseStatus = 400;
+      rpcResponseBody = {
+        code: "PGRST202",
+        message: "Could not find the function public.save_branch_product_usage_mappings in the schema cache Bearer token=supersecretpassword123",
+        details: "table private.branch_catalog_recipe_stage constraint info",
+      };
+
+      const originalError = console.error;
+      const errorRecords: unknown[][] = [];
+      console.error = (...args: unknown[]) => errorRecords.push(args);
+
+      try {
+        const res = await fetch(customAppOrigin + recipeUrl, {
+          method: "PUT",
+          headers: {
+            Authorization: "Bearer supervisor",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(validBody),
+        });
+
+        assert.equal(res.status, 503);
+        const data = await res.json();
+        assert.equal(data.error.code, "service_unavailable");
+        assert.equal(data.error.message, "The service is unavailable.");
+        assert.ok(data.error.requestId);
+
+        const rawResponseText = JSON.stringify(data);
+        assert.doesNotMatch(rawResponseText, /PGRST202/);
+        assert.doesNotMatch(rawResponseText, /schema cache/);
+        assert.doesNotMatch(rawResponseText, /supersecret/);
+        assert.doesNotMatch(rawResponseText, /branch_catalog_recipe_stage/);
+      } finally {
+        console.error = originalError;
+      }
+
+      const serializedLogs = JSON.stringify(errorRecords);
+      assert.match(serializedLogs, /CATALOG_RECIPE_SAVE_ERROR/);
+      assert.match(serializedLogs, /"rpc":"save_branch_product_usage_mappings"/);
+      assert.match(serializedLogs, /"postgrestCode":"PGRST202"/);
+      assert.match(serializedLogs, /"detailsPresent":true/);
+      assert.doesNotMatch(serializedLogs, /supersecretpassword123/);
+      assert.match(serializedLogs, /Bearer \[REDACTED\]/);
+    });
+
+    it("returns safe 422 on 22023 business rule / item unavailable validation failure", async () => {
+      rpcResponseStatus = 400;
+      rpcResponseBody = {
+        code: "22023",
+        message: "inventory item unavailable",
+        details: null,
+      };
+
+      const res = await fetch(customAppOrigin + recipeUrl, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer supervisor",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(validBody),
+      });
+
+      assert.equal(res.status, 422);
+      const data = await res.json();
+      assert.equal(data.error.code, "unprocessable_entity");
+      assert.equal(data.error.message, "The catalog request is invalid or violates a business rule.");
+      assert.doesNotMatch(JSON.stringify(data), /inventory item unavailable/);
+    });
+
+    it("returns safe 409 on 23505 duplicate recipe item collision", async () => {
+      rpcResponseStatus = 400;
+      rpcResponseBody = {
+        code: "23505",
+        message: "duplicate recipe inventory item",
+        details: "Key (product_id, inventory_item_id) already exists.",
+      };
+
+      const res = await fetch(customAppOrigin + recipeUrl, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer supervisor",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(validBody),
+      });
+
+      assert.equal(res.status, 409);
+      const data = await res.json();
+      assert.equal(data.error.code, "conflict");
+      assert.equal(data.error.message, "Catalog data conflicts with an existing product or inventory item.");
+      assert.doesNotMatch(JSON.stringify(data), /duplicate recipe inventory item/);
+    });
+
+    it("returns safe 403 on 42501 scope authorization failure", async () => {
+      rpcResponseStatus = 400;
+      rpcResponseBody = {
+        code: "42501",
+        message: "catalog access denied",
+        details: null,
+      };
+
+      const res = await fetch(customAppOrigin + recipeUrl, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer supervisor",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(validBody),
+      });
+
+      assert.equal(res.status, 403);
+      const data = await res.json();
+      assert.equal(data.error.code, "forbidden");
+      assert.equal(data.error.message, "Access is denied.");
+      assert.doesNotMatch(JSON.stringify(data), /catalog access denied/);
+    });
+
+    it("returns 200 on successful RPC execution with correct argument mapping", async () => {
+      rpcResponseStatus = 200;
+      mode = "recipe";
+      rpcResponseBody = catalog();
+
+      const res = await fetch(customAppOrigin + recipeUrl, {
+        method: "PUT",
+        headers: {
+          Authorization: "Bearer supervisor",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(validBody),
+      });
+
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(Array.isArray(data.products), true);
+      assert.equal(Array.isArray(data.inventory_items), true);
+
+      assert.equal(rpcRecordedRequests.length, 1);
+      const rpcReq = rpcRecordedRequests[0];
+      assert.match(rpcReq.url ?? "", /save_branch_product_usage_mappings/);
+      const rpcBody = rpcReq.body as Record<string, unknown>;
+      assert.equal(rpcBody.actor_user_id, supervisor);
+      assert.equal(rpcBody.target_branch_id, branch);
+      assert.equal(rpcBody.target_product_id, productId);
+      assert.deepEqual(rpcBody.recipe_rows, validBody.recipe_rows);
     });
   });
 });
