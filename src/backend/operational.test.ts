@@ -171,7 +171,7 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
       },
       async startManagedOperationalStaffSupervisorTraining(input) { calls.push({ method: "startSupervisorTraining", ...input }); return { id: id.assignment, operational_staff_id: input.staffId, status: "training" }; },
       async cancelManagedOperationalStaffSupervisorTraining(input) { calls.push({ method: "cancelSupervisorTraining", ...input }); return { id: id.assignment, operational_staff_id: input.staffId, status: "cancelled" }; },
-      async getManagedOperationalStaffSupervisorTrainingPromotionState(input) { calls.push({ method: "getSupervisorTrainingPromotionState", ...input }); return { id: id.assignment, operational_staff_id: input.staffId, status: "training" }; },
+      async getManagedOperationalStaffSupervisorTrainingPromotionState(input) { calls.push({ method: "getSupervisorTrainingPromotionState", ...input }); return { id: id.assignment, operational_staff_id: input.staffId, branch_id: id.branch, branch_id_at_start: id.branch, status: "training" }; },
       async promoteManagedOperationalStaffSupervisorTraining(input) {
         calls.push({ method: "promoteSupervisorTraining", ...input });
         if (input.fullName === "Fail Promotion") throw new OperationalConflictError();
@@ -1467,6 +1467,7 @@ describe("Phase 3A operational API", () => {
   it("promotes active Training Supervisors through Manager-only staged provisioning", async () => {
     const base=`${baseUrl}/api/v1/management/organizations/${id.organization}/operational-staff/${id.worker}/supervisor-training/promote`;
     const body=JSON.stringify({
+      branch_id: id.branch,
       full_name:"  Promoted Supervisor  ",
       full_name_ar:"  مشرف جديد  ",
       email:"  PROMOTED@example.invalid ",

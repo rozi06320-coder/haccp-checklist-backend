@@ -179,6 +179,7 @@ const removeOperationalStaffBodySchema = z.object({
   }
 });
 const promoteSupervisorTrainingBodySchema = z.object({
+  branch_id: z.uuid(),
   full_name: normalizedNameSchema,
   full_name_ar: optionalDisplayNameSchema,
   email: z.string().trim().toLowerCase().max(254).pipe(z.email()),
@@ -5932,10 +5933,26 @@ export function createApp(
           || !dependencies.operationalAdmin.promoteManagedOperationalStaffSupervisorTraining) {
           throw new HttpError(403, "forbidden", "Access is denied.");
         }
+        const isBranchValid = await auth.userContext.validateActiveBranches(organizationId.data, [body.data.branch_id]);
+        if (!isBranchValid) {
+          throw new HttpError(403, "forbidden", "Access is denied.");
+        }
         const state = await dependencies.operationalAdmin.getManagedOperationalStaffSupervisorTrainingPromotionState({
           actorUserId: auth.userId, organizationId: organizationId.data, staffId: staffId.data,
         });
-        if (typeof state === "object" && state !== null && "status" in state && state.status === "promoted") {
+        const stateRecord = typeof state === "object" && state !== null ? (state as Record<string, unknown>) : null;
+        const staffBranchId = typeof stateRecord?.branch_id === "string"
+          ? stateRecord.branch_id
+          : typeof stateRecord?.branch_id_at_start === "string"
+            ? stateRecord.branch_id_at_start
+            : null;
+        if (!staffBranchId) {
+          throw new HttpError(409, "conflict", "Employee branch assignment is unavailable.");
+        }
+        if (staffBranchId !== body.data.branch_id) {
+          throw new HttpError(400, "bad_request", "The submitted branch does not match the employee branch.");
+        }
+        if (stateRecord && "status" in stateRecord && stateRecord.status === "promoted") {
           response.setHeader("Cache-Control", "private, no-store");
           response.status(200).json(state);
           return;

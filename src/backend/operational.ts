@@ -1942,9 +1942,18 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       });
     },
     async getManagedOperationalStaffSupervisorTrainingPromotionState(input) {
-      return rpcObject("get_managed_supervisor_training_promotion_state",{
+      const data = await rpcObject("get_managed_supervisor_training_promotion_state",{
         actor_user_id:input.actorUserId,target_organization_id:input.organizationId,target_staff_id:input.staffId,
-      });
+      }) as Record<string, unknown>;
+      return {
+        ...data,
+        branch_id:
+          typeof data.branch_id === "string"
+            ? data.branch_id
+            : typeof data.branch_id_at_start === "string"
+              ? data.branch_id_at_start
+              : null,
+      };
     },
     async promoteManagedOperationalStaffSupervisorTraining(input) {
       return rpcObject("promote_managed_operational_staff_supervisor_training",{
