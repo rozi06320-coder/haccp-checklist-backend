@@ -64,6 +64,13 @@ const persistence = {
     if (mode === "conflict") throw new ChecklistConflictError();
     return catalog();
   },
+  async mergeBranchCatalogInventoryItem(input: unknown) {
+    calls.push({ name: "merge-inventory", input });
+    if (mode === "conflict") throw new ChecklistConflictError();
+    if (mode === "invalid") throw new ChecklistInputError();
+    if (mode === "access") throw new ChecklistAccessError();
+    return catalog();
+  },
   async saveBranchProductUsageMappings(input: unknown) {
     calls.push({ name: "save-recipe", input });
     if (mode === "invalid") throw new ChecklistInputError();
@@ -313,6 +320,88 @@ describe("Branch product and inventory catalog API", () => {
       assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items`, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...validItemBody, actor_user_id: orgAndBranchManager }) })).status, 400);
       assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items/${breadId}`, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...validPatchBody, actor_user_id: orgAndBranchManager }) })).status, 400);
       assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products/${productId}/recipe`, "supervisor", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...validRecipeBody, actor_user_id: orgAndBranchManager }) })).status, 400);
+    });
+  });
+
+  describe("Catalog duplicate inventory item merge API", () => {
+    const mergePath = `/api/v1/supervisor/branches/${branch}/catalog/inventory-items/${waterId}/merge`;
+    const validBody = { target_inventory_item_id: breadId };
+
+    it("merges same-branch duplicate item into canonical target item successfully with verified actor", async () => {
+      const res = await request(mergePath, "supervisor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validBody),
+      });
+      assert.equal(res.status, 200);
+      assert.deepEqual(calls.at(-1), {
+        name: "merge-inventory",
+        input: {
+          actorUserId: supervisor,
+          branchId: branch,
+          duplicateInventoryItemId: waterId,
+          targetInventoryItemId: breadId,
+        },
+      });
+    });
+
+    it("rejects unauthorized actors on merge route", async () => {
+      // 401 unauthenticated
+      assert.equal((await request(mergePath, undefined, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validBody) })).status, 401);
+      // 403 other branch manager
+      assert.equal((await request(mergePath, "other-branch-mgr", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validBody) })).status, 403);
+      // 403 staff
+      assert.equal((await request(mergePath, "staff", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validBody) })).status, 403);
+      // 403 org manager without branch
+      assert.equal((await request(mergePath, "manager", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validBody) })).status, 403);
+      // 200 org manager who also has target branch manager access
+      const permitted = await request(mergePath, "org-branch-mgr", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validBody) });
+      assert.equal(permitted.status, 200);
+      assert.equal((calls.at(-1)?.input as { actorUserId: string }).actorUserId, orgAndBranchManager);
+    });
+
+    it("handles conflict (recipe collision) with 409 without leaking raw DB errors", async () => {
+      mode = "conflict";
+      const res = await request(mergePath, "supervisor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validBody),
+      });
+      assert.equal(res.status, 409);
+      const data = await res.json();
+      assert.equal(data.error.code, "conflict");
+      assert.equal(data.error.message, "Catalog data conflicts with an existing product or inventory item.");
+    });
+
+    it("handles invalid merge rules (self-merge, unit mismatch) with 422", async () => {
+      mode = "invalid";
+      const res = await request(mergePath, "supervisor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validBody),
+      });
+      assert.equal(res.status, 422);
+      const data = await res.json();
+      assert.equal(data.error.code, "unprocessable_entity");
+    });
+
+    it("handles cross-branch access rejection with 403", async () => {
+      mode = "access";
+      const res = await request(mergePath, "supervisor", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(validBody),
+      });
+      assert.equal(res.status, 403);
+    });
+
+    it("rejects invalid request payloads with 400", async () => {
+      // Non-UUID target
+      assert.equal((await request(mergePath, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ target_inventory_item_id: "not-a-uuid" }) })).status, 400);
+      // Missing target
+      assert.equal((await request(mergePath, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })).status, 400);
+      // Extraneous fields (strict schema)
+      assert.equal((await request(mergePath, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...validBody, actor_user_id: supervisor }) })).status, 400);
     });
   });
 });

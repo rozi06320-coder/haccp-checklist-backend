@@ -81,4 +81,45 @@ describe("Product / Inventory / Recipe catalog persistence SQL boundary", () => 
     assert.doesNotMatch(followUpMigration, /update public\.branch_daily_waste_entries/i);
     assert.doesNotMatch(followUpMigration, /update public\.branch_daily_inventory_entries/i);
   });
+
+  it("safely merges duplicate ingredients into canonical item in 20260913130000 without rewriting historical transactions", async () => {
+    const mergeMigrationPath = new URL("../../supabase/migrations/20260913130000_catalog_inventory_item_merge.sql", import.meta.url);
+    const mergeMigration = await readFile(mergeMigrationPath, "utf8");
+
+    // Defines merge RPC with security definer and empty search path
+    assert.match(mergeMigration, /create or replace function public\.merge_branch_catalog_inventory_item/);
+    assert.match(mergeMigration, /security definer/);
+    assert.match(mergeMigration, /set search_path = ''/);
+    assert.match(mergeMigration, /private\.require_branch_catalog_scope\(actor_user_id, target_branch_id\)/);
+
+    // Validations: self-merge, branch/org boundaries, ingredient kind, active target, unit compatibility
+    assert.match(mergeMigration, /duplicate_inventory_item_id = target_inventory_item_id/);
+    assert.match(mergeMigration, /source_item\.branch_id <> target_branch\.id/);
+    assert.match(mergeMigration, /target_item\.branch_id <> target_branch\.id/);
+    assert.match(mergeMigration, /source_item\.kind <> 'ingredient' or target_item\.kind <> 'ingredient'/);
+    assert.match(mergeMigration, /not target_item\.is_active/);
+    assert.match(mergeMigration, /source_item\.unit <> target_item\.unit/);
+
+    // Collision safety: detects same-product collision and rejects with 23505
+    assert.match(mergeMigration, /recipe collision in product/);
+    assert.match(mergeMigration, /errcode = '23505'/);
+
+    // Reassigns recipe mappings and archives source item
+    assert.match(mergeMigration, /update public\.branch_product_usage_mappings[\s\S]*set inventory_item_id = target_item\.id/);
+    assert.match(mergeMigration, /update public\.branch_inventory_catalog_items[\s\S]*set is_active = false/);
+
+    // Service role execution only
+    assert.match(mergeMigration, /revoke all on function public\.merge_branch_catalog_inventory_item\(uuid, uuid, uuid, uuid\) from public, anon, authenticated/);
+    assert.match(mergeMigration, /grant execute on function public\.merge_branch_catalog_inventory_item\(uuid, uuid, uuid, uuid\) to service_role/);
+
+    // Absolute historical isolation guarantees: zero transaction/snapshot rewrites or deletes
+    assert.doesNotMatch(mergeMigration, /update public\.branch_product_sales_usage_snapshots/i);
+    assert.doesNotMatch(mergeMigration, /delete from public\.branch_product_sales_usage_snapshots/i);
+    assert.doesNotMatch(mergeMigration, /update public\.branch_daily_waste_entries/i);
+    assert.doesNotMatch(mergeMigration, /delete from public\.branch_daily_waste_entries/i);
+    assert.doesNotMatch(mergeMigration, /update public\.branch_daily_inventory_entries/i);
+    assert.doesNotMatch(mergeMigration, /delete from public\.branch_daily_inventory_entries/i);
+    assert.doesNotMatch(mergeMigration, /delete from public\.branch_inventory_catalog_items/i);
+    assert.doesNotMatch(mergeMigration, /update public\.branch_product_catalog_products/i);
+  });
 });

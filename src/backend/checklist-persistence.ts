@@ -135,6 +135,7 @@ export type ChecklistPersistence = {
   createBranchCatalogProduct?(input:{actorUserId:string;branchId:string;payload:BranchCatalogProductInput}):Promise<unknown>;
   createBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;payload:BranchCatalogInventoryItemInput}):Promise<unknown>;
   updateBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;inventoryItemId:string;payload:BranchCatalogInventoryItemInput}):Promise<unknown>;
+  mergeBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;duplicateInventoryItemId:string;targetInventoryItemId:string}):Promise<unknown>;
   saveBranchProductUsageMappings?(input:{actorUserId:string;branchId:string;productId:string;recipeRows:BranchCatalogRecipeInput}):Promise<unknown>;
   getBranchProductSales?(actorUserId:string,branchId:string,businessDate:string):Promise<unknown>;
   saveBranchProductSales?(input:SaveBranchProductSalesInput):Promise<unknown>;
@@ -600,6 +601,7 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   createBranchCatalogProduct:(input)=>rpc("create_branch_catalog_product",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,payload:{name:input.payload.name,inventory_behavior:input.payload.inventoryBehavior,unit:input.payload.unit??null,recipe_rows:input.payload.recipeRows??[]}}),
   createBranchCatalogInventoryItem:(input)=>rpc("create_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,payload:input.payload}),
   updateBranchCatalogInventoryItem:(input)=>rpc("update_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_inventory_item_id:input.inventoryItemId,payload:input.payload}),
+  mergeBranchCatalogInventoryItem:(input)=>rpc("merge_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,duplicate_inventory_item_id:input.duplicateInventoryItemId,target_inventory_item_id:input.targetInventoryItemId}),
   saveBranchProductUsageMappings:(input)=>rpc("save_branch_product_usage_mappings",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_product_id:input.productId,recipe_rows:input.recipeRows}),
   getBranchProductSales:(actorUserId,branchId,businessDate)=>productSalesRpc("get_branch_product_sales",{actor_user_id:actorUserId,target_branch_id:branchId,target_business_date:businessDate}),
   saveBranchProductSales:(input)=>productSalesRpc("save_branch_product_sales",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,sales:input.sales}),
