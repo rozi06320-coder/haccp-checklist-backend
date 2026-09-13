@@ -16,7 +16,7 @@ import {
   type BackendDependencies,
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
-import { branchLocalDate, canonicalizeMaintenancePurchasePayload, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime } from "./operational";
+import { branchLocalDate, canonicalizeMaintenancePurchasePayload, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime, SupervisorPromotionConflictDiagnosticError } from "./operational";
 import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ChecklistNotFoundError, ManagementOverviewUnavailableError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
@@ -5983,6 +5983,17 @@ export function createApp(
               console.error("Supervisor promotion compensation failed", { requestId: request.id });
             }
           }
+        }
+        if (error instanceof SupervisorPromotionConflictDiagnosticError) {
+          console.error(`SUPERVISOR_PROMOTION_RPC_ERROR ${JSON.stringify({
+            requestId: request.id ?? null,
+            organizationId: request.params.organizationId,
+            staffId: request.params.staffId,
+            branchId: (request.body as { branch_id?: string })?.branch_id ?? null,
+            rpc: "promote_managed_operational_staff_supervisor_training",
+            postgresCode: error.postgresCode,
+            constraint: error.constraint,
+          })}`);
         }
         next(error instanceof HttpError ? error : error instanceof OperationalConflictError
           ? new HttpError(409, "conflict", "Supervisor promotion conflicts with current employee or team data.")

@@ -468,6 +468,24 @@ export class OperationalInputError extends Error {}
 export class OperationalAttachmentNotFoundError extends Error {}
 export class OperationalHygieneSubmittedError extends Error {}
 class RpcSignatureMissingError extends AdminOperationError {}
+export class SupervisorPromotionConflictDiagnosticError extends OperationalConflictError {
+  constructor(
+    readonly postgresCode: string | null,
+    readonly constraint: string | null,
+  ) {
+    super();
+  }
+}
+
+function supervisorPromotionConstraint(
+  message?: string | null,
+  details?: string | null,
+): string | null {
+  const text = `${message ?? ""} ${details ?? ""}`;
+  return text.match(/constraint ["']([^"']+)["']/i)?.[1] ?? null;
+}
+
+
 export type OperationalAdmin = {
   resolveDailyAuditGrantBranchScope?(actorUserId:string,branchId:string):Promise<{branch_id:string;organization_id:string;active:boolean;organization_active:boolean}|null>;
   resolveDailyAuditManualAccessUser?(actorUserId:string,branchId:string,accessUserId:string):Promise<{id:string;organization_id:string;display_name:string;active:boolean;credential_version:string}|null>;
@@ -1956,13 +1974,32 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       };
     },
     async promoteManagedOperationalStaffSupervisorTraining(input) {
-      return rpcObject("promote_managed_operational_staff_supervisor_training",{
-        actor_user_id:input.actorUserId,target_organization_id:input.organizationId,target_staff_id:input.staffId,
-        new_supervisor_user_id:input.newSupervisorUserId,new_supervisor_full_name:input.fullName,
-        new_supervisor_full_name_ar:input.fullNameAr??null,
-        target_branch_id:input.branchId,
+      const result = await client.rpc("promote_managed_operational_staff_supervisor_training", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_staff_id: input.staffId,
+        new_supervisor_user_id: input.newSupervisorUserId,
+        new_supervisor_full_name: input.fullName,
+        new_supervisor_full_name_ar: input.fullNameAr ?? null,
+        target_branch_id: input.branchId,
       });
+      if (result.error) {
+        if (["23505", "23514", "40001", "55000"].includes(result.error.code)) {
+          throw new SupervisorPromotionConflictDiagnosticError(
+            result.error.code ?? null,
+            supervisorPromotionConstraint(result.error.message, result.error.details),
+          );
+        }
+        if (result.error.code === "22023") throw new OperationalInputError();
+        if (result.error.code === "42501") throw new OperationalAccessError();
+        throw new AdminOperationError();
+      }
+      if (typeof result.data !== "object" || result.data === null || Array.isArray(result.data)) {
+        throw new AdminOperationError();
+      }
+      return result.data;
     },
+
     async getManagedAnnualEvaluationWorkspace(input) {
       return annualEvaluationWorkspaceSchema.parse(await rpcObject("get_managed_annual_evaluation_workspace",{
         p_actor_user_id:input.actorUserId,p_organization_id:input.organizationId,p_evaluation_year:input.evaluationYear,
