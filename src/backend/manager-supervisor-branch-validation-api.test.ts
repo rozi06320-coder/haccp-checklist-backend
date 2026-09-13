@@ -480,4 +480,17 @@ describe("Manager Supervisor Promotion Explicit Branch Validation (Backend API)"
     }
   });
 
+  it("17. DB failure triggers auth provisioning compensation deleting the newly created user", async () => {
+    const response = await request(promoteUrl(), {
+      branch_id: id.branch,
+      full_name: "RPC Conflict Supervisor",
+      email: "rollback_check@example.invalid",
+      temporary_password: "supersecretpassword123",
+    });
+    assert.equal(response.status, 409);
+    const createUserCall = calls.find((c) => c.method === "createUser" && c.email === "rollback_check@example.invalid");
+    assert.ok(createUserCall);
+    const deleteUserCall = calls.find((c) => c.method === "deleteUser" && c.userId === id.createdUser);
+    assert.ok(deleteUserCall);
+  });
 });
