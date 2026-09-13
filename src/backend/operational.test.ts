@@ -1478,7 +1478,7 @@ describe("Phase 3A operational API", () => {
     assert.deepEqual(calls.slice(-3),[
       {method:"getSupervisorTrainingPromotionState",actorUserId:id.manager,organizationId:id.organization,staffId:id.worker},
       {method:"createAuthUser",email:"promoted@example.invalid",password:"secret1"},
-      {method:"promoteSupervisorTraining",actorUserId:id.manager,organizationId:id.organization,staffId:id.worker,newSupervisorUserId:id.worker,fullName:"Promoted Supervisor",fullNameAr:"مشرف جديد"},
+      {method:"promoteSupervisorTraining",actorUserId:id.manager,organizationId:id.organization,staffId:id.worker,newSupervisorUserId:id.worker,fullName:"Promoted Supervisor",fullNameAr:"مشرف جديد",branchId:id.branch},
     ]);
     const failed=await fetch(base,{method:"POST",headers:headers("manager"),body:JSON.stringify({...JSON.parse(body),full_name:"Fail Promotion"})});
     assert.equal(failed.status,409);

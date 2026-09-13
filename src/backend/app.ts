@@ -5949,9 +5949,6 @@ export function createApp(
         if (!staffBranchId) {
           throw new HttpError(409, "conflict", "Employee branch assignment is unavailable.");
         }
-        if (staffBranchId !== body.data.branch_id) {
-          throw new HttpError(400, "bad_request", "The submitted branch does not match the employee branch.");
-        }
         if (stateRecord && "status" in stateRecord && stateRecord.status === "promoted") {
           response.setHeader("Cache-Control", "private, no-store");
           response.status(200).json(state);
@@ -5973,6 +5970,7 @@ export function createApp(
           newSupervisorUserId: newUserId,
           fullName: body.data.full_name,
           fullNameAr: body.data.full_name_ar,
+          branchId: body.data.branch_id,
         });
         response.setHeader("Cache-Control", "private, no-store");
         response.status(201).json(result);

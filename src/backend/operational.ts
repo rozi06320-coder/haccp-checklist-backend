@@ -652,7 +652,7 @@ export type OperationalAdmin = {
   startManagedOperationalStaffSupervisorTraining?(input:{actorUserId:string;organizationId:string;staffId:string}):Promise<unknown>;
   cancelManagedOperationalStaffSupervisorTraining?(input:{actorUserId:string;organizationId:string;staffId:string}):Promise<unknown>;
   getManagedOperationalStaffSupervisorTrainingPromotionState?(input:{actorUserId:string;organizationId:string;staffId:string}):Promise<unknown>;
-  promoteManagedOperationalStaffSupervisorTraining?(input:{actorUserId:string;organizationId:string;staffId:string;newSupervisorUserId:string;fullName:string;fullNameAr?:string|null}):Promise<unknown>;
+  promoteManagedOperationalStaffSupervisorTraining?(input:{actorUserId:string;organizationId:string;staffId:string;newSupervisorUserId:string;fullName:string;fullNameAr?:string|null;branchId:string}):Promise<unknown>;
   getManagedAnnualEvaluationWorkspace?(input:{actorUserId:string;organizationId:string;evaluationYear:number;branchId?:string;subjectType?:"supervisor"|"training_supervisor"|"employee";subjectId?:string;state?:"draft"|"submitted"}):Promise<unknown>;
   getManagedAnnualEvaluationDetail?(input:{actorUserId:string;organizationId:string;evaluationId:string}):Promise<unknown>;
   saveManagedAnnualEvaluationDraft?(input:{actorUserId:string;organizationId:string;branchId:string;evaluationYear:number;subjectType:"supervisor"|"training_supervisor"|"employee";subjectId:string;expectedRevision:number;scores:AnnualEvaluationScore[]}):Promise<unknown>;
@@ -1960,6 +1960,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         actor_user_id:input.actorUserId,target_organization_id:input.organizationId,target_staff_id:input.staffId,
         new_supervisor_user_id:input.newSupervisorUserId,new_supervisor_full_name:input.fullName,
         new_supervisor_full_name_ar:input.fullNameAr??null,
+        target_branch_id:input.branchId,
       });
     },
     async getManagedAnnualEvaluationWorkspace(input) {

@@ -225,17 +225,18 @@ describe("Manager Supervisor Promotion Explicit Branch Validation (Backend API)"
     assert.equal(body.error.message, "Employee branch assignment is unavailable.");
   });
 
-  it("5. valid same-org but non-canonical branch returns 400 mismatch", async () => {
+  it("5. valid same-org different branch succeeds with 201 Created and forwards target branch", async () => {
     const response = await request(promoteUrl(), {
       branch_id: id.validOtherSameOrgBranch,
       full_name: "Promoted Supervisor",
       email: "supervisor3@example.invalid",
       temporary_password: "secretpassword1",
     });
-    assert.equal(response.status, 400);
-    const body = await response.json() as { error: { code: string; message: string } };
-    assert.equal(body.error.code, "bad_request");
-    assert.equal(body.error.message, "The submitted branch does not match the employee branch.");
+    assert.equal(response.status, 201);
+    const body = await response.json() as { status: string; promoted_supervisor_user_id: string };
+    assert.equal(body.status, "promoted");
+    const lastCall = calls.find((c) => c.method === "promoteSupervisorTraining" && c.branchId === id.validOtherSameOrgBranch);
+    assert.ok(lastCall);
   });
 
   it("6. cross-org / inactive branch returns 403 forbidden", async () => {
@@ -268,15 +269,7 @@ describe("Manager Supervisor Promotion Explicit Branch Validation (Backend API)"
     assert.equal(response.status, 403);
   });
 
-  it("8 & 9. branch validation happens before createUser; missing/mismatched/cross-org branch creates no auth user", async () => {
-    await request(promoteUrl(), {
-      branch_id: id.validOtherSameOrgBranch,
-      full_name: "Mismatched",
-      email: "mismatch@example.invalid",
-      temporary_password: "secretpassword1",
-    });
-    assert.equal(calls.some((c) => c.method === "createUser"), false);
-
+  it("8 & 9. branch validation happens before createUser; missing/cross-org branch creates no auth user", async () => {
     await request(promoteUrl(id.staffMissingBranch), {
       branch_id: id.branch,
       full_name: "Missing Canonical",
@@ -294,21 +287,21 @@ describe("Manager Supervisor Promotion Explicit Branch Validation (Backend API)"
     assert.equal(calls.some((c) => c.method === "createUser"), false);
   });
 
-  it("10 & 11. successful promotion calls existing DB RPC without client branch_id (canonical persistence preserved)", async () => {
+  it("10 & 11. successful promotion calls DB RPC with target_branch_id while staff origin branch is preserved", async () => {
     const response = await request(promoteUrl(), {
-      branch_id: id.branch,
+      branch_id: id.validOtherSameOrgBranch,
       full_name: "Clean Supervisor",
       email: "clean@example.invalid",
       temporary_password: "secretpassword1",
     });
     assert.equal(response.status, 201);
 
-    const promoteCall = calls.find((c) => c.method === "promoteSupervisorTraining");
+    const promoteCall = calls.find((c) => c.method === "promoteSupervisorTraining" && c.branchId === id.validOtherSameOrgBranch);
     assert.ok(promoteCall);
-    assert.equal("branchId" in promoteCall, false);
-    assert.equal("branch_id" in promoteCall, false);
+    assert.equal(promoteCall.branchId, id.validOtherSameOrgBranch);
     assert.deepEqual(Object.keys(promoteCall).sort(), [
       "actorUserId",
+      "branchId",
       "fullName",
       "fullNameAr",
       "method",
@@ -332,14 +325,6 @@ describe("Manager Supervisor Promotion Explicit Branch Validation (Backend API)"
   });
 
   it("13. already-promoted state cannot bypass branch authorization", async () => {
-    const mismatchResponse = await request(promoteUrl(id.staffPromoted), {
-      branch_id: id.validOtherSameOrgBranch,
-      full_name: "Already Promoted",
-      email: "already@example.invalid",
-      temporary_password: "secretpassword1",
-    });
-    assert.equal(mismatchResponse.status, 400);
-
     const crossOrgResponse = await request(promoteUrl(id.staffPromoted), {
       branch_id: id.crossOrgBranch,
       full_name: "Already Promoted",
@@ -348,6 +333,17 @@ describe("Manager Supervisor Promotion Explicit Branch Validation (Backend API)"
     });
     assert.equal(crossOrgResponse.status, 403);
 
+    const sameOrgResponse = await request(promoteUrl(id.staffPromoted), {
+      branch_id: id.validOtherSameOrgBranch,
+      full_name: "Already Promoted",
+      email: "already@example.invalid",
+      temporary_password: "secretpassword1",
+    });
+    assert.equal(sameOrgResponse.status, 200);
+    const body = await sameOrgResponse.json() as { status: string };
+    assert.equal(body.status, "promoted");
+    assert.equal(calls.some((c) => c.method === "createUser"), false);
+
     const validResponse = await request(promoteUrl(id.staffPromoted), {
       branch_id: id.branch,
       full_name: "Already Promoted",
@@ -355,8 +351,6 @@ describe("Manager Supervisor Promotion Explicit Branch Validation (Backend API)"
       temporary_password: "secretpassword1",
     });
     assert.equal(validResponse.status, 200);
-    const body = await validResponse.json() as { status: string };
-    assert.equal(body.status, "promoted");
     assert.equal(calls.some((c) => c.method === "createUser"), false);
   });
 });
