@@ -207,7 +207,7 @@ export type BranchCatalogProductInput = {
   recipeRows?:Array<{ingredient:string;quantity:number|string;unit:"pcs"|"kg"|"g"|"L"|"ml"}>;
 };
 export type BranchCatalogInventoryItemInput = {name:string;unit:"pcs"|"kg"|"g"|"L"|"ml";is_active?:boolean};
-export type BranchCatalogRecipeInput = Array<{ingredient:string;quantity:number|string;unit:"pcs"|"kg"|"g"|"L"|"ml"}>;
+export type BranchCatalogRecipeInput = Array<{inventory_item_id?:string;ingredient:string;quantity:number|string;unit:"pcs"|"kg"|"g"|"L"|"ml"}>;
 export type BranchProductSaleItem = {product_id:string;quantity:number};
 export type SaveBranchProductSalesInput = {actorUserId:string;branchId:string;businessDate:string;expectedRevision:number;sales:BranchProductSaleItem[]};
 export type BranchDailyWasteItem = {inventory_item_id:string;quantity:number;note?:string|null};

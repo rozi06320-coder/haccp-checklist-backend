@@ -10,6 +10,9 @@ import type { BackendDependencies } from "./dependencies";
 const supervisor = "17000000-0000-4000-8000-000000000001";
 const manager = "17000000-0000-4000-8000-000000000002";
 const other = "17000000-0000-4000-8000-000000000003";
+const otherBranchManager = "17000000-0000-4000-8000-000000000004";
+const staffUser = "17000000-0000-4000-8000-000000000005";
+const orgAndBranchManager = "17000000-0000-4000-8000-000000000006";
 const branch = "27000000-0000-4000-8000-000000000001";
 const otherBranch = "27000000-0000-4000-8000-000000000002";
 const org = "37000000-0000-4000-8000-000000000001";
@@ -79,13 +82,41 @@ function deps(): BackendDependencies {
     managementAdmin: { listUsers: async () => ({ users: [], total: 0 }) },
     branchManagementAdmin: { listBranches: async () => [], listStaff: async () => [], getPinMetadata: async () => ({ configured: false, updated_at: null, updated_by_name: null }), storePin: async () => ({ configured: false, updated_at: null, updated_by_name: null }), getPinCredential: async () => null },
     pinCrypto: { hash: async () => ({ pin_hash: "x", salt: "x", kdf_version: 1, cost: 1, block_size: 1, parallelization: 1 }), verify: async () => false, issueGrant: () => "", verifyGrant: async () => false },
-    authVerifier: { verify: async (token) => token === "supervisor" ? { userId: supervisor, email: "s@example.invalid" } : token === "manager" ? { userId: manager, email: "m@example.invalid" } : token === "other" ? { userId: other, email: "o@example.invalid" } : null },
+    authVerifier: {
+      verify: async (token) =>
+        token === "supervisor"
+          ? { userId: supervisor, email: "s@example.invalid" }
+          : token === "manager"
+            ? { userId: manager, email: "m@example.invalid" }
+            : token === "other"
+              ? { userId: other, email: "o@example.invalid" }
+              : token === "other-branch-mgr"
+                ? { userId: otherBranchManager, email: "obm@example.invalid" }
+                : token === "staff"
+                  ? { userId: staffUser, email: "staff@example.invalid" }
+                  : token === "org-branch-mgr"
+                    ? { userId: orgAndBranchManager, email: "obm2@example.invalid" }
+                    : null,
+    },
     createUserContext: (token) => ({
-      getUserContext: async () => token === "supervisor"
-        ? { id: supervisor, full_name: "Supervisor", must_change_password: false, disabled: false, branches: [{ id: branch, name: "Branch", organization_id: org, role: "branch_manager" }], managed_organizations: [] }
-        : token === "manager"
-          ? { id: manager, full_name: "Manager", must_change_password: false, disabled: false, branches: [], managed_organizations: [{ id: org, name: "Org", role: "organization_manager" }] }
-          : { id: other, full_name: "Other", must_change_password: false, disabled: false, branches: [], managed_organizations: [] },
+      getUserContext: async () => {
+        if (token === "supervisor") {
+          return { id: supervisor, full_name: "Supervisor", must_change_password: false, disabled: false, branches: [{ id: branch, name: "Branch", organization_id: org, role: "branch_manager" }], managed_organizations: [] };
+        }
+        if (token === "manager") {
+          return { id: manager, full_name: "Manager", must_change_password: false, disabled: false, branches: [], managed_organizations: [{ id: org, name: "Org", role: "organization_manager" }] };
+        }
+        if (token === "other-branch-mgr") {
+          return { id: otherBranchManager, full_name: "Other Branch Manager", must_change_password: false, disabled: false, branches: [{ id: otherBranch, name: "Other Branch", organization_id: org, role: "branch_manager" }], managed_organizations: [] };
+        }
+        if (token === "staff") {
+          return { id: staffUser, full_name: "Staff", must_change_password: false, disabled: false, branches: [{ id: branch, name: "Branch", organization_id: org, role: "staff" }], managed_organizations: [] };
+        }
+        if (token === "org-branch-mgr") {
+          return { id: orgAndBranchManager, full_name: "Org and Branch Manager", must_change_password: false, disabled: false, branches: [{ id: branch, name: "Branch", organization_id: org, role: "branch_manager" }], managed_organizations: [{ id: org, name: "Org", role: "organization_manager" }] };
+        }
+        return { id: other, full_name: "Other", must_change_password: false, disabled: false, branches: [], managed_organizations: [] };
+      },
       isInternalAdmin: async () => false,
       hasOrganizationManagerAccess: async () => false,
       validateActiveBranches: async () => false,
@@ -183,9 +214,105 @@ describe("Branch product and inventory catalog API", () => {
     assert.equal(invalid.status, 422);
   });
 
-  it("does not accept cross-branch, manager, or arbitrary client-scoped mutation", async () => {
-    assert.equal((await request(`/api/v1/supervisor/branches/${otherBranch}/catalog`, "supervisor")).status, 403);
-    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products`, "manager", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "X", inventory_behavior: "non_stock" }) })).status, 403);
-    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products`, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "X", inventory_behavior: "non_stock", organization_id: org }) })).status, 400);
+  describe("Catalog route authorization matrix across all 5 routes", () => {
+    const validProductBody = { name: "New Product", inventory_behavior: "non_stock" };
+    const validItemBody = { name: "Cheese", unit: "pcs" };
+    const validPatchBody = { name: "Sliced Cheese", unit: "pcs", is_active: true };
+    const validRecipeBody = { recipe_rows: [{ ingredient: "Bread", quantity: 1, unit: "pcs" }] };
+
+    it("permits target branch_manager on all 5 routes and derives actor identity strictly from session", async () => {
+      // 1. GET /catalog
+      let res = await request(`/api/v1/supervisor/branches/${branch}/catalog`, "supervisor");
+      assert.equal(res.status, 200);
+      assert.equal(calls.at(-1)?.name, "list");
+      assert.equal((calls.at(-1)?.input as { actorUserId: string }).actorUserId, supervisor);
+
+      // 2. POST /catalog/products
+      res = await request(`/api/v1/supervisor/branches/${branch}/catalog/products`, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validProductBody) });
+      assert.equal(res.status, 201);
+      assert.equal(calls.at(-1)?.name, "create-product");
+      assert.equal((calls.at(-1)?.input as { actorUserId: string }).actorUserId, supervisor);
+
+      // 3. POST /catalog/inventory-items
+      res = await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items`, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validItemBody) });
+      assert.equal(res.status, 201);
+      assert.equal(calls.at(-1)?.name, "create-inventory");
+      assert.equal((calls.at(-1)?.input as { actorUserId: string }).actorUserId, supervisor);
+
+      // 4. PATCH /catalog/inventory-items/:id
+      res = await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items/${breadId}`, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validPatchBody) });
+      assert.equal(res.status, 200);
+      assert.equal(calls.at(-1)?.name, "update-inventory");
+      assert.equal((calls.at(-1)?.input as { actorUserId: string }).actorUserId, supervisor);
+
+      // 5. PUT /catalog/products/:id/recipe
+      res = await request(`/api/v1/supervisor/branches/${branch}/catalog/products/${productId}/recipe`, "supervisor", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validRecipeBody) });
+      assert.equal(res.status, 200);
+      assert.equal(calls.at(-1)?.name, "save-recipe");
+      assert.equal((calls.at(-1)?.input as { actorUserId: string }).actorUserId, supervisor);
+    });
+
+    it("rejects manager of another branch with 403 on all 5 routes", async () => {
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog`, "other-branch-mgr")).status, 403);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products`, "other-branch-mgr", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validProductBody) })).status, 403);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items`, "other-branch-mgr", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validItemBody) })).status, 403);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items/${breadId}`, "other-branch-mgr", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validPatchBody) })).status, 403);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products/${productId}/recipe`, "other-branch-mgr", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validRecipeBody) })).status, 403);
+    });
+
+    it("rejects normal staff on target branch with 403 on all 5 routes", async () => {
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog`, "staff")).status, 403);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products`, "staff", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validProductBody) })).status, 403);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items`, "staff", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validItemBody) })).status, 403);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items/${breadId}`, "staff", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validPatchBody) })).status, 403);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products/${productId}/recipe`, "staff", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validRecipeBody) })).status, 403);
+    });
+
+    it("rejects organization manager without branch membership with 403 on all 5 routes", async () => {
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog`, "manager")).status, 403);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products`, "manager", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validProductBody) })).status, 403);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items`, "manager", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validItemBody) })).status, 403);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items/${breadId}`, "manager", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validPatchBody) })).status, 403);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products/${productId}/recipe`, "manager", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validRecipeBody) })).status, 403);
+    });
+
+    it("permits organization manager who also has branch_manager role on target branch", async () => {
+      // All 5 routes permitted with orgAndBranchManager actor ID
+      let res = await request(`/api/v1/supervisor/branches/${branch}/catalog`, "org-branch-mgr");
+      assert.equal(res.status, 200);
+      assert.equal((calls.at(-1)?.input as { actorUserId: string }).actorUserId, orgAndBranchManager);
+
+      res = await request(`/api/v1/supervisor/branches/${branch}/catalog/products`, "org-branch-mgr", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validProductBody) });
+      assert.equal(res.status, 201);
+      assert.equal((calls.at(-1)?.input as { actorUserId: string }).actorUserId, orgAndBranchManager);
+
+      res = await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items`, "org-branch-mgr", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validItemBody) });
+      assert.equal(res.status, 201);
+      assert.equal((calls.at(-1)?.input as { actorUserId: string }).actorUserId, orgAndBranchManager);
+
+      res = await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items/${breadId}`, "org-branch-mgr", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validPatchBody) });
+      assert.equal(res.status, 200);
+      assert.equal((calls.at(-1)?.input as { actorUserId: string }).actorUserId, orgAndBranchManager);
+
+      res = await request(`/api/v1/supervisor/branches/${branch}/catalog/products/${productId}/recipe`, "org-branch-mgr", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validRecipeBody) });
+      assert.equal(res.status, 200);
+      assert.equal((calls.at(-1)?.input as { actorUserId: string }).actorUserId, orgAndBranchManager);
+    });
+
+    it("rejects unauthenticated requests with 401 on all 5 routes", async () => {
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog`)).status, 401);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products`, undefined, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validProductBody) })).status, 401);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items`, undefined, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validItemBody) })).status, 401);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items/${breadId}`, undefined, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validPatchBody) })).status, 401);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products/${productId}/recipe`, undefined, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(validRecipeBody) })).status, 401);
+    });
+
+    it("does not accept arbitrary client-supplied actor or org parameters (strict schema)", async () => {
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products`, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...validProductBody, actor_user_id: orgAndBranchManager }) })).status, 400);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products`, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...validProductBody, organization_id: org }) })).status, 400);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items`, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...validItemBody, actor_user_id: orgAndBranchManager }) })).status, 400);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items/${breadId}`, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...validPatchBody, actor_user_id: orgAndBranchManager }) })).status, 400);
+      assert.equal((await request(`/api/v1/supervisor/branches/${branch}/catalog/products/${productId}/recipe`, "supervisor", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...validRecipeBody, actor_user_id: orgAndBranchManager }) })).status, 400);
+    });
   });
 });

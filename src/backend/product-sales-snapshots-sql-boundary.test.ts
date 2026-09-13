@@ -78,4 +78,27 @@ describe("Product Sales frozen usage snapshot SQL boundary", () => {
     assert.doesNotMatch(migration, /on conflict \(report_id, product_id\) do update set[\s\S]*product_name_snapshot = excluded\.product_name_snapshot/);
     assert.doesNotMatch(migration, /delete from public\.branch_product_sales_usage_snapshots/);
   });
+
+  it("proves historical snapshot guarantee: recipe change (P -> A to P -> B) never alters historical snapshots", async () => {
+    const salesMigration = await readFile(migrationPath, "utf8");
+    const identityMigration = await readFile(new URL("../../supabase/migrations/20260913120000_product_usage_mapping_inventory_identity.sql", import.meta.url), "utf8");
+
+    // 1. Neither catalog creation nor recipe modification migration touches sales snapshots
+    assert.doesNotMatch(identityMigration, /branch_product_sales_usage_snapshots/i);
+    assert.doesNotMatch(identityMigration, /branch_product_sales/i);
+
+    // 2. In save_branch_product_sales, new snapshots are created ONLY for new sales
+    // (where not exists in branch_product_sales_usage_snapshots) using mapping active at insertion time
+    assert.match(salesMigration, /insert into public\.branch_product_sales_usage_snapshots[\s\S]*join public\.branch_product_usage_mappings mapping[\s\S]*not exists\s*\([\s\S]*from public\.branch_product_sales_usage_snapshots existing_usage[\s\S]*existing_usage\.product_sale_id = sale\.id\s*\)/);
+
+    // 3. For existing sales, only total_usage_quantity is scaled by quantity change:
+    // the item ID, name, and quantity_per_sale remain frozen from the original insertion
+    assert.match(salesMigration, /update public\.branch_product_sales_usage_snapshots usage[\s\S]*set[\s\S]*total_usage_quantity = usage\.quantity_per_sale_snapshot \* sale\.quantity/);
+
+    // 4. Report payload reads strictly from frozen snapshot table, never querying live recipe mappings
+    const payloadFn = salesMigration.match(/create or replace function private\.branch_product_sales_payload[\s\S]*?\$\$[\s\S]*?\$\$;/)?.[0] ?? "";
+    assert.ok(payloadFn.length > 0);
+    assert.match(payloadFn, /from public\.branch_product_sales_usage_snapshots usage[\s\S]*where usage\.report_id = report\.id/);
+    assert.doesNotMatch(payloadFn, /join public\.branch_product_usage_mappings/);
+  });
 });
