@@ -189,6 +189,9 @@ export type ChecklistPersistence = {
   saveBranchDailyInventory?(input:SaveBranchDailyInventoryInput):Promise<unknown>;
   listManagedSalesTrackingReports?(input:{actorUserId:string;organizationId:string;dateFrom?:string|null;dateTo?:string|null;branchId?:string|null}):Promise<unknown>;
   getManagedSalesTrackingMonthlySummary?(input:{actorUserId:string;organizationId:string;month:string;branchId?:string|null}):Promise<unknown>;
+  listManagedDailyInventoryReconciliation?(input:{actorUserId:string;organizationId:string;fromDate:string;toDate:string;branchId?:string|null;inventoryItemId?:string|null;page?:number;pageSize?:number}):Promise<unknown>;
+  listManagedProductSalesUsage?(input:{actorUserId:string;organizationId:string;fromDate:string;toDate:string;branchId?:string|null;inventoryItemId?:string|null;page?:number;pageSize?:number}):Promise<unknown>;
+  listManagedDailyWaste?(input:{actorUserId:string;organizationId:string;fromDate:string;toDate:string;branchId?:string|null;inventoryItemId?:string|null;page?:number;pageSize?:number}):Promise<unknown>;
   listManagedInventoryItemsReports?(input:{actorUserId:string;organizationId:string;inventoryMonth:string;branchId?:string|null}):Promise<unknown>;
   listSupervisor(input:{actorUserId:string;branchId:string;page:number;pageSize:number;type?:string}):Promise<unknown>;
   listOilTrackingSupervisor?(input:{actorUserId:string;branchId:string;page:number;pageSize:number}):Promise<unknown>;
@@ -717,6 +720,36 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   async listManagedInventoryItemsReports(input){
    return managedInventoryItemsReports.parse(await rpc("list_managed_inventory_items_reports",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,target_inventory_month:input.inventoryMonth,optional_branch_id:input.branchId??null}));
   },
+  listManagedDailyInventoryReconciliation:(input)=>dailyInventoryRpc("list_managed_daily_inventory_reconciliation",{
+    actor_user_id:input.actorUserId,
+    target_organization_id:input.organizationId,
+    from_date:input.fromDate,
+    to_date:input.toDate,
+    target_branch_id:input.branchId??null,
+    target_inventory_item_id:input.inventoryItemId??null,
+    requested_page:input.page??1,
+    requested_page_size:input.pageSize??50,
+  }),
+  listManagedProductSalesUsage:(input)=>productSalesRpc("list_managed_product_sales_usage",{
+    actor_user_id:input.actorUserId,
+    target_organization_id:input.organizationId,
+    from_date:input.fromDate,
+    to_date:input.toDate,
+    target_branch_id:input.branchId??null,
+    target_inventory_item_id:input.inventoryItemId??null,
+    requested_page:input.page??1,
+    requested_page_size:input.pageSize??50,
+  }),
+  listManagedDailyWaste:(input)=>dailyWasteRpc("list_managed_daily_waste",{
+    actor_user_id:input.actorUserId,
+    target_organization_id:input.organizationId,
+    from_date:input.fromDate,
+    to_date:input.toDate,
+    target_branch_id:input.branchId??null,
+    target_inventory_item_id:input.inventoryItemId??null,
+    requested_page:input.page??1,
+    requested_page_size:input.pageSize??50,
+  }),
   listSupervisor:(input)=>rpc("list_phase2_branch_reports",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,requested_page:input.page,requested_page_size:input.pageSize,target_checklist_type:input.type??null}),
   listOilTrackingSupervisor:(input)=>rpc("list_phase2_branch_reports",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,requested_page:input.page,requested_page_size:input.pageSize,target_checklist_type:"oil_tracking"}),
   listColdStorageSupervisor:(input)=>rpc("list_phase2_branch_reports",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,requested_page:input.page,requested_page_size:input.pageSize,target_checklist_type:"cold_storage"}),

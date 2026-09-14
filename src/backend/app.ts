@@ -1349,6 +1349,101 @@ const managerSalesTrackingQuerySchema=z.object({date_from:dateOnlySchema.optiona
 const managerSalesTrackingMonthlyQuerySchema=z.object({month:monthOnlySchema,branch_id:z.uuid().optional()}).strict();
 const managerInventoryMonthSchema=z.string().regex(/^\d{4}-(?:0[1-9]|1[0-2])$/).transform(value=>`${value}-01`);
 const managerInventoryItemsQuerySchema=z.object({month:managerInventoryMonthSchema.optional(),branch_id:z.uuid().optional()}).strict();
+const managerDailyTrackingQuerySchema=z.object({
+  from_date:dateOnlySchema,
+  to_date:dateOnlySchema,
+  branch_id:z.uuid().optional(),
+  inventory_item_id:z.uuid().optional(),
+  page:z.coerce.number().int().min(1).default(1),
+  page_size:z.coerce.number().int().min(1).max(100).default(50),
+}).strict().refine((data)=>data.from_date<=data.to_date,{
+  message:"from_date must be less than or equal to to_date",
+}).refine((data)=>{
+  const fromMs=new Date(`${data.from_date}T00:00:00Z`).getTime();
+  const toMs=new Date(`${data.to_date}T00:00:00Z`).getTime();
+  return (toMs-fromMs)/(1000*60*60*24)<=90;
+},{
+  message:"date range must not exceed 90 days",
+});
+const managerDailyInventoryReconciliationRowSchema=z.object({
+  business_date:dateOnlySchema,
+  branch_id:z.uuid(),
+  branch_name:z.string(),
+  inventory_item_id:z.uuid(),
+  inventory_item_name:z.string(),
+  inventory_item_unit:z.string(),
+  opening_quantity:dailyInventoryNullableQuantityResponseSchema,
+  receiving_quantity:dailyInventoryQuantityResponseSchema,
+  transfer_in_quantity:dailyInventoryQuantityResponseSchema,
+  transfer_out_quantity:dailyInventoryQuantityResponseSchema,
+  sales_usage_quantity:dailyInventoryQuantityResponseSchema,
+  wastage_quantity:dailyInventoryQuantityResponseSchema,
+  expected_closing_quantity:dailyInventoryNullableQuantityResponseSchema,
+  actual_closing_quantity:dailyInventoryNullableQuantityResponseSchema,
+  variance_quantity:dailyInventoryNullableQuantityResponseSchema,
+  report_revision:z.number().int().nonnegative(),
+  report_created_at:z.string(),
+  report_updated_at:z.string(),
+  created_by_user_id:z.uuid().nullable().optional(),
+});
+const managerDailyInventoryReconciliationResponseSchema=z.object({
+  rows:z.array(managerDailyInventoryReconciliationRowSchema),
+  page:z.number().int().positive(),
+  page_size:z.number().int().positive(),
+  total_rows:z.number().int().nonnegative(),
+  total_pages:z.number().int().nonnegative(),
+  from_date:dateOnlySchema,
+  to_date:dateOnlySchema,
+});
+const managerProductSalesUsageRowSchema=z.object({
+  business_date:dateOnlySchema,
+  branch_id:z.uuid(),
+  branch_name:z.string(),
+  product_id:z.uuid(),
+  product_name_snapshot:z.string(),
+  product_unit_snapshot:z.string().nullable(),
+  inventory_behavior_snapshot:z.enum(["recipe","standalone_stock","non_stock"]),
+  inventory_item_id:z.uuid(),
+  inventory_item_name_snapshot:z.string(),
+  inventory_item_unit_snapshot:z.string(),
+  sales_quantity:dailyInventoryQuantityResponseSchema,
+  quantity_per_sale_snapshot:dailyInventoryQuantityResponseSchema,
+  total_usage_quantity:dailyInventoryQuantityResponseSchema,
+  report_revision:z.number().int().nonnegative(),
+  report_created_at:z.string(),
+  report_updated_at:z.string(),
+});
+const managerProductSalesUsageResponseSchema=z.object({
+  rows:z.array(managerProductSalesUsageRowSchema),
+  page:z.number().int().positive(),
+  page_size:z.number().int().positive(),
+  total_rows:z.number().int().nonnegative(),
+  total_pages:z.number().int().nonnegative(),
+  from_date:dateOnlySchema,
+  to_date:dateOnlySchema,
+});
+const managerDailyWasteRowSchema=z.object({
+  business_date:dateOnlySchema,
+  branch_id:z.uuid(),
+  branch_name:z.string(),
+  inventory_item_id:z.uuid(),
+  inventory_item_name_snapshot:z.string(),
+  inventory_item_unit_snapshot:z.string(),
+  quantity:dailyInventoryQuantityResponseSchema,
+  note:z.string().nullable(),
+  report_revision:z.number().int().nonnegative(),
+  report_created_at:z.string(),
+  report_updated_at:z.string(),
+});
+const managerDailyWasteResponseSchema=z.object({
+  rows:z.array(managerDailyWasteRowSchema),
+  page:z.number().int().positive(),
+  page_size:z.number().int().positive(),
+  total_rows:z.number().int().nonnegative(),
+  total_pages:z.number().int().nonnegative(),
+  from_date:dateOnlySchema,
+  to_date:dateOnlySchema,
+});
 const operationsSummaryQuerySchema=z.object({month:monthOnlySchema.optional(),branch_id:z.uuid().optional()}).strict();
 const managerIssueQuerySchema=z.object({page:z.coerce.number().int().min(1).default(1),page_size:z.coerce.number().int().min(1).max(50).default(20),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional(),branch_id:z.uuid().optional(),supervisor_user_id:z.uuid().optional(),staff_id:z.uuid().optional(),checklist_type:managementIssueChecklistTypeSchema.optional(),status:z.literal("new").optional(),search:z.string().trim().max(120).optional()}).strict();
 const phase4aEvidenceMetadataSchema=z.object({id:z.uuid(),status:z.enum(["pending","draft","finalized"]),mime_type:evidenceMimeSchema,byte_size:z.number().int().positive().max(MAX_EVIDENCE_BYTES),available:z.boolean()});
@@ -6779,6 +6874,72 @@ export function createApp(
     response.setHeader("Cache-Control","private, no-store");
     response.status(200).json(reports);
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+  app.get("/api/v1/management/organizations/:organizationId/daily-inventory",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const org=organizationIdSchema.safeParse(request.params.organizationId),q=managerDailyTrackingQuerySchema.safeParse(request.query);
+    if(!org.success||!q.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    const allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);
+    if(context.must_change_password||!allowed)throw new HttpError(403,"forbidden","Access is denied.");
+    if(q.data.branch_id&&!(await auth.userContext.validateActiveBranches(org.data,[q.data.branch_id])))throw new HttpError(403,"forbidden","Access is denied.");
+    if(!dependencies.checklistPersistence?.listManagedDailyInventoryReconciliation)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+    const reports=managerDailyInventoryReconciliationResponseSchema.parse(await dependencies.checklistPersistence.listManagedDailyInventoryReconciliation({
+      actorUserId:auth.userId,
+      organizationId:org.data,
+      fromDate:q.data.from_date,
+      toDate:q.data.to_date,
+      branchId:q.data.branch_id??null,
+      inventoryItemId:q.data.inventory_item_id??null,
+      page:q.data.page,
+      pageSize:q.data.page_size,
+    }));
+    response.setHeader("Cache-Control","private, no-store");
+    response.status(200).json(reports);
+  }catch(error){next(error instanceof HttpError?error:dailyInventoryError(error));}});
+
+  app.get("/api/v1/management/organizations/:organizationId/daily-usage",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const org=organizationIdSchema.safeParse(request.params.organizationId),q=managerDailyTrackingQuerySchema.safeParse(request.query);
+    if(!org.success||!q.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    const allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);
+    if(context.must_change_password||!allowed)throw new HttpError(403,"forbidden","Access is denied.");
+    if(q.data.branch_id&&!(await auth.userContext.validateActiveBranches(org.data,[q.data.branch_id])))throw new HttpError(403,"forbidden","Access is denied.");
+    if(!dependencies.checklistPersistence?.listManagedProductSalesUsage)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+    const reports=managerProductSalesUsageResponseSchema.parse(await dependencies.checklistPersistence.listManagedProductSalesUsage({
+      actorUserId:auth.userId,
+      organizationId:org.data,
+      fromDate:q.data.from_date,
+      toDate:q.data.to_date,
+      branchId:q.data.branch_id??null,
+      inventoryItemId:q.data.inventory_item_id??null,
+      page:q.data.page,
+      pageSize:q.data.page_size,
+    }));
+    response.setHeader("Cache-Control","private, no-store");
+    response.status(200).json(reports);
+  }catch(error){next(error instanceof HttpError?error:productSalesError(error));}});
+
+  app.get("/api/v1/management/organizations/:organizationId/daily-waste",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const org=organizationIdSchema.safeParse(request.params.organizationId),q=managerDailyTrackingQuerySchema.safeParse(request.query);
+    if(!org.success||!q.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    const allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);
+    if(context.must_change_password||!allowed)throw new HttpError(403,"forbidden","Access is denied.");
+    if(q.data.branch_id&&!(await auth.userContext.validateActiveBranches(org.data,[q.data.branch_id])))throw new HttpError(403,"forbidden","Access is denied.");
+    if(!dependencies.checklistPersistence?.listManagedDailyWaste)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+    const reports=managerDailyWasteResponseSchema.parse(await dependencies.checklistPersistence.listManagedDailyWaste({
+      actorUserId:auth.userId,
+      organizationId:org.data,
+      fromDate:q.data.from_date,
+      toDate:q.data.to_date,
+      branchId:q.data.branch_id??null,
+      inventoryItemId:q.data.inventory_item_id??null,
+      page:q.data.page,
+      pageSize:q.data.page_size,
+    }));
+    response.setHeader("Cache-Control","private, no-store");
+    response.status(200).json(reports);
+  }catch(error){next(error instanceof HttpError?error:dailyWasteError(error));}});
 
   app.get("/api/v1/management/organizations/:organizationId/reports",protectedRateLimit,authenticate,async(request,response,next)=>{try{
     const org=organizationIdSchema.safeParse(request.params.organizationId),q=managerReportQuerySchema.safeParse(request.query);if(!org.success||!q.success)throw new HttpError(400,"bad_request","The request is invalid.");const auth=requireAuthContext(request),context=await loadActiveUser(request);const allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);if(context.must_change_password||!allowed||!dependencies.checklistPersistence)throw new HttpError(403,"forbidden","Access is denied.");
