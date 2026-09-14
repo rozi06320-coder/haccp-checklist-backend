@@ -227,6 +227,23 @@ describe("Manager unified people directory API", () => {
     assert.equal(body.monthly_evaluations[0]?.average_score, null);
   });
 
+  it("accepts inactive staff with promoted_to_supervisor status and left_company status", async () => {
+    rpcStatus = 200;
+    rpcPayload = {
+      ...validDirectory,
+      people: [
+        { ...validDirectory.people[0], employment_status: "inactive", status: "promoted_to_supervisor" },
+        { ...validDirectory.people[0], person_id: "70000000-0000-4000-8000-000000000001", staff_id: "70000000-0000-4000-8000-000000000001", employment_status: "inactive", status: "left_company" },
+      ],
+      people_total: 2,
+    };
+    const response = await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/people?month=2026-09`, { headers: authHeaders });
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.json() as typeof validDirectory;
+    assert.equal(body.people[0]?.status, "promoted_to_supervisor");
+    assert.equal(body.people[1]?.status, "left_company");
+  });
+
   it("rejects lowercase or malformed Supervisor country codes and string evaluation scores", async () => {
     rpcStatus = 200;
     for (const invalidCountryCode of ["zz", "Z1"]) {

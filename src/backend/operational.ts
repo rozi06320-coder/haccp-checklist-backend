@@ -1884,7 +1884,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         country_code: countryCode,
         display_name_ar: z.null(),
         branches: z.array(branch).length(1),
-        status: z.enum(["active", "on_vacation", "left_company"]),
+        status: z.enum(["active", "on_vacation", "left_company", "promoted_to_supervisor"]),
         staff_id: uuid,
         employment_status: employment,
         company_name: optionalStaffText,
