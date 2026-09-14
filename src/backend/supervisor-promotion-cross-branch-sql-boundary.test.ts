@@ -144,3 +144,72 @@ describe("Supervisor promotion target branch transfer migration boundary (202609
     assert.match(transferSource, /notify\s+pgrst,\s*'reload schema';/);
   });
 });
+
+const closureReasonMigrationPath = new URL(
+  "../../supabase/migrations/20260914120000_operational_staff_assignment_supervisor_promotion_closure_reason.sql",
+  import.meta.url,
+);
+const closureReasonSource = readFileSync(closureReasonMigrationPath, "utf8");
+
+describe("Supervisor promotion closure reason check migration boundary (20260914120000)", () => {
+  it("1. existing four closure reasons remain valid ('team_move', 'branch_transfer', 'left_company', 'employee_removed')", () => {
+    const existingReasons = ["team_move", "branch_transfer", "left_company", "employee_removed"];
+    for (const reason of existingReasons) {
+      assert.match(
+        closureReasonSource,
+        new RegExp(`'${reason}'::text`),
+        `Expected ${reason} to be included in check constraint`,
+      );
+    }
+  });
+
+  it("2. promoted_to_supervisor is now valid in check constraint", () => {
+    assert.match(
+      closureReasonSource,
+      /'promoted_to_supervisor'::text/,
+      "Expected 'promoted_to_supervisor' to be included in check constraint",
+    );
+  });
+
+  it("3. arbitrary invalid closure reason remains rejected by the constraint definition", () => {
+    const matchedReasons = [
+      ...closureReasonSource.matchAll(/'([a-z_]+)'::text/g),
+    ].map((m) => m[1]);
+    assert.deepEqual(matchedReasons.sort(), [
+      "branch_transfer",
+      "employee_removed",
+      "left_company",
+      "promoted_to_supervisor",
+      "team_move",
+    ].sort());
+    assert.equal(matchedReasons.includes("fired"), false);
+    assert.equal(matchedReasons.includes("resigned"), false);
+    assert.equal(matchedReasons.includes("arbitrary_reason"), false);
+  });
+
+  it("4. supervisor promotion RPC still uses promoted_to_supervisor", () => {
+    assert.match(
+      transferSource,
+      /closure_reason = 'promoted_to_supervisor'/,
+    );
+  });
+
+  it("5. preserves exact constraint name and no existing semantics were renamed", () => {
+    assert.match(
+      closureReasonSource,
+      /drop constraint if exists operational_staff_assignments_closure_reason_check;/,
+    );
+    assert.match(
+      closureReasonSource,
+      /add constraint operational_staff_assignments_closure_reason_check/,
+    );
+  });
+
+  it("6. migration doesn't update or delete existing rows", () => {
+    assert.doesNotMatch(closureReasonSource, /update\s+/i);
+    assert.doesNotMatch(closureReasonSource, /delete\s+from/i);
+    assert.doesNotMatch(closureReasonSource, /truncate/i);
+    assert.doesNotMatch(closureReasonSource, /drop\s+table/i);
+    assert.match(closureReasonSource, /notify\s+pgrst,\s*'reload schema';/);
+  });
+});
