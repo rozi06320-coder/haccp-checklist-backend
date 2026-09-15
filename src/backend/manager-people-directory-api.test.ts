@@ -212,7 +212,7 @@ describe("Manager unified people directory API", () => {
     assert.equal(rpcRequests.length, requestCount);
   });
 
-  it("accepts the live nullable Supervisor fields and two-letter country-code domain", async () => {
+  it("accepts nullable and numeric monthly evaluation average scores", async () => {
     rpcStatus = 200;
     rpcPayload = {
       ...validDirectory,
@@ -225,6 +225,25 @@ describe("Manager unified people directory API", () => {
     const body = await response.json() as { people: Array<{ display_name: string | null; country_code: string | null }>; monthly_evaluations: Array<{ average_score: number | null }> };
     assert.deepEqual(body.people[0], { ...validDirectory.people[1], display_name: null, country_code: "ZZ" });
     assert.equal(body.monthly_evaluations[0]?.average_score, null);
+
+    rpcPayload = validDirectory;
+    const numeric = await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/people?month=2026-09`, { headers: authHeaders });
+    assert.equal(numeric.status, 200, await numeric.clone().text());
+    const numericBody = await numeric.json() as { monthly_evaluations: Array<{ average_score: number | null }> };
+    assert.equal(numericBody.monthly_evaluations[0]?.average_score, 4.5);
+  });
+
+  it("normalizes finite numeric string monthly evaluation scores", async () => {
+    rpcStatus = 200;
+    rpcPayload = {
+      ...validDirectory,
+      monthly_evaluations: [{ ...validDirectory.monthly_evaluations[0], average_score: "4.5" }],
+    };
+    const response = await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/people?month=2026-09`, { headers: authHeaders });
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.json() as { monthly_evaluations: Array<{ average_score: unknown }> };
+    assert.equal(body.monthly_evaluations[0]?.average_score, 4.5);
+    assert.equal(typeof body.monthly_evaluations[0]?.average_score, "number");
   });
 
   it("accepts inactive staff with promoted_to_supervisor status and left_company status", async () => {
@@ -244,7 +263,7 @@ describe("Manager unified people directory API", () => {
     assert.equal(body.people[1]?.status, "left_company");
   });
 
-  it("rejects lowercase or malformed Supervisor country codes and string evaluation scores", async () => {
+  it("rejects lowercase or malformed Supervisor country codes and malformed string evaluation scores", async () => {
     rpcStatus = 200;
     for (const invalidCountryCode of ["zz", "Z1"]) {
       rpcPayload = {
@@ -258,11 +277,11 @@ describe("Manager unified people directory API", () => {
 
     rpcPayload = {
       ...validDirectory,
-      monthly_evaluations: [{ ...validDirectory.monthly_evaluations[0], average_score: "4.5" }],
+      monthly_evaluations: [{ ...validDirectory.monthly_evaluations[0], average_score: "abc" }],
     };
-    const stringScore = await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/people?month=2026-09`, { headers: authHeaders });
-    assert.equal(stringScore.status, 503);
-    assert.match(await stringScore.text(), /People directory is temporarily unavailable/);
+    const malformedScore = await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/people?month=2026-09`, { headers: authHeaders });
+    assert.equal(malformedScore.status, 503);
+    assert.match(await malformedScore.text(), /People directory is temporarily unavailable/);
   });
 
   it("strictly rejects mixed person variants and malformed RPC result metadata with a generic 5xx", async () => {

@@ -225,6 +225,14 @@ const monthlyEvaluationRow = z.object({
   scores: z.array(monthlyEvaluationScore).max(100),
   updated_at: z.string().nullable(),
 }).strict();
+const managedMonthlyEvaluationAverageScore = z.preprocess((value) => {
+  if (value === null || typeof value === "number") return value;
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : value;
+}, z.number().finite().nullable());
 const purchaseLogRow = z.object({
   id: uuid,
   organization_id: uuid.optional(),
@@ -1929,7 +1937,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
           branch_name: z.string(), branch_name_ar: optionalStaffText,
           evaluation_month: z.iso.date(), evaluator_name: optionalStaffText,
           status: monthlyEvaluationStatus,
-          average_score: z.number().nullable(),
+          average_score: managedMonthlyEvaluationAverageScore,
           scores: z.array(monthlyEvaluationScore).max(100), updated_at: z.string(),
         }).strict()),
       }).strict().superRefine((value, context) => {
