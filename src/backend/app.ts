@@ -201,6 +201,12 @@ const monthOnlySchema = z.string().regex(/^\d{4}-\d{2}$/).refine((value) => {
 });
 const monthlyEvaluationQuerySchema = z.object({
   month: monthOnlySchema,
+  team_id: z.uuid().optional(),
+  teamId: z.uuid().optional(),
+}).strict();
+const monthlyEvaluationFinalizeBodySchema = z.object({
+  team_id: z.uuid(),
+  evaluation_month: monthOnlySchema,
 }).strict();
 const monthlyEvaluationScoreBodySchema = z.object({
   section: z.string().max(80).transform((value) => value.trim().replace(/\s+/gu, " ")).pipe(z.string().min(1).max(80)),
@@ -5609,11 +5615,81 @@ export function createApp(
         const auth = requireAuthContext(request);
         const context = await loadActiveUser(request);
         if (context.must_change_password || !dependencies.operationalAdmin) throw new HttpError(403, "forbidden", "Access is denied.");
-        const result = await dependencies.operationalAdmin.listMonthlyEvaluations(auth.userId, branchId.data, `${query.data.month}-01`);
+        const operationalTeamId = query.data.team_id ?? query.data.teamId ?? null;
+        const [listResult, batchResult] = await Promise.all([
+          dependencies.operationalAdmin.listMonthlyEvaluations(auth.userId, branchId.data, `${query.data.month}-01`),
+          operationalTeamId && dependencies.operationalAdmin.getMonthlyEvaluationBatch
+            ? dependencies.operationalAdmin.getMonthlyEvaluationBatch({
+                actorUserId: auth.userId,
+                branchId: branchId.data,
+                operationalTeamId,
+                evaluationMonth: query.data.month,
+              })
+            : Promise.resolve(null),
+        ]);
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({
+          ...(typeof listResult === "object" && listResult !== null ? listResult : {}),
+          batch: batchResult ?? null,
+        });
+      } catch (error) {
+        next(error instanceof HttpError ? error : new HttpError(403, "forbidden", "Access is denied."));
+      }
+    });
+
+  app.post("/api/v1/supervisor/branches/:branchId/team/monthly-evaluations/finalize", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const body = monthlyEvaluationFinalizeBodySchema.safeParse(request.body);
+        if (!branchId.success || !body.success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || !dependencies.operationalAdmin?.finalizeMonthlyEvaluationBatch) {
+          throw new HttpError(403, "forbidden", "Access is denied.");
+        }
+        const result = await dependencies.operationalAdmin.finalizeMonthlyEvaluationBatch({
+          actorUserId: auth.userId,
+          branchId: branchId.data,
+          operationalTeamId: body.data.team_id,
+          evaluationMonth: body.data.evaluation_month,
+        });
+        response.status(200).json(result);
+      } catch (error) {
+        if (error instanceof OperationalConflictError) {
+          next(new HttpError(409, "conflict", "Monthly evaluation batch already finalized."));
+          return;
+        }
+        if (error instanceof OperationalInputError) {
+          next(new HttpError(422, "unprocessable_entity", "Monthly evaluations are incomplete or invalid."));
+          return;
+        }
+        if (error instanceof OperationalAccessError) {
+          next(new HttpError(403, "forbidden", "Access is denied."));
+          return;
+        }
+        next(error instanceof HttpError ? error : new HttpError(503, "service_unavailable", "The service is unavailable."));
+      }
+    });
+
+  app.get("/api/v1/supervisor/monthly-evaluation-factors", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (
+          context.must_change_password ||
+          context.managed_organizations.length > 0 ||
+          !context.branches.some((b) => b.role === "branch_manager") ||
+          !dependencies.operationalAdmin?.listMonthlyEvaluationFactors
+        ) {
+          throw new HttpError(403, "forbidden", "Access is denied.");
+        }
+        const result = await dependencies.operationalAdmin.listMonthlyEvaluationFactors();
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json(result);
       } catch (error) {
-        next(error instanceof HttpError ? error : new HttpError(403, "forbidden", "Access is denied."));
+        next(error instanceof HttpError ? error : new HttpError(503, "service_unavailable", "The service is unavailable."));
       }
     });
 

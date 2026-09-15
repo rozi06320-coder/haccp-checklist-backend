@@ -32,6 +32,7 @@ const id = {
   emptyHealthBranch: "20000000-0000-4000-8000-000000000002",
   nullableHealthBranch: "20000000-0000-4000-8000-000000000003",
   monthlyEvaluation: "90000000-0000-4000-8000-000000000001",
+  monthlyEvaluationBatch: "91000000-0000-4000-8000-000000000001",
   purchaseLog: "a0000000-0000-4000-8000-000000000001",
   supplierReceiving: "b0000000-0000-4000-8000-000000000001",
   supplier: "b1000000-0000-4000-8000-000000000001",
@@ -198,6 +199,60 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
         calls.push({ method: "saveMonthlyEvaluation", ...input });
         if (input.actorUserId !== id.supervisor || input.staffId !== id.worker) throw new Error("denied");
         return { evaluation: { id: id.monthlyEvaluation, operational_staff_id: input.staffId, evaluation_month: input.evaluationMonth, evaluator_name: input.evaluatorName, status: input.status, average_score: 5, scores: input.scores, updated_at: "2026-08-09T00:00:00.000Z" } };
+      },
+      async getMonthlyEvaluationBatch(input) {
+        calls.push({ method: "getMonthlyEvaluationBatch", ...input });
+        if (input.actorUserId !== id.supervisor) throw new OperationalAccessError();
+        return {
+          id: id.monthlyEvaluationBatch,
+          organization_id: id.organization,
+          branch_id: input.branchId,
+          operational_team_id: input.operationalTeamId,
+          supervisor_team_id: id.shift,
+          evaluation_month: `${input.evaluationMonth}-01`,
+          total_evaluated_staff: 1,
+          completed_by_user_id: input.actorUserId,
+          completed_at: "2026-08-31T23:59:59.000Z",
+          created_at: "2026-08-09T00:00:00.000Z",
+        };
+      },
+      async finalizeMonthlyEvaluationBatch(input) {
+        calls.push({ method: "finalizeMonthlyEvaluationBatch", ...input });
+        if (input.actorUserId !== id.supervisor) throw new OperationalAccessError();
+        if (input.operationalTeamId === id.deniedDestination) throw new OperationalAccessError();
+        if (input.operationalTeamId === id.conflictDestination) throw new OperationalConflictError();
+        if (input.operationalTeamId === id.invalidDestination) throw new OperationalInputError();
+        return {
+          batch: {
+            id: id.monthlyEvaluationBatch,
+            organization_id: id.organization,
+            branch_id: input.branchId,
+            operational_team_id: input.operationalTeamId,
+            supervisor_team_id: id.shift,
+            evaluation_month: `${input.evaluationMonth}-01`,
+            total_evaluated_staff: 1,
+            completed_by_user_id: input.actorUserId,
+            completed_at: "2026-08-31T23:59:59.000Z",
+            created_at: "2026-08-09T00:00:00.000Z",
+          },
+          evaluated_staff_ids: [id.worker],
+          evaluation_ids: [id.monthlyEvaluation],
+        };
+      },
+      async listMonthlyEvaluationFactors() {
+        calls.push({ method: "listMonthlyEvaluationFactors" });
+        return {
+          factors: [
+            {
+              factor_key: "performance_initiative",
+              section: "Performance",
+              factor_label: "Strong initiative",
+              description: "Takes proactive steps",
+              display_order: 1,
+              is_active: true,
+            },
+          ],
+        };
       },
       async listPurchaseLogs(actorUserId, branchId, filters) {
         calls.push({ method: "purchaseLogs", actorUserId, branchId, filters: filters ?? null });
@@ -1571,6 +1626,94 @@ describe("Phase 3A operational API", () => {
       });
       assert.equal(response.status, 400);
     }
+  });
+  it("supports Monthly Evaluation batch retrieval and finalization", async () => {
+    const listWithTeam = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/team/monthly-evaluations?month=2026-08&team_id=${id.shift}`, { headers: headers("supervisor") });
+    assert.equal(listWithTeam.status, 200);
+    const listJson = await listWithTeam.json() as { batch: { id: string; total_evaluated_staff: number } };
+    assert.equal(listJson.batch?.id, id.monthlyEvaluationBatch);
+    assert.equal(listJson.batch?.total_evaluated_staff, 1);
+    assert.deepEqual(calls.at(-1), {
+      method: "getMonthlyEvaluationBatch",
+      actorUserId: id.supervisor,
+      branchId: id.branch,
+      operationalTeamId: id.shift,
+      evaluationMonth: "2026-08",
+    });
+
+    const finalized = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/team/monthly-evaluations/finalize`, {
+      method: "POST",
+      headers: headers("supervisor"),
+      body: JSON.stringify({ team_id: id.shift, evaluation_month: "2026-08" }),
+    });
+    assert.equal(finalized.status, 200);
+    const finalizedJson = await finalized.json() as { batch: { id: string; total_evaluated_staff: number }; evaluated_staff_ids: string[] };
+    assert.equal(finalizedJson.batch.id, id.monthlyEvaluationBatch);
+    assert.equal(finalizedJson.batch.total_evaluated_staff, 1);
+    assert.deepEqual(finalizedJson.evaluated_staff_ids, [id.worker]);
+    assert.deepEqual(calls.at(-1), {
+      method: "finalizeMonthlyEvaluationBatch",
+      actorUserId: id.supervisor,
+      branchId: id.branch,
+      operationalTeamId: id.shift,
+      evaluationMonth: "2026-08",
+    });
+  });
+  it("rejects Monthly Evaluation batch finalization errors with safe HTTP mapping", async () => {
+    assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/team/monthly-evaluations/finalize`, {
+      method: "POST",
+      body: JSON.stringify({ team_id: id.shift, evaluation_month: "2026-08" }),
+    })).status, 401);
+    assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/team/monthly-evaluations/finalize`, {
+      method: "POST",
+      headers: headers("manager"),
+      body: JSON.stringify({ team_id: id.shift, evaluation_month: "2026-08" }),
+    })).status, 403);
+    const crossTeamRes = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/team/monthly-evaluations/finalize`, {
+      method: "POST",
+      headers: headers("supervisor"),
+      body: JSON.stringify({ team_id: id.deniedDestination, evaluation_month: "2026-08" }),
+    });
+    assert.equal(crossTeamRes.status, 403);
+    for (const badBody of [
+      { team_id: "not-a-uuid", evaluation_month: "2026-08" },
+      { team_id: id.shift, evaluation_month: "2026-13" },
+      { team_id: id.shift, evaluation_month: "2026-08-01" },
+    ]) {
+      const response = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/team/monthly-evaluations/finalize`, {
+        method: "POST",
+        headers: headers("supervisor"),
+        body: JSON.stringify(badBody),
+      });
+      assert.equal(response.status, 400);
+    }
+    const conflictRes = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/team/monthly-evaluations/finalize`, {
+      method: "POST",
+      headers: headers("supervisor"),
+      body: JSON.stringify({ team_id: id.conflictDestination, evaluation_month: "2026-08" }),
+    });
+    assert.equal(conflictRes.status, 409);
+    const unprocRes = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/team/monthly-evaluations/finalize`, {
+      method: "POST",
+      headers: headers("supervisor"),
+      body: JSON.stringify({ team_id: id.invalidDestination, evaluation_month: "2026-08" }),
+    });
+    assert.equal(unprocRes.status, 422);
+  });
+  it("lists Monthly Evaluation factors through supervisor route", async () => {
+    const response = await fetch(`${baseUrl}/api/v1/supervisor/monthly-evaluation-factors`, {
+      headers: headers("supervisor"),
+    });
+    assert.equal(response.status, 200);
+    const json = await response.json() as { factors: Array<{ factor_key: string }> };
+    assert.equal(json.factors.length, 1);
+    assert.equal(json.factors[0]?.factor_key, "performance_initiative");
+    assert.deepEqual(calls.at(-1), { method: "listMonthlyEvaluationFactors" });
+
+    assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/monthly-evaluation-factors`)).status, 401);
+    assert.equal((await fetch(`${baseUrl}/api/v1/supervisor/monthly-evaluation-factors`, {
+      headers: headers("manager"),
+    })).status, 403);
   });
   it("persists Purchase Log entries through supervisor-only routes", async () => {
     const list = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs`, { headers: headers("supervisor") });

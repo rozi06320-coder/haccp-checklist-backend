@@ -215,6 +215,32 @@ const healthCardRow = z.object({
   notes: optionalStaffText,
   updated_at: z.string().nullable(),
 }).strict();
+const monthlyEvaluationBatchRow = z.object({
+  id: uuid,
+  organization_id: uuid,
+  branch_id: uuid,
+  operational_team_id: uuid,
+  supervisor_team_id: uuid.nullable(),
+  evaluation_month: z.string(),
+  total_evaluated_staff: z.number().int().positive(),
+  completed_by_user_id: uuid,
+  completed_at: z.string(),
+  created_at: z.string(),
+}).strict();
+
+const finalizeMonthlyEvaluationBatchResult = z.object({
+  batch: monthlyEvaluationBatchRow,
+  evaluated_staff_ids: z.array(uuid),
+  evaluation_ids: z.array(uuid),
+}).strict();
+
+const monthlyEvaluationFactorRow = z.object({
+  factor_key: z.string(),
+  section: z.string(),
+  factor_label: z.string(),
+  display_order: z.number().int().min(1).max(30),
+}).strict();
+
 const monthlyEvaluationRow = z.object({
   id: uuid.nullable(),
   operational_staff_id: uuid,
@@ -553,6 +579,19 @@ export type OperationalAdmin = {
     status: z.infer<typeof monthlyEvaluationStatus>;
     scores: Array<{ section: string; factor_key: string; factor_label: string; rating: number | null; comment?: string | null }>;
   }): Promise<unknown>;
+  getMonthlyEvaluationBatch?(input: {
+    actorUserId: string;
+    branchId: string;
+    operationalTeamId: string;
+    evaluationMonth: string;
+  }): Promise<unknown>;
+  finalizeMonthlyEvaluationBatch?(input: {
+    actorUserId: string;
+    branchId: string;
+    operationalTeamId: string;
+    evaluationMonth: string;
+  }): Promise<unknown>;
+  listMonthlyEvaluationFactors?(): Promise<unknown>;
   listPurchaseLogs(actorUserId: string, branchId: string, filters?: { dateFrom?: string | null; dateTo?: string | null }): Promise<unknown>;
   createPurchaseLogReceiptReadUrl?(input: { actorUserId: string; purchaseLogId: string }): Promise<unknown>;
   createManagedPurchaseLogReceiptReadUrl?(input: { actorUserId: string; organizationId: string; purchaseLogId: string }): Promise<unknown>;
@@ -784,17 +823,20 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     if (!Array.isArray(result.data)) throw new AdminOperationError();
     return result.data;
   }
-  async function rpcObject(name: string, input: Record<string, unknown>) {
+  async function rpcObject(name: string, input: Record<string, unknown>, options?: { allowNullable?: boolean }) {
     const result = await client.rpc(name, input);
     if (result.error) {
       if (result.error.code === "23505" && /employee code/i.test(result.error.message)) throw new OperationalDuplicateStaffCodeError();
       if (result.error.code === "23505" && /equipment[_ ]code/i.test(result.error.message)) throw new OperationalDuplicateColdStorageEquipmentCodeError();
-      if (result.error.code === "23514" && /annual evaluation incomplete/i.test(result.error.message)) throw new OperationalInputError();
+      if (result.error.code === "23514" && /(?:annual|monthly) evaluation incomplete/i.test(result.error.message)) throw new OperationalInputError();
       if (result.error.code === "23514" && /destination team hygiene already submitted/i.test(result.error.message)) throw new OperationalHygieneSubmittedError();
       if (["23505", "23514", "40001", "55000"].includes(result.error.code)) throw new OperationalConflictError();
       if (result.error.code === "22023") throw new OperationalInputError();
       if (result.error.code === "42501") throw new OperationalAccessError();
       throw new AdminOperationError();
+    }
+    if (options?.allowNullable && (result.data === null || result.data === undefined)) {
+      return null;
     }
     if (typeof result.data !== "object" || result.data === null || Array.isArray(result.data)) throw new AdminOperationError();
     return result.data;
@@ -1422,6 +1464,28 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         new_status: input.status,
       }));
       return { evaluation: rows[0] };
+    },
+    async getMonthlyEvaluationBatch(input) {
+      const data = await rpcObject("get_operational_staff_monthly_evaluation_batch", {
+        actor_user_id: input.actorUserId,
+        target_branch_id: input.branchId,
+        target_operational_team_id: input.operationalTeamId,
+        requested_month: `${input.evaluationMonth}-01`,
+      }, { allowNullable: true });
+      return data ? monthlyEvaluationBatchRow.parse(data) : null;
+    },
+    async finalizeMonthlyEvaluationBatch(input) {
+      const data = await rpcObject("finalize_operational_staff_monthly_evaluations", {
+        actor_user_id: input.actorUserId,
+        target_branch_id: input.branchId,
+        target_operational_team_id: input.operationalTeamId,
+        target_month: `${input.evaluationMonth}-01`,
+      });
+      return finalizeMonthlyEvaluationBatchResult.parse(data);
+    },
+    async listMonthlyEvaluationFactors() {
+      const rows = await rpc("list_operational_staff_monthly_evaluation_factors", {});
+      return { factors: z.array(monthlyEvaluationFactorRow).length(30).parse(rows) };
     },
     async listPurchaseLogs(actorUserId, branchId, filters) {
       const rows = await normalizePurchaseRows(await rpc("list_branch_purchase_logs", {
