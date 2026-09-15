@@ -1365,6 +1365,32 @@ const managerDailyTrackingQuerySchema=z.object({
 },{
   message:"date range must not exceed 90 days",
 });
+const managerDailyInventoryBranchOverviewQuerySchema=z.object({
+  business_date:dateOnlySchema,
+  branch_id:z.uuid().optional(),
+  attention:z.enum(["all","needs_attention","no_submission"]).optional(),
+}).strict();
+const managerDailyInventoryBranchOverviewRowSchema=z.object({
+  branch_id:z.uuid(),
+  branch_name:z.string(),
+  branch_code:z.string().nullable(),
+  business_date:dateOnlySchema,
+  has_submission:z.boolean(),
+  total_entries_count:z.number().int().nonnegative(),
+  items_checked_count:z.number().int().nonnegative(),
+  variance_items_count:z.number().int().nonnegative(),
+  missing_closing_count:z.number().int().nonnegative(),
+  unreconciled_items_count:z.number().int().nonnegative(),
+  attention_status:z.enum(["clear","needs_attention","no_submission"]),
+});
+const managerDailyInventoryBranchOverviewResponseSchema=z.object({
+  business_date:dateOnlySchema,
+  rows:z.array(managerDailyInventoryBranchOverviewRowSchema),
+  total_branches:z.number().int().nonnegative(),
+  needs_attention_count:z.number().int().nonnegative(),
+  no_submission_count:z.number().int().nonnegative(),
+  clear_count:z.number().int().nonnegative(),
+});
 const managerDailyInventoryReconciliationRowSchema=z.object({
   business_date:dateOnlySchema,
   branch_id:z.uuid(),
@@ -6874,6 +6900,25 @@ export function createApp(
     response.setHeader("Cache-Control","private, no-store");
     response.status(200).json(reports);
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+  app.get("/api/v1/management/organizations/:organizationId/daily-inventory/branch-overview",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const org=organizationIdSchema.safeParse(request.params.organizationId),q=managerDailyInventoryBranchOverviewQuerySchema.safeParse(request.query);
+    if(!org.success||!q.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    const allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);
+    if(context.must_change_password||!allowed)throw new HttpError(403,"forbidden","Access is denied.");
+    if(q.data.branch_id&&!(await auth.userContext.validateActiveBranches(org.data,[q.data.branch_id])))throw new HttpError(403,"forbidden","Access is denied.");
+    if(!dependencies.checklistPersistence?.listManagedDailyInventoryBranchOverview)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+    const overview=managerDailyInventoryBranchOverviewResponseSchema.parse(await dependencies.checklistPersistence.listManagedDailyInventoryBranchOverview({
+      actorUserId:auth.userId,
+      organizationId:org.data,
+      businessDate:q.data.business_date,
+      branchId:q.data.branch_id??null,
+      attentionFilter:q.data.attention??null,
+    }));
+    response.setHeader("Cache-Control","private, no-store");
+    response.status(200).json(overview);
+  }catch(error){next(error instanceof HttpError?error:dailyInventoryError(error));}});
 
   app.get("/api/v1/management/organizations/:organizationId/daily-inventory",protectedRateLimit,authenticate,async(request,response,next)=>{try{
     const org=organizationIdSchema.safeParse(request.params.organizationId),q=managerDailyTrackingQuerySchema.safeParse(request.query);

@@ -190,6 +190,7 @@ export type ChecklistPersistence = {
   listManagedSalesTrackingReports?(input:{actorUserId:string;organizationId:string;dateFrom?:string|null;dateTo?:string|null;branchId?:string|null}):Promise<unknown>;
   getManagedSalesTrackingMonthlySummary?(input:{actorUserId:string;organizationId:string;month:string;branchId?:string|null}):Promise<unknown>;
   listManagedDailyInventoryReconciliation?(input:{actorUserId:string;organizationId:string;fromDate:string;toDate:string;branchId?:string|null;inventoryItemId?:string|null;page?:number;pageSize?:number}):Promise<unknown>;
+  listManagedDailyInventoryBranchOverview?(input:{actorUserId:string;organizationId:string;businessDate:string;branchId?:string|null;attentionFilter?:string|null}):Promise<unknown>;
   listManagedProductSalesUsage?(input:{actorUserId:string;organizationId:string;fromDate:string;toDate:string;branchId?:string|null;inventoryItemId?:string|null;page?:number;pageSize?:number}):Promise<unknown>;
   listManagedDailyWaste?(input:{actorUserId:string;organizationId:string;fromDate:string;toDate:string;branchId?:string|null;inventoryItemId?:string|null;page?:number;pageSize?:number}):Promise<unknown>;
   listManagedInventoryItemsReports?(input:{actorUserId:string;organizationId:string;inventoryMonth:string;branchId?:string|null}):Promise<unknown>;
@@ -729,6 +730,13 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
     target_inventory_item_id:input.inventoryItemId??null,
     requested_page:input.page??1,
     requested_page_size:input.pageSize??50,
+  }),
+  listManagedDailyInventoryBranchOverview:(input)=>dailyInventoryRpc("list_managed_daily_inventory_branch_overview",{
+    actor_user_id:input.actorUserId,
+    target_organization_id:input.organizationId,
+    target_business_date:input.businessDate,
+    target_branch_id:input.branchId??null,
+    attention_filter:input.attentionFilter??null,
   }),
   listManagedProductSalesUsage:(input)=>productSalesRpc("list_managed_product_sales_usage",{
     actor_user_id:input.actorUserId,
