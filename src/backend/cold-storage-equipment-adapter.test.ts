@@ -13,6 +13,16 @@ const ids = {
 };
 
 type CapturedRequest = { path: string; body: Record<string, unknown> };
+const diagnosticPrefix = "COLD_STORAGE_EQUIPMENT_RPC_DIAGNOSTIC ";
+function parseDiagnosticLine(diagnostics: unknown[][]) {
+  assert.equal(diagnostics.length, 1);
+  assert.equal(diagnostics[0].length, 1);
+  const line = diagnostics[0][0];
+  assert.equal(typeof line, "string");
+  assert.ok(line.startsWith(diagnosticPrefix));
+  assert.equal(line.split("\n").length, 1);
+  return JSON.parse(line.slice(diagnosticPrefix.length)) as Record<string, unknown>;
+}
 
 describe("Cold Storage equipment master operational adapter", () => {
   let server: Server;
@@ -142,16 +152,13 @@ describe("Cold Storage equipment master operational adapter", () => {
     } finally {
       console.error = originalError;
     }
-    assert.deepEqual(diagnostics, [[
-      "Cold Storage equipment RPC failed",
-      {
-        operation: "create_supervisor_cold_storage_equipment",
-        code: "22023",
-        message: "invalid cold storage equipment type",
-        details: null,
-        hint: "Use a supported equipment type.",
-      },
-    ]]);
+    assert.deepEqual(parseDiagnosticLine(diagnostics), {
+      operation: "create_supervisor_cold_storage_equipment",
+      code: "22023",
+      message: "invalid cold storage equipment type",
+      details: null,
+      hint: "Use a supported equipment type.",
+    });
   });
 
   it("preserves PGRST create RPC details for signature diagnostics", async () => {
@@ -179,16 +186,13 @@ describe("Cold Storage equipment master operational adapter", () => {
     } finally {
       console.error = originalError;
     }
-    assert.deepEqual(diagnostics, [[
-      "Cold Storage equipment RPC failed",
-      {
-        operation: "create_supervisor_cold_storage_equipment",
-        code: "PGRST202",
-        message: "Could not find the function public.create_supervisor_cold_storage_equipment in the schema cache",
-        details: "Searched for the function public.create_supervisor_cold_storage_equipment(actor_user_id, target_branch_id, equipment_code, equipment_name, equipment_type).",
-        hint: "Reload the schema cache.",
-      },
-    ]]);
+    assert.deepEqual(parseDiagnosticLine(diagnostics), {
+      operation: "create_supervisor_cold_storage_equipment",
+      code: "PGRST202",
+      message: "Could not find the function public.create_supervisor_cold_storage_equipment in the schema cache",
+      details: "Searched for the function public.create_supervisor_cold_storage_equipment(actor_user_id, target_branch_id, equipment_code, equipment_name, equipment_type).",
+      hint: "Reload the schema cache.",
+    });
   });
 
   it("calls rename with only verified actor/branch scope, equipment id, and name", async () => {

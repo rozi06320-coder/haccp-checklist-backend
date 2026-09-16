@@ -504,13 +504,13 @@ export class OperationalHygieneSubmittedError extends Error {}
 class RpcSignatureMissingError extends AdminOperationError {}
 function emitCreateColdStorageEquipmentDiagnostic(error: { code?: string | null; message?: string | null; details?: string | null; hint?: string | null }) {
   const code = error.code ?? null;
-  console.error("Cold Storage equipment RPC failed", {
+  console.error("COLD_STORAGE_EQUIPMENT_RPC_DIAGNOSTIC " + JSON.stringify({
     operation: "create_supervisor_cold_storage_equipment",
     code,
     message: error.message ?? null,
     details: code?.startsWith("PGRST") ? error.details ?? null : null,
     hint: error.hint ?? null,
-  });
+  }));
 }
 export class SupervisorPromotionConflictDiagnosticError extends OperationalConflictError {
   constructor(
