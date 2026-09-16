@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
-import { createOperationalAdmin } from "./operational";
+import { AdminOperationError } from "./admin";
+import { createOperationalAdmin, OperationalInputError } from "./operational";
 
 const ids = {
   actor: "da100000-0000-4000-8000-000000000001",
@@ -17,6 +18,7 @@ describe("Cold Storage equipment master operational adapter", () => {
   let server: Server;
   let origin = "";
   let malformed = false;
+  let createRpcError: { code: string; message: string; details: string | null; hint: string | null } | null = null;
   const requests: CapturedRequest[] = [];
 
   before(async () => {
@@ -31,6 +33,12 @@ describe("Cold Storage equipment master operational adapter", () => {
       const isRename = path.endsWith("/rename_supervisor_cold_storage_equipment");
       const isUpdate = path.endsWith("/update_supervisor_cold_storage_equipment");
       const isArchive = path.endsWith("/archive_supervisor_cold_storage_equipment");
+      if (isCreate && createRpcError) {
+        response.statusCode = 400;
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify(createRpcError));
+        return;
+      }
       const name = isCreate
         ? String(body.equipment_name)
         : isRename || isUpdate
@@ -60,6 +68,7 @@ describe("Cold Storage equipment master operational adapter", () => {
   after(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
   beforeEach(() => {
     malformed = false;
+    createRpcError = null;
     requests.length = 0;
   });
 
@@ -106,6 +115,80 @@ describe("Cold Storage equipment master operational adapter", () => {
       },
     });
     assert.doesNotMatch(JSON.stringify(result), /organization_id|created_by|updated_by/);
+  });
+
+  it("redacts PostgreSQL details before preserving existing create RPC error mapping", async () => {
+    createRpcError = {
+      code: "22023",
+      message: "invalid cold storage equipment type",
+      details: `Branch ${ids.branch} submitted code G1.`,
+      hint: "Use a supported equipment type.",
+    };
+    const diagnostics: unknown[][] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      diagnostics.push(args);
+    };
+    try {
+      const admin = createOperationalAdmin(origin, "service-key");
+      assert.ok(admin.createSupervisorColdStorageEquipment);
+      await assert.rejects(() => admin.createSupervisorColdStorageEquipment!({
+        actorUserId: ids.actor,
+        branchId: ids.branch,
+        equipmentCode: "g1",
+        name: "Walk-in Freezer",
+        equipmentType: "freezer",
+      }), OperationalInputError);
+    } finally {
+      console.error = originalError;
+    }
+    assert.deepEqual(diagnostics, [[
+      "Cold Storage equipment RPC failed",
+      {
+        operation: "create_supervisor_cold_storage_equipment",
+        code: "22023",
+        message: "invalid cold storage equipment type",
+        details: null,
+        hint: "Use a supported equipment type.",
+      },
+    ]]);
+  });
+
+  it("preserves PGRST create RPC details for signature diagnostics", async () => {
+    createRpcError = {
+      code: "PGRST202",
+      message: "Could not find the function public.create_supervisor_cold_storage_equipment in the schema cache",
+      details: "Searched for the function public.create_supervisor_cold_storage_equipment(actor_user_id, target_branch_id, equipment_code, equipment_name, equipment_type).",
+      hint: "Reload the schema cache.",
+    };
+    const diagnostics: unknown[][] = [];
+    const originalError = console.error;
+    console.error = (...args: unknown[]) => {
+      diagnostics.push(args);
+    };
+    try {
+      const admin = createOperationalAdmin(origin, "service-key");
+      assert.ok(admin.createSupervisorColdStorageEquipment);
+      await assert.rejects(() => admin.createSupervisorColdStorageEquipment!({
+        actorUserId: ids.actor,
+        branchId: ids.branch,
+        equipmentCode: "g1",
+        name: "Walk-in Freezer",
+        equipmentType: "freezer",
+      }), AdminOperationError);
+    } finally {
+      console.error = originalError;
+    }
+    assert.deepEqual(diagnostics, [[
+      "Cold Storage equipment RPC failed",
+      {
+        operation: "create_supervisor_cold_storage_equipment",
+        code: "PGRST202",
+        message: "Could not find the function public.create_supervisor_cold_storage_equipment in the schema cache",
+        details: "Searched for the function public.create_supervisor_cold_storage_equipment(actor_user_id, target_branch_id, equipment_code, equipment_name, equipment_type).",
+        hint: "Reload the schema cache.",
+      },
+    ]]);
   });
 
   it("calls rename with only verified actor/branch scope, equipment id, and name", async () => {

@@ -502,6 +502,16 @@ export class OperationalInputError extends Error {}
 export class OperationalAttachmentNotFoundError extends Error {}
 export class OperationalHygieneSubmittedError extends Error {}
 class RpcSignatureMissingError extends AdminOperationError {}
+function emitCreateColdStorageEquipmentDiagnostic(error: { code?: string | null; message?: string | null; details?: string | null; hint?: string | null }) {
+  const code = error.code ?? null;
+  console.error("Cold Storage equipment RPC failed", {
+    operation: "create_supervisor_cold_storage_equipment",
+    code,
+    message: error.message ?? null,
+    details: code?.startsWith("PGRST") ? error.details ?? null : null,
+    hint: error.hint ?? null,
+  });
+}
 export class SupervisorPromotionConflictDiagnosticError extends OperationalConflictError {
   constructor(
     readonly postgresCode: string | null,
@@ -803,6 +813,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   async function rpc(name: string, input: Record<string, unknown>, options?: { onError?: (error: { code?: string | null; message?: string | null }) => void }) {
     const result = await client.rpc(name, input);
     if (result.error) {
+      if (name === "create_supervisor_cold_storage_equipment") emitCreateColdStorageEquipmentDiagnostic(result.error);
       options?.onError?.({ code: result.error.code, message: result.error.message });
       if (result.error.code === "23505" && /employee code/i.test(result.error.message)) {
         throw new OperationalDuplicateStaffCodeError();
