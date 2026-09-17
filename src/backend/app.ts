@@ -16,7 +16,7 @@ import {
   type BackendDependencies,
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
-import { branchLocalDate, canonicalizeMaintenancePurchasePayload, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime, SupervisorPromotionConflictDiagnosticError } from "./operational";
+import { branchLocalDate, canonicalizeMaintenancePurchasePayload, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime, SupervisorPromotionConflictDiagnosticError, type MaintenanceIssuesStageTiming, type MaintenanceIssuesTimingDiagnostics } from "./operational";
 import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ChecklistNotFoundError, ManagementOverviewUnavailableError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
@@ -4798,17 +4798,51 @@ export function createApp(
     "/api/v1/maintenance/issues",
     protectedRateLimit,
     async (request, response, next) => {
+      const routeStart = performance.now();
       try {
         if (!emptyQuerySchema.safeParse(request.query).success) {
           throw new HttpError(400, "bad_request", "The request is invalid.");
         }
         if (!dependencies.operationalAdmin) throw new HttpError(503, "service_unavailable", "Maintenance issues are temporarily unavailable.");
         const contract=maintenanceContract(request);
+        const actorStart = performance.now();
         const actor = await loadMaintenanceIssueActor(request);
-        const operationalResult=await dependencies.operationalAdmin.listMaintenanceIssues({...actor,contract});
+        const actorResolutionMs = Math.round((performance.now() - actorStart) * 100) / 100;
+        const timingCollector: MaintenanceIssuesStageTiming = {
+          listIssuesRpcMs: 0,
+          issueCount: 0,
+          attachmentsRpcMs: 0,
+          attachmentCount: 0,
+          attachmentSigningMs: 0,
+          normalizationMs: 0,
+        };
+        const operationalResult=await dependencies.operationalAdmin.listMaintenanceIssues({
+          ...actor,
+          contract,
+          timingCollector,
+        });
+        const normStart = performance.now();
         const result = contract==="phase1"
           ? maintenanceIssueListResponseSchema.parse(operationalResult)
           : maintenanceIssueLegacyListResponseSchema.parse(operationalResult);
+        timingCollector.normalizationMs += performance.now() - normStart;
+        const totalMs = Math.round((performance.now() - routeStart) * 100) / 100;
+        const diagnosticPayload: MaintenanceIssuesTimingDiagnostics = {
+          requestId: typeof request.id === "string" ? request.id : null,
+          actorResolutionMs,
+          listIssuesRpcMs: timingCollector.listIssuesRpcMs,
+          issueCount: timingCollector.issueCount,
+          attachmentsRpcMs: timingCollector.attachmentsRpcMs,
+          attachmentCount: timingCollector.attachmentCount,
+          attachmentSigningMs: timingCollector.attachmentSigningMs,
+          normalizationMs: Math.round(timingCollector.normalizationMs * 100) / 100,
+          totalMs,
+        };
+        try {
+          console.info(`MAINTENANCE_ISSUES_TIMING ${JSON.stringify(diagnosticPayload)}`);
+        } catch {
+          /* Diagnostics must never affect a request. */
+        }
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json(result);
       } catch (error) {

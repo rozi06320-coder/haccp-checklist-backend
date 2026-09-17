@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { AdminOperationError } from "./admin";
@@ -96,6 +97,25 @@ type MaintenanceIssueCreateDiagnostics = {
     undefinedIdentity?: string | null;
     durationMs?: number;
   }) => void;
+};
+export type MaintenanceIssuesStageTiming = {
+  listIssuesRpcMs: number;
+  issueCount: number;
+  attachmentsRpcMs: number;
+  attachmentCount: number;
+  attachmentSigningMs: number;
+  normalizationMs: number;
+};
+export type MaintenanceIssuesTimingDiagnostics = {
+  requestId: string | null;
+  actorResolutionMs: number;
+  listIssuesRpcMs: number;
+  issueCount: number;
+  attachmentsRpcMs: number;
+  attachmentCount: number;
+  attachmentSigningMs: number;
+  normalizationMs: number;
+  totalMs: number;
 };
 const monthlyEvaluationScore = z.object({
   section: z.string(),
@@ -687,7 +707,7 @@ export type OperationalAdmin = {
     photos?: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> | null;
     contract?: "legacy" | "phase1";
   }): Promise<unknown>;
-  listMaintenanceIssues(input: { actorUserId?: string | null; accessUserId?: string | null; organizationId?: string | null; contract?: "legacy" | "phase1" }): Promise<unknown>;
+  listMaintenanceIssues(input: { actorUserId?: string | null; accessUserId?: string | null; organizationId?: string | null; contract?: "legacy" | "phase1"; timingCollector?: MaintenanceIssuesStageTiming }): Promise<unknown>;
   updateMaintenanceIssue(input: {
     actorUserId?: string | null;
     accessUserId?: string | null;
@@ -1040,18 +1060,41 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       return safeRow;
     });
   }
-  async function attachMaintenanceIssuePhotos<Row extends { id: string; organization_id?: string; updates?: unknown[] }>(rows:Row[],actorUserId?:string|null,accessUserId?:string|null){
-    if(rows.length===0)return rows.map((row)=> {
-      const { organization_id, ...safeRow } = row;
-      void organization_id;
-      return {...safeRow,updates:row.updates??[],before_photo:null,after_photo:null,before_photos:[],after_photos:[]};
-    });
-    const attachments=z.array(maintenanceIssuePhotoRpcRow).max(rows.length*MAX_MAINTENANCE_ISSUE_PHOTOS*2).parse(await rpc("list_maintenance_issue_attachments",{
+  async function attachMaintenanceIssuePhotos<Row extends { id: string; organization_id?: string; updates?: unknown[] }>(
+    rows:Row[],
+    actorUserId?:string|null,
+    accessUserId?:string|null,
+    timingCollector?:MaintenanceIssuesStageTiming,
+  ){
+    if(rows.length===0){
+      if (timingCollector) {
+        timingCollector.attachmentsRpcMs = 0;
+        timingCollector.attachmentCount = 0;
+        timingCollector.attachmentSigningMs = 0;
+      }
+      return rows.map((row)=> {
+        const { organization_id, ...safeRow } = row;
+        void organization_id;
+        return {...safeRow,updates:row.updates??[],before_photo:null,after_photo:null,before_photos:[],after_photos:[]};
+      });
+    }
+    const rpcStart = performance.now();
+    const rawAttachments = await rpc("list_maintenance_issue_attachments",{
       actor_user_id:actorUserId??null,
       access_user_id:accessUserId??null,
       target_issue_ids:rows.map((row)=>row.id),
-    }));
+    });
+    if (timingCollector) {
+      timingCollector.attachmentsRpcMs = Math.round((performance.now() - rpcStart) * 100) / 100;
+    }
+    const parseStart = performance.now();
+    const attachments=z.array(maintenanceIssuePhotoRpcRow).max(rows.length*MAX_MAINTENANCE_ISSUE_PHOTOS*2).parse(rawAttachments);
+    if (timingCollector) {
+      timingCollector.attachmentCount = attachments.length;
+      timingCollector.normalizationMs += performance.now() - parseStart;
+    }
     const photosByIssue=new Map<string,{before_photos:unknown[];after_photos:unknown[]}>();
+    const signingStart = performance.now();
     for(const attachment of attachments){
       const current=photosByIssue.get(attachment.maintenance_issue_id)??{before_photos:[],after_photos:[]};
       const safePhoto={url:await signMaintenanceIssuePhoto(attachment.storage_path),mime_type:attachment.mime_type,size_bytes:attachment.size_bytes===null?null:Number(attachment.size_bytes),original_filename:attachment.original_filename};
@@ -1059,7 +1102,11 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       else current.after_photos.push(safePhoto);
       photosByIssue.set(attachment.maintenance_issue_id,current);
     }
-    return rows.map((row)=>{
+    if (timingCollector) {
+      timingCollector.attachmentSigningMs = Math.round((performance.now() - signingStart) * 100) / 100;
+    }
+    const mapStart = performance.now();
+    const mapped = rows.map((row)=>{
       const { organization_id, ...safeRow } = row;
       void organization_id;
       const photos=photosByIssue.get(row.id);
@@ -1067,13 +1114,24 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       const afterPhotos=photos?.after_photos??[];
       return {...safeRow,updates:row.updates??[],before_photo:beforePhotos[0]??null,after_photo:afterPhotos[0]??null,before_photos:beforePhotos,after_photos:afterPhotos};
     });
+    if (timingCollector) {
+      timingCollector.normalizationMs += performance.now() - mapStart;
+    }
+    return mapped;
   }
-  async function normalizeMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null,accessUserId?:string|null) {
-    return attachMaintenanceIssuePhotos(z.array(maintenanceIssueRow).max(1000).parse(rows),actorUserId,accessUserId);
+  async function normalizeMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null,accessUserId?:string|null,timingCollector?:MaintenanceIssuesStageTiming) {
+    const parseStart = performance.now();
+    const parsedRows = z.array(maintenanceIssueRow).max(1000).parse(rows);
+    if (timingCollector) timingCollector.normalizationMs += performance.now() - parseStart;
+    return attachMaintenanceIssuePhotos(parsedRows,actorUserId,accessUserId,timingCollector);
   }
-  async function normalizeLegacyMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null,accessUserId?:string|null) {
-    const rowsWithPhotos=await attachMaintenanceIssuePhotos(z.array(maintenanceIssueLegacyRpcRow).max(1000).parse(rows),actorUserId,accessUserId);
-    return rowsWithPhotos.map((row)=>({
+  async function normalizeLegacyMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null,accessUserId?:string|null,timingCollector?:MaintenanceIssuesStageTiming) {
+    const parseStart = performance.now();
+    const parsedRows = z.array(maintenanceIssueLegacyRpcRow).max(1000).parse(rows);
+    if (timingCollector) timingCollector.normalizationMs += performance.now() - parseStart;
+    const rowsWithPhotos=await attachMaintenanceIssuePhotos(parsedRows,actorUserId,accessUserId,timingCollector);
+    const mapStart = performance.now();
+    const mapped = rowsWithPhotos.map((row)=>({
       ...row,
       updates:(row.updates??[]).map(({update_kind,old_planned_repair_date,new_planned_repair_date,change_reason,...update})=>{
         void update_kind;
@@ -1083,6 +1141,8 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         return update;
       }),
     }));
+    if (timingCollector) timingCollector.normalizationMs += performance.now() - mapStart;
+    return mapped;
   }
   async function normalizeManagedMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null) {
     const rowsWithPhotos=await attachMaintenanceIssuePhotos(z.array(managedMaintenanceIssueRow).max(1000).parse(rows),actorUserId,null);
@@ -1744,14 +1804,19 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     },
     async listMaintenanceIssues(input) {
       const phase1=input.contract!=="legacy";
+      const rpcStart = performance.now();
       const rawRows=await rpc(phase1?"list_maintenance_issues_v2":"list_maintenance_issues", {
         actor_user_id: input.actorUserId ?? null,
         access_user_id: input.accessUserId ?? null,
         target_organization_id: input.organizationId,
       });
+      if (input.timingCollector) {
+        input.timingCollector.listIssuesRpcMs = Math.round((performance.now() - rpcStart) * 100) / 100;
+        input.timingCollector.issueCount = Array.isArray(rawRows) ? rawRows.length : 0;
+      }
       return { maintenance_issues: phase1
-        ? await normalizeMaintenanceIssueRows(rawRows,input.actorUserId,input.accessUserId)
-        : await normalizeLegacyMaintenanceIssueRows(rawRows,input.actorUserId,input.accessUserId) };
+        ? await normalizeMaintenanceIssueRows(rawRows,input.actorUserId,input.accessUserId,input.timingCollector)
+        : await normalizeLegacyMaintenanceIssueRows(rawRows,input.actorUserId,input.accessUserId,input.timingCollector) };
     },
     async updateMaintenanceIssue(input) {
       let uploaded:Array<{id:string;storage_path:string;original_filename:string;mime_type:z.infer<typeof maintenanceIssuePhotoMime>;size_bytes:number}>=[];
