@@ -440,6 +440,7 @@ const MAINTENANCE_ISSUE_PHOTO_BUCKET = "maintenance-issue-photos";
 const MAINTENANCE_ISSUE_PHOTO_SIGNED_URL_SECONDS = 5 * 60;
 export const MAX_MAINTENANCE_ISSUE_PHOTO_BYTES = 5 * 1024 * 1024;
 export const MAX_MAINTENANCE_ISSUE_PHOTOS = 3;
+export const MAINTENANCE_ISSUE_PHOTO_SIGNING_CONCURRENCY = 6;
 export const maintenanceIssuePhotoMime = z.enum(["image/jpeg", "image/png", "image/webp"]);
 
 export function maintenancePurchaseRequestHash(input:{issueId?:string|null;payload:Record<string,unknown>;receipts:Array<{bytes:Buffer;mimeType:string}>}){
@@ -1060,6 +1061,27 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       return safeRow;
     });
   }
+  async function mapWithBoundedConcurrency<Item, Result>(
+    items: readonly Item[],
+    limit: number,
+    mapper: (item: Item, index: number) => Promise<Result>,
+  ): Promise<Result[]> {
+    if (items.length === 0) return [];
+    const results = new Array<Result>(items.length);
+    const workerCount = Math.min(Math.max(1, limit), items.length);
+    let nextIndex = 0;
+
+    async function worker() {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex++;
+        results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+      }
+    }
+
+    const workers = Array.from({ length: workerCount }, () => worker());
+    await Promise.all(workers);
+    return results;
+  }
   async function attachMaintenanceIssuePhotos<Row extends { id: string; organization_id?: string; updates?: unknown[] }>(
     rows:Row[],
     actorUserId?:string|null,
@@ -1095,12 +1117,29 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     }
     const photosByIssue=new Map<string,{before_photos:unknown[];after_photos:unknown[]}>();
     const signingStart = performance.now();
-    for(const attachment of attachments){
-      const current=photosByIssue.get(attachment.maintenance_issue_id)??{before_photos:[],after_photos:[]};
-      const safePhoto={url:await signMaintenanceIssuePhoto(attachment.storage_path),mime_type:attachment.mime_type,size_bytes:attachment.size_bytes===null?null:Number(attachment.size_bytes),original_filename:attachment.original_filename};
-      if(attachment.attachment_type==="issue")current.before_photos.push(safePhoto);
-      else current.after_photos.push(safePhoto);
-      photosByIssue.set(attachment.maintenance_issue_id,current);
+    const signedAttachments = await mapWithBoundedConcurrency(
+      attachments,
+      MAINTENANCE_ISSUE_PHOTO_SIGNING_CONCURRENCY,
+      async (attachment) => {
+        const url = await signMaintenanceIssuePhoto(attachment.storage_path);
+        const safePhoto = {
+          url,
+          mime_type: attachment.mime_type,
+          size_bytes: attachment.size_bytes === null ? null : Number(attachment.size_bytes),
+          original_filename: attachment.original_filename,
+        };
+        return {
+          maintenance_issue_id: attachment.maintenance_issue_id,
+          attachment_type: attachment.attachment_type,
+          safePhoto,
+        };
+      },
+    );
+    for (const item of signedAttachments) {
+      const current = photosByIssue.get(item.maintenance_issue_id) ?? { before_photos: [], after_photos: [] };
+      if (item.attachment_type === "issue") current.before_photos.push(item.safePhoto);
+      else current.after_photos.push(item.safePhoto);
+      photosByIssue.set(item.maintenance_issue_id, current);
     }
     if (timingCollector) {
       timingCollector.attachmentSigningMs = Math.round((performance.now() - signingStart) * 100) / 100;
