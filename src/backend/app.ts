@@ -1963,6 +1963,45 @@ function evidenceError(error:unknown){
  return new HttpError(503,"service_unavailable","Evidence storage is temporarily unavailable.");
 }
 
+type OpeningSubmit403Reason = "password_change_required" | "checklist_persistence_missing" | "user_context_forbidden" | "evidence_access_denied" | "checklist_access_denied";
+
+class OpeningSubmitForbiddenError extends HttpError {
+ readonly openingSubmit403Reason: OpeningSubmit403Reason;
+ constructor(reason: OpeningSubmit403Reason) {
+  super(403, "forbidden", "Access is denied.");
+  this.openingSubmit403Reason = reason;
+ }
+}
+
+function logOpeningSubmit403Diagnostic(request: Request, reason: OpeningSubmit403Reason) {
+ console.warn("OPENING_SUBMIT_403_DIAGNOSTIC " + JSON.stringify({
+  operation: "submit_opening_checklist",
+  requestId: request.id ?? null,
+  status: 403,
+  code: "forbidden",
+  reason,
+ }));
+}
+
+function openingSubmitRouteError(error: unknown, request: Request, openingRequest: boolean) {
+ const mapped = error instanceof HttpError
+  ? error
+  : error instanceof EvidenceAccessError || error instanceof EvidenceInputError || error instanceof EvidenceUnavailableError
+    ? evidenceError(error)
+    : checklistError(error);
+ if (openingRequest && mapped.status === 403) {
+  const reason: OpeningSubmit403Reason = error instanceof OpeningSubmitForbiddenError
+   ? error.openingSubmit403Reason
+   : error instanceof EvidenceAccessError
+     ? "evidence_access_denied"
+     : error instanceof ChecklistAccessError
+       ? "checklist_access_denied"
+       : "user_context_forbidden";
+  logOpeningSubmit403Diagnostic(request, reason);
+ }
+ return mapped;
+}
+
 function brandingError(error: unknown) {
   if (error instanceof BrandingInputError) return new HttpError(422, "unprocessable_entity", "The branding image is invalid or unavailable.");
   if (error instanceof BrandingAccessError) return new HttpError(403, "forbidden", "Access is denied.");
@@ -6858,17 +6897,18 @@ export function createApp(
     response.status(200).json(phase4aMutationSchema.parse(result));
   }catch(error){next(error instanceof HttpError?error:error instanceof EvidenceAccessError||error instanceof EvidenceInputError||error instanceof EvidenceUnavailableError?evidenceError(error):checklistError(error));}});
 
-  app.post("/api/v1/supervisor/branches/:branchId/checklists/submit",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+  app.post("/api/v1/supervisor/branches/:branchId/checklists/submit",protectedRateLimit,authenticate,async(request,response,next)=>{let openingRequest=false;try{
     const branch=branchIdSchema.safeParse(request.params.branchId),key=idempotencySchema.safeParse(request.header("Idempotency-Key"));
     const opening=openingBodySchema.safeParse(request.body),hygiene=hygieneBodySchema.safeParse(request.body);
+    openingRequest=opening.success;
     if(!branch.success||!key.success||(!opening.success&&!hygiene.success))throw new HttpError(400,"bad_request","The request is invalid.");
-    const auth=requireAuthContext(request),context=await loadActiveUser(request);if(context.must_change_password||!dependencies.checklistPersistence)throw new HttpError(403,"forbidden","Access is denied.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);if(context.must_change_password)throw new OpeningSubmitForbiddenError("password_change_required");if(!dependencies.checklistPersistence)throw new OpeningSubmitForbiddenError("checklist_persistence_missing");
     if(opening.success){if(!dependencies.evidenceService)throw new HttpError(503,"service_unavailable","Evidence storage is temporarily unavailable.");await dependencies.evidenceService.verifySet(auth.userId,branch.data,opening.data.checklist_type,opening.data.answers.flatMap(answer=>answer.evidence_id?[answer.evidence_id]:[]));}
     const result=opening.success
       ? await dependencies.checklistPersistence.submitOpening({actorUserId:auth.userId,branchId:branch.data,type:opening.data.checklist_type,expectedRevision:opening.data.expected_revision,idempotencyKey:key.data,answers:opening.data.answers})
       : await dependencies.checklistPersistence.submitHygiene({actorUserId:auth.userId,branchId:branch.data,operationalTeamId:hygiene.success?hygiene.data.operational_team_id:"",idempotencyKey:key.data,staff:hygiene.success?hygiene.data.staff:[]});
     response.status(201).json(phase4aMutationSchema.parse(result));
-  }catch(error){next(error instanceof HttpError?error:error instanceof EvidenceAccessError||error instanceof EvidenceInputError||error instanceof EvidenceUnavailableError?evidenceError(error):checklistError(error));}});
+  }catch(error){next(openingSubmitRouteError(error, request, openingRequest));}});
 
   app.get("/api/v1/supervisor/branches/:branchId/submissions",protectedRateLimit,authenticate,async(request,response,next)=>{try{
     const branch=branchIdSchema.safeParse(request.params.branchId),query=pageQuerySchema.safeParse(request.query);if(!branch.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
