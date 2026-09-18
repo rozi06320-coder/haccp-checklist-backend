@@ -6,6 +6,11 @@ import { AdminOperationError } from "./admin";
 import { managementOperationsSummarySchema } from "../lib/contracts/management-operations-summary";
 import { annualEvaluationDetailSchema, annualEvaluationWorkspaceSchema, type AnnualEvaluationScore } from "../lib/contracts/annual-evaluation";
 import { employeeCountryCodes } from "../lib/employee-countries";
+import {
+  DEFAULT_STORAGE_SIGNING_CONCURRENCY,
+  MAINTENANCE_ISSUE_PHOTO_SIGNING_CONCURRENCY,
+  mapWithBoundedConcurrency,
+} from "./concurrency";
 
 const uuid = z.string().uuid();
 const role = z.enum(["kitchen", "dispatcher", "production", "front_of_house", "cleaner", "cashier"]);
@@ -440,7 +445,10 @@ const MAINTENANCE_ISSUE_PHOTO_BUCKET = "maintenance-issue-photos";
 const MAINTENANCE_ISSUE_PHOTO_SIGNED_URL_SECONDS = 5 * 60;
 export const MAX_MAINTENANCE_ISSUE_PHOTO_BYTES = 5 * 1024 * 1024;
 export const MAX_MAINTENANCE_ISSUE_PHOTOS = 3;
-export const MAINTENANCE_ISSUE_PHOTO_SIGNING_CONCURRENCY = 6;
+export {
+  DEFAULT_STORAGE_SIGNING_CONCURRENCY,
+  MAINTENANCE_ISSUE_PHOTO_SIGNING_CONCURRENCY,
+};
 export const maintenanceIssuePhotoMime = z.enum(["image/jpeg", "image/png", "image/webp"]);
 
 export function maintenancePurchaseRequestHash(input:{issueId?:string|null;payload:Record<string,unknown>;receipts:Array<{bytes:Buffer;mimeType:string}>}){
@@ -986,14 +994,206 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   const maintenancePurchaseAttachmentRpcRow=z.object({id:uuid,storage_path:z.string(),original_filename:optionalStaffText,mime_type:optionalStaffText,size_bytes:z.union([z.number(),z.string()]).nullable(),position:z.number().int().min(1).max(MAX_MAINTENANCE_PURCHASE_PHOTOS)}).strict();
   const maintenancePurchaseListRpcRow=z.object({id:uuid,branch_id:uuid.nullable(),purchase_type:maintenancePurchaseType,purchase_scope:maintenancePurchaseScope,destination:optionalStaffText,category:maintenancePurchaseReadCategory,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseReadUnit,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:optionalStaffText,payment_status:purchaseLogPaymentStatus,payment_method:maintenancePaymentMethod.nullable().optional().default(null),reimbursement_note:optionalStaffText,reimbursed_at:z.string().nullable(),reimbursed_by:uuid.nullable().optional().default(null),receipt_storage_path:optionalStaffText,receipt_original_name:optionalStaffText,attachments:z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
   const maintenancePurchaseMutationRpcRow=maintenancePurchaseListRpcRow.extend({organization_id:uuid,maintenance_issue_id:uuid.nullable(),maintenance_user_id:uuid}).strict();
-  async function normalizeMaintenancePurchaseRows(rows:z.infer<typeof maintenancePurchaseListRpcRow>[]){return Promise.all(rows.map(async row=>{const attachments=await Promise.all(row.attachments.map(async attachment=>({id:attachment.id,original_filename:attachment.original_filename,mime_type:attachment.mime_type,size_bytes:attachment.size_bytes===null?null:Number(attachment.size_bytes),position:attachment.position,url:await signMaintenanceReceipt(attachment.storage_path)})));const first=attachments[0];const{receipt_storage_path,...safe}=row;return{...safe,attachments,quantity:Number(row.quantity),amount:Number(row.amount),receipt_url:first?.url??await signMaintenanceReceipt(receipt_storage_path),receipt_original_name:first?.original_filename??row.receipt_original_name};}));}
-  async function normalizeMaintenancePurchases(rows:unknown[]){return normalizeMaintenancePurchaseRows(z.array(maintenancePurchaseListRpcRow).max(500).parse(rows));}
-  async function normalizeMaintenancePurchaseMutations(rows:unknown[]){const parsed=z.array(maintenancePurchaseMutationRpcRow).length(1).parse(rows);return normalizeMaintenancePurchaseRows(parsed.map(({organization_id,maintenance_issue_id,maintenance_user_id,...row})=>{void organization_id;void maintenance_issue_id;void maintenance_user_id;return row;}));}
-  const managedMaintenancePurchaseRpcRow=z.object({id:uuid,organization_id:uuid,branch_id:uuid.nullable(),branch_name:z.string(),maintenance_issue_id:uuid.nullable(),purchase_type:maintenancePurchaseType,issue_title:optionalStaffText,issue_category:maintenanceIssueCategory.nullable(),issue_status:maintenanceIssueStatus.nullable(),responsible_person_name:optionalStaffText.optional().default(null),purchase_scope:maintenancePurchaseScope,destination:optionalStaffText,category:maintenancePurchaseReadCategory,maintenance_user_id:uuid,maintenance_user_name:optionalStaffText,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseReadUnit,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:optionalStaffText,payment_status:purchaseLogPaymentStatus,payment_method:maintenancePaymentMethod.nullable().optional().default(null),reimbursement_note:optionalStaffText,reimbursed_at:z.string().nullable(),reimbursed_by:uuid.nullable().optional().default(null),receipt_storage_path:optionalStaffText,receipt_original_name:optionalStaffText,attachments:z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
-  async function normalizeManagedMaintenancePurchases(rows:unknown[]){return Promise.all(z.array(managedMaintenancePurchaseRpcRow).max(1000).parse(rows).map(async row=>{const attachments=await Promise.all(row.attachments.map(async attachment=>({id:attachment.id,original_filename:attachment.original_filename,mime_type:attachment.mime_type,size_bytes:attachment.size_bytes===null?null:Number(attachment.size_bytes),position:attachment.position,url:await signMaintenanceReceipt(attachment.storage_path)})));const{organization_id,receipt_storage_path,...safe}=row;void organization_id;return{...safe,attachments,quantity:Number(row.quantity),amount:Number(row.amount),receipt_url:attachments[0]?.url??await signMaintenanceReceipt(receipt_storage_path),receipt_original_name:attachments[0]?.original_filename??row.receipt_original_name};}));}
-  async function normalizeMaintenancePurchaseHistoryPage(raw:unknown){const parsed=z.object({maintenance_purchases:z.array(managedMaintenancePurchaseRpcRow).max(200),page:z.number().int().positive(),page_size:z.number().int().min(1).max(200),total_count:z.union([z.number(),z.string()]),has_more:z.boolean()}).strict().parse(raw);const purchases=await Promise.all(parsed.maintenance_purchases.map(async({receipt_storage_path,maintenance_user_id,...row})=>{void maintenance_user_id;const attachments=await Promise.all(row.attachments.map(async attachment=>({id:attachment.id,original_filename:attachment.original_filename,mime_type:attachment.mime_type,size_bytes:attachment.size_bytes===null?null:Number(attachment.size_bytes),position:attachment.position,url:await signMaintenanceReceipt(attachment.storage_path)})));return{...row,attachments,quantity:Number(row.quantity),amount:Number(row.amount),receipt_url:attachments[0]?.url??await signMaintenanceReceipt(receipt_storage_path),receipt_original_name:attachments[0]?.original_filename??row.receipt_original_name};}));return{maintenance_purchases:purchases,page:parsed.page,page_size:parsed.page_size,total_count:Number(parsed.total_count),has_more:parsed.has_more};}
+  type MaintenancePurchaseSigningTask =
+    | { kind: 'attachment'; rowIndex: number; attachmentIndex: number; path: string }
+    | { kind: 'fallback_receipt'; rowIndex: number; path: string };
+
+  async function signMaintenancePurchaseRowsWithConcurrency<
+    Row extends {
+      receipt_storage_path?: string | null;
+      receipt_original_name?: string | null;
+      quantity: number | string;
+      amount: number | string;
+      attachments: Array<{
+        id: string;
+        storage_path: string;
+        original_filename?: string | null;
+        mime_type?: string | null;
+        size_bytes?: number | string | null;
+        position: number;
+      }>;
+    }
+  >(rows: Row[]) {
+    if (rows.length === 0) return [];
+
+    const tasks: MaintenancePurchaseSigningTask[] = [];
+    rows.forEach((row, rowIndex) => {
+      if (row.attachments && row.attachments.length > 0) {
+        row.attachments.forEach((att, attachmentIndex) => {
+          tasks.push({
+            kind: 'attachment',
+            rowIndex,
+            attachmentIndex,
+            path: att.storage_path,
+          });
+        });
+      } else if (row.receipt_storage_path) {
+        tasks.push({
+          kind: 'fallback_receipt',
+          rowIndex,
+          path: row.receipt_storage_path,
+        });
+      }
+    });
+
+    const signedResults = await mapWithBoundedConcurrency(
+      tasks,
+      DEFAULT_STORAGE_SIGNING_CONCURRENCY,
+      async (task) => ({
+        ...task,
+        url: await signMaintenanceReceipt(task.path),
+      }),
+    );
+
+    const attachmentUrlMap = new Map<string, string | null>();
+    const fallbackUrlMap = new Map<number, string | null>();
+
+    for (const result of signedResults) {
+      if (result.kind === 'attachment') {
+        attachmentUrlMap.set(`${result.rowIndex}:${result.attachmentIndex}`, result.url);
+      } else {
+        fallbackUrlMap.set(result.rowIndex, result.url);
+      }
+    }
+
+    return rows.map((row, rowIndex) => {
+      const attachments = (row.attachments ?? []).map((att, attachmentIndex) => ({
+        id: att.id,
+        original_filename: att.original_filename ?? null,
+        mime_type: att.mime_type ?? null,
+        size_bytes: att.size_bytes === null || att.size_bytes === undefined ? null : Number(att.size_bytes),
+        position: att.position,
+        url: attachmentUrlMap.get(`${rowIndex}:${attachmentIndex}`) ?? null,
+      }));
+      const firstAttachment = attachments[0];
+      const fallbackUrl = fallbackUrlMap.get(rowIndex) ?? null;
+      const receiptUrl = firstAttachment ? firstAttachment.url : fallbackUrl;
+      const receiptOriginalName = firstAttachment?.original_filename ?? row.receipt_original_name ?? null;
+
+      return {
+        row,
+        attachments,
+        quantity: Number(row.quantity),
+        amount: Number(row.amount),
+        receipt_url: receiptUrl,
+        receipt_original_name: receiptOriginalName,
+      };
+    });
+  }
+
+  async function normalizeMaintenancePurchaseRows(rows: z.infer<typeof maintenancePurchaseListRpcRow>[]) {
+    const signedRows = await signMaintenancePurchaseRowsWithConcurrency(rows);
+    return signedRows.map(({ row, attachments, quantity, amount, receipt_url, receipt_original_name }) => {
+      const { receipt_storage_path, ...safe } = row;
+      void receipt_storage_path;
+      return {
+        ...safe,
+        attachments,
+        quantity,
+        amount,
+        receipt_url,
+        receipt_original_name,
+      };
+    });
+  }
+  async function normalizeMaintenancePurchases(rows: unknown[]) {
+    return normalizeMaintenancePurchaseRows(z.array(maintenancePurchaseListRpcRow).max(500).parse(rows));
+  }
+  async function normalizeMaintenancePurchaseMutations(rows: unknown[]) {
+    const parsed = z.array(maintenancePurchaseMutationRpcRow).length(1).parse(rows);
+    return normalizeMaintenancePurchaseRows(
+      parsed.map(({ organization_id, maintenance_issue_id, maintenance_user_id, ...row }) => {
+        void organization_id;
+        void maintenance_issue_id;
+        void maintenance_user_id;
+        return row;
+      }),
+    );
+  }
+  const managedMaintenancePurchaseRpcRow = z.object({
+    id: uuid,
+    organization_id: uuid,
+    branch_id: uuid.nullable(),
+    branch_name: z.string(),
+    maintenance_issue_id: uuid.nullable(),
+    purchase_type: maintenancePurchaseType,
+    issue_title: optionalStaffText,
+    issue_category: maintenanceIssueCategory.nullable(),
+    issue_status: maintenanceIssueStatus.nullable(),
+    responsible_person_name: optionalStaffText.optional().default(null),
+    purchase_scope: maintenancePurchaseScope,
+    destination: optionalStaffText,
+    category: maintenancePurchaseReadCategory,
+    maintenance_user_id: uuid,
+    maintenance_user_name: optionalStaffText,
+    item_name: z.string(),
+    quantity: z.union([z.number(), z.string()]),
+    unit: maintenancePurchaseReadUnit,
+    amount: z.union([z.number(), z.string()]),
+    vendor_name: z.string(),
+    purchase_date: z.string(),
+    notes: optionalStaffText,
+    payment_status: purchaseLogPaymentStatus,
+    payment_method: maintenancePaymentMethod.nullable().optional().default(null),
+    reimbursement_note: optionalStaffText,
+    reimbursed_at: z.string().nullable(),
+    reimbursed_by: uuid.nullable().optional().default(null),
+    receipt_storage_path: optionalStaffText,
+    receipt_original_name: optionalStaffText,
+    attachments: z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),
+    created_at: z.string(),
+    updated_at: z.string(),
+  }).strict();
+  async function normalizeManagedMaintenancePurchases(rows: unknown[]) {
+    const parsed = z.array(managedMaintenancePurchaseRpcRow).max(1000).parse(rows);
+    const signedRows = await signMaintenancePurchaseRowsWithConcurrency(parsed);
+    return signedRows.map(({ row, attachments, quantity, amount, receipt_url, receipt_original_name }) => {
+      const { organization_id, receipt_storage_path, ...safe } = row;
+      void organization_id;
+      void receipt_storage_path;
+      return {
+        ...safe,
+        attachments,
+        quantity,
+        amount,
+        receipt_url,
+        receipt_original_name,
+      };
+    });
+  }
+  async function normalizeMaintenancePurchaseHistoryPage(raw: unknown) {
+    const parsed = z.object({
+      maintenance_purchases: z.array(managedMaintenancePurchaseRpcRow).max(200),
+      page: z.number().int().positive(),
+      page_size: z.number().int().min(1).max(200),
+      total_count: z.union([z.number(), z.string()]),
+      has_more: z.boolean(),
+    }).strict().parse(raw);
+    const signedRows = await signMaintenancePurchaseRowsWithConcurrency(parsed.maintenance_purchases);
+    const purchases = signedRows.map(({ row, attachments, quantity, amount, receipt_url, receipt_original_name }) => {
+      const { receipt_storage_path, maintenance_user_id, ...safe } = row;
+      void receipt_storage_path;
+      void maintenance_user_id;
+      return {
+        ...safe,
+        attachments,
+        quantity,
+        amount,
+        receipt_url,
+        receipt_original_name,
+      };
+    });
+    return {
+      maintenance_purchases: purchases,
+      page: parsed.page,
+      page_size: parsed.page_size,
+      total_count: Number(parsed.total_count),
+      has_more: parsed.has_more,
+    };
+  }
   async function normalizePurchaseRows(rows: unknown[]) {
-    return Promise.all(z.array(purchaseLogRow.omit({ invoice_url: true })).max(500).parse(rows).map(async (row) => {
+    const parsed = z.array(purchaseLogRow.omit({ invoice_url: true })).max(500).parse(rows);
+    return mapWithBoundedConcurrency(parsed, DEFAULT_STORAGE_SIGNING_CONCURRENCY, async (row) => {
       const { organization_id, supervisor_team_id, invoice_storage_path, ...safeRow } = row;
       void organization_id;
       void supervisor_team_id;
@@ -1003,10 +1203,11 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         amount: Number(row.amount),
         invoice_url: await signPurchaseInvoice(invoice_storage_path),
       };
-    }));
+    });
   }
   async function normalizeManagedPurchaseRows(rows: unknown[]) {
-    return Promise.all(z.array(purchaseLogRow.omit({ invoice_url: true })).max(500).parse(rows).map(async (row) => {
+    const parsed = z.array(purchaseLogRow.omit({ invoice_url: true })).max(500).parse(rows);
+    return mapWithBoundedConcurrency(parsed, DEFAULT_STORAGE_SIGNING_CONCURRENCY, async (row) => {
       const { organization_id, supervisor_team_id, invoice_storage_path, ...safeRow } = row;
       void organization_id;
       void supervisor_team_id;
@@ -1016,10 +1217,11 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         amount: Number(row.amount),
         invoice_url: await signPurchaseInvoice(invoice_storage_path),
       };
-    }));
+    });
   }
   async function normalizeSupplierReceivingRows(rows: unknown[]) {
-    return Promise.all(z.array(supplierReceivingRow.omit({ photo_url: true })).max(500).parse(rows).map(async (row) => {
+    const parsed = z.array(supplierReceivingRow.omit({ photo_url: true })).max(500).parse(rows);
+    return mapWithBoundedConcurrency(parsed, DEFAULT_STORAGE_SIGNING_CONCURRENCY, async (row) => {
       const { organization_id, supervisor_team_id, photo_storage_path, ...safeRow } = row;
       void organization_id;
       void supervisor_team_id;
@@ -1028,10 +1230,11 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         quantity: Number(row.quantity),
         photo_url: await signSupplierReceivingPhoto(photo_storage_path),
       };
-    }));
+    });
   }
   async function normalizeManagedSupplierReceivingRows(rows: unknown[]) {
-    return Promise.all(z.array(supplierReceivingRow.omit({ photo_url: true })).max(500).parse(rows).map(async (row) => {
+    const parsed = z.array(supplierReceivingRow.omit({ photo_url: true })).max(500).parse(rows);
+    return mapWithBoundedConcurrency(parsed, DEFAULT_STORAGE_SIGNING_CONCURRENCY, async (row) => {
       const { organization_id, supervisor_team_id, photo_storage_path, ...safeRow } = row;
       void organization_id;
       void supervisor_team_id;
@@ -1040,7 +1243,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         quantity: Number(row.quantity),
         photo_url: await signSupplierReceivingPhoto(photo_storage_path),
       };
-    }));
+    });
   }
   function normalizeBranchSupplierRows(rows: unknown[]) {
     return z.array(branchSupplierRow).max(500).parse(rows).map((row) => {
@@ -1060,27 +1263,6 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       void created_at;
       return safeRow;
     });
-  }
-  async function mapWithBoundedConcurrency<Item, Result>(
-    items: readonly Item[],
-    limit: number,
-    mapper: (item: Item, index: number) => Promise<Result>,
-  ): Promise<Result[]> {
-    if (items.length === 0) return [];
-    const results = new Array<Result>(items.length);
-    const workerCount = Math.min(Math.max(1, limit), items.length);
-    let nextIndex = 0;
-
-    async function worker() {
-      while (nextIndex < items.length) {
-        const currentIndex = nextIndex++;
-        results[currentIndex] = await mapper(items[currentIndex], currentIndex);
-      }
-    }
-
-    const workers = Array.from({ length: workerCount }, () => worker());
-    await Promise.all(workers);
-    return results;
   }
   async function attachMaintenanceIssuePhotos<Row extends { id: string; organization_id?: string; updates?: unknown[] }>(
     rows:Row[],
