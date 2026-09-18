@@ -71,9 +71,10 @@ export function createEvidenceServiceFromClient(client:EvidenceClient):EvidenceS
     if(result.error)console.warn("Evidence storage compensation",{requestId,evidenceId,byteCount,stage,category:"storage_cleanup_failed",status:503,compensation:"failed"});
   }
   async function cleanupExpired(requestId:string){
-      let rows: z.infer<typeof retiredSchema> = [];
+    let rows: z.infer<typeof retiredSchema> = [];
     try{rows=retiredSchema.parse(await rpc("retire_expired_phase4a_evidence",{max_rows:25}));}catch{return;}
-    for(const row of rows)await removeObjects([row.storage_object_path],row.id,requestId,0,"pending_expiry_cleanup");
+    if(!rows.length)return;
+    await removeObjects(rows.map(row=>row.storage_object_path),rows.length===1?rows[0].id:"batch",requestId,0,"pending_expiry_cleanup");
   }
   async function verifyStored(row:z.infer<typeof storedEvidenceSchema>[number]){
     const result=await storage.info(row.storage_object_path);
