@@ -1458,10 +1458,13 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       const rows = z.array(teamRow).max(501).parse(await rpc("get_supervisor_operational_team", {
         actor_user_id: actorUserId, target_branch_id: branchId, requested_date: date,
       }));
-      // A supervisor who has no assigned operational team is a valid access
-      // state, not an adapter/RPC failure. The route maps this to its explicit
-      // setup-required 403 response.
-      if (rows.length === 0) throw new OperationalAccessError();
+      // A supervisor who has active branch access but no assigned operational team
+      // is an unassigned supervisor. Filter to teams where the actor has an active
+      // assignment (primary or backup) so other teams' staff are not leaked.
+      const assignedRows = rows.filter((row) => row.assignment_role !== null);
+      if (assignedRows.length === 0) {
+        return { teams: [], unassigned: true };
+      }
       const teams = new Map<string, {
         id: string;
         name: string;
@@ -1472,7 +1475,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         hygiene_submitted_today: boolean;
         staff: Array<unknown>;
       }>();
-      for (const row of rows) {
+      for (const row of assignedRows) {
         const team = teams.get(row.team_id) ?? {
           id: row.team_id,
           name: row.team_name,
@@ -2427,7 +2430,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       return {
         teams: z.array(z.object({
           team_id: uuid, branch_id: uuid, branch_name: z.string(),
-          supervisor_user_id: uuid, supervisor_name: z.string().nullable(),
+          supervisor_user_id: uuid.nullable(), supervisor_name: z.string().nullable(),
           active: z.boolean(), operational_staff_count: z.number().int().nonnegative(),
         }).strict()).max(500).parse(await rpc("list_managed_supervisor_teams", {
           actor_user_id: actorUserId, target_organization_id: organizationId,
