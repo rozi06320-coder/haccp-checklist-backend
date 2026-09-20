@@ -1,5 +1,5 @@
 begin;
-select plan(41);
+select plan(49);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000',id,'authenticated','authenticated',id||'@example.invalid','{}','{}',now(),now()
@@ -35,6 +35,7 @@ values
 
 select has_table('public','branch_purchase_logs','branch purchase logs table exists');
 select has_column('public','branch_purchase_logs','invoice_storage_path','purchase logs store invoice storage path');
+select has_column('public','branch_purchase_logs','invoice_number','purchase logs store optional vendor invoice number');
 select has_column('public','branch_purchase_logs','payment_status','purchase logs store payment status');
 select has_column('public','branch_purchase_logs','before_tax_amount','purchase logs store before tax amount');
 select has_column('public','branch_purchase_logs','tax_amount','purchase logs store tax amount');
@@ -74,6 +75,7 @@ select lives_ok($$select * from public.create_branch_purchase_log(
   'purchase_date','2026-08-08',
   'notes','  Needed today  ',
   'payment_status','unpaid',
+  'invoice_number',' INV-2026-001 ',
   'invoice_storage_path','branches/3f000000-0000-4000-8000-000000000001/purchase-logs/9f000000-0000-4000-8000-000000000001/receipt.pdf',
   'invoice_original_name',' receipt.pdf '
  ))$$,'supervisor creates own branch purchase log');
@@ -84,6 +86,9 @@ select is((select vendor_name from public.branch_purchase_logs limit 1),'N/A','b
 select is((select amount from public.branch_purchase_logs limit 1),45.50::numeric,'amount is stored');
 select ok((select before_tax_amount is null and tax_amount is null from public.branch_purchase_logs limit 1),'legacy amount-only payload does not fabricate tax breakdown');
 select is((select invoice_original_name from public.branch_purchase_logs limit 1),'receipt.pdf','invoice name is stored');
+select is((select invoice_number from public.branch_purchase_logs limit 1),'INV-2026-001','invoice number is trimmed and stored');
+select is((select invoice_number from public.list_branch_purchase_logs(
+ '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001') limit 1),'INV-2026-001','supervisor list returns invoice number');
 select is((select count(*)::int from public.list_branch_purchase_logs(
  '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001')),
  1,'purchase log list restores saved entries');
@@ -104,6 +109,7 @@ reset role;
 
 select ok((select payment_status='reimbursed' and reimbursement_note='Paid from petty cash' and reimbursed_at is not null and reimbursed_by='1f000000-0000-4000-8000-000000000001'
  from public.branch_purchase_logs limit 1),'reimbursement state is persisted');
+select is((select invoice_number from public.branch_purchase_logs where id=(select purchase_log_id from purchase_log_test_ids limit 1)),'INV-2026-001','payment update preserves invoice number');
 
 select ok(not has_function_privilege('authenticated','public.list_managed_purchase_logs(uuid,uuid,uuid,text,text,date,date)','execute')
  and has_function_privilege('service_role','public.list_managed_purchase_logs(uuid,uuid,uuid,text,text,date,date)','execute'),
@@ -112,6 +118,8 @@ select ok(not has_function_privilege('authenticated','public.list_managed_purcha
 select is((select count(*)::int from public.list_managed_purchase_logs(
  '1f000000-0000-4000-8000-000000000003','2f000000-0000-4000-8000-000000000001',null,null,'unpaid',null,null)),
  0,'manager list filters out reimbursed purchases without mutation authority');
+select is((select invoice_number from public.list_managed_purchase_logs(
+ '1f000000-0000-4000-8000-000000000003','2f000000-0000-4000-8000-000000000001',null,null,'reimbursed',null,null) where item_name='Receipt Book' limit 1),'INV-2026-001','manager list returns invoice number');
 
 select throws_ok($$select * from public.create_branch_purchase_log(
  '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001',
@@ -157,8 +165,9 @@ select throws_ok($$insert into public.branch_purchase_logs(
 )$$,'23514',null,'database constraint rejects inconsistent direct monetary totals');
 select lives_ok($$select * from public.create_branch_purchase_log(
  '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001',
- jsonb_build_object('category','stationery','item_name','Pens','quantity','1','amount','1','purchase_date','2026-08-08'))$$,
- 'stationery category is accepted');
+ jsonb_build_object('category','stationery','item_name','Pens','quantity','1','amount','1','purchase_date','2026-08-08','invoice_number','   '))$$,
+ 'stationery category is accepted with blank invoice number');
+select ok((select invoice_number is null from public.branch_purchase_logs where item_name='Pens'),'blank invoice number normalizes to null');
 select lives_ok($$select * from public.create_branch_purchase_log(
  '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001',
  jsonb_build_object('category','equipment','item_name','Scale','quantity','1','amount','1','purchase_date','2026-08-08'))$$,
@@ -168,9 +177,14 @@ select lives_ok($$select * from public.create_branch_purchase_log(
  jsonb_build_object('category','food_item','item_name','Rice','quantity','1','amount','1','purchase_date','2026-08-08'))$$,
  'food item category is accepted');
 select is((select count(*)::int from public.branch_purchase_logs where category='food_item'),1,'Food Item category is stored canonically');
+select ok((select invoice_number is null from public.branch_purchase_logs where item_name='Scale'),'missing invoice number remains null for old clients');
 select is((select count(*)::int from public.list_managed_purchase_logs(
  '1f000000-0000-4000-8000-000000000003','2f000000-0000-4000-8000-000000000001',null,'food_item',null,null,null)),
  1,'manager can filter read-only Purchase Logs by Food Item');
+select throws_ok($$select * from public.create_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001',
+ jsonb_build_object('category','kitchen','item_name','Long Invoice','quantity','1','amount','1','purchase_date','2026-08-08','invoice_number',repeat('A',121)))$$,
+ '22023','invalid purchase text','overlong invoice number is rejected');
 select lives_ok($$select * from public.create_branch_purchase_log(
  '1f000000-0000-4000-8000-000000000002','3f000000-0000-4000-8000-000000000001',
  jsonb_build_object('category','kitchen','item_name','Book','quantity','1','amount','1','purchase_date','2026-08-08'))$$,

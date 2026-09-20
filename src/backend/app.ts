@@ -245,6 +245,7 @@ const purchaseLogBodySchema = z.object({
     return trimmed.length ? trimmed : "N/A";
   }),
   purchase_date: dateOnlySchema,
+  invoice_number: optionalStaffTextSchema(120),
   notes: optionalStaffTextSchema(2000),
   payment_status: purchaseLogPaymentStatusSchema.default("unpaid"),
   reimbursement_note: optionalStaffTextSchema(500),
@@ -290,6 +291,7 @@ const purchaseLogResponseRowSchema = z.object({
   reimbursed_at: z.string().nullable(),
   reimbursed_by: z.uuid().nullable(),
   invoice_original_name: z.string().nullable(),
+  invoice_number: z.string().nullable(),
   invoice_url: z.string().nullable().optional(),
   created_by: z.uuid(),
   created_at: z.string(),

@@ -305,6 +305,7 @@ const purchaseLogRow = z.object({
   reimbursed_by: uuid.nullable(),
   invoice_storage_path: optionalStaffText,
   invoice_original_name: optionalStaffText,
+  invoice_number: optionalStaffText,
   invoice_url: z.string().nullable().optional(),
   created_by: uuid,
   created_by_name: optionalStaffText.optional(),
@@ -648,6 +649,7 @@ export type OperationalAdmin = {
       tax_amount?: string | number;
       vendor_name?: string | null;
       purchase_date: string;
+      invoice_number?: string | null;
       notes?: string | null;
       payment_status?: z.infer<typeof purchaseLogPaymentStatus>;
       reimbursement_note?: string | null;

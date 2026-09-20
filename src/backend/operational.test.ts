@@ -268,12 +268,12 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
       async createPurchaseLog(input) {
         calls.push({ method: "createPurchaseLog", hasInvoice: Boolean(input.invoice), ...input });
         if (input.actorUserId !== id.supervisor) throw new Error("denied");
-        return { purchase_log: { id: id.purchaseLog, organization_id: id.organization, branch_id: input.branchId, supervisor_team_id: id.shift, branch_name: "Branch", category: input.payload.category, item_name: input.payload.item_name, quantity: Number(input.payload.quantity), amount: Number(input.payload.amount), vendor_name: input.payload.vendor_name || "N/A", purchase_date: input.payload.purchase_date, notes: input.payload.notes ?? null, payment_status: input.payload.payment_status ?? "unpaid", reimbursement_note: input.payload.reimbursement_note ?? null, reimbursed_at: null, reimbursed_by: null, invoice_storage_path: input.invoice ? `branches/${input.branchId}/purchase-logs/${id.purchaseLog}/invoice.pdf` : null, invoice_original_name: input.invoice?.originalName ?? null, invoice_url: input.invoice ? "https://storage.example.invalid/invoice" : null, created_by: input.actorUserId, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z" } };
+        return { purchase_log: { id: id.purchaseLog, organization_id: id.organization, branch_id: input.branchId, supervisor_team_id: id.shift, branch_name: "Branch", category: input.payload.category, item_name: input.payload.item_name, quantity: Number(input.payload.quantity), amount: Number(input.payload.amount), vendor_name: input.payload.vendor_name || "N/A", purchase_date: input.payload.purchase_date, notes: input.payload.notes ?? null, payment_status: input.payload.payment_status ?? "unpaid", reimbursement_note: input.payload.reimbursement_note ?? null, reimbursed_at: null, reimbursed_by: null, invoice_storage_path: input.invoice ? `branches/${input.branchId}/purchase-logs/${id.purchaseLog}/invoice.pdf` : null, invoice_original_name: input.invoice?.originalName ?? null, invoice_number: input.payload.invoice_number ?? null, invoice_url: input.invoice ? "https://storage.example.invalid/invoice" : null, created_by: input.actorUserId, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z" } };
       },
       async updatePurchaseLogPaymentStatus(input) {
         calls.push({ method: "updatePurchasePayment", ...input });
         if (input.actorUserId !== id.supervisor || input.purchaseLogId !== id.purchaseLog) throw new Error("denied");
-        return { purchase_log: { id: input.purchaseLogId, organization_id: id.organization, branch_id: input.branchId, supervisor_team_id: id.shift, branch_name: "Branch", category: "kitchen", item_name: "Receipt Book", quantity: 1, amount: 20, vendor_name: "N/A", purchase_date: "2026-08-08", notes: null, payment_status: input.paymentStatus, reimbursement_note: input.reimbursementNote ?? null, reimbursed_at: input.paymentStatus === "reimbursed" ? "2026-08-09T00:00:00.000Z" : null, reimbursed_by: input.paymentStatus === "reimbursed" ? input.actorUserId : null, invoice_storage_path: null, invoice_original_name: null, invoice_url: null, created_by: input.actorUserId, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z" } };
+        return { purchase_log: { id: input.purchaseLogId, organization_id: id.organization, branch_id: input.branchId, supervisor_team_id: id.shift, branch_name: "Branch", category: "kitchen", item_name: "Receipt Book", quantity: 1, amount: 20, vendor_name: "N/A", purchase_date: "2026-08-08", notes: null, payment_status: input.paymentStatus, reimbursement_note: input.reimbursementNote ?? null, reimbursed_at: input.paymentStatus === "reimbursed" ? "2026-08-09T00:00:00.000Z" : null, reimbursed_by: input.paymentStatus === "reimbursed" ? input.actorUserId : null, invoice_storage_path: null, invoice_original_name: null, invoice_number: "INV-2026-001", invoice_url: null, created_by: input.actorUserId, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z" } };
       },
       async listSupplierReceivings(actorUserId, branchId, filters) {
         calls.push({ method: "supplierReceivings", actorUserId, branchId, filters: filters ?? null });
@@ -431,7 +431,7 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
       async listManagedPurchaseLogs(input) {
         calls.push({ method: "managedPurchaseLogs", ...input });
         if (input.actorUserId !== id.manager || input.organizationId !== id.organization) throw new Error("denied");
-        return { purchase_logs: [{ id: id.purchaseLog, branch_id: id.branch, branch_name: "Branch", category: "kitchen", item_name: "Receipt Book", quantity: 2, amount: 45.5, vendor_name: "Riyadh Shop", purchase_date: "2026-08-08", notes: null, payment_status: "unpaid", reimbursement_note: null, reimbursed_at: null, reimbursed_by: null, invoice_original_name: "invoice.pdf", invoice_url: "https://storage.example.invalid/signed-invoice", created_by: id.supervisor, created_by_name: "Supervisor", created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z" }] };
+        return { purchase_logs: [{ id: id.purchaseLog, branch_id: id.branch, branch_name: "Branch", category: "kitchen", item_name: "Receipt Book", quantity: 2, amount: 45.5, vendor_name: "Riyadh Shop", purchase_date: "2026-08-08", notes: null, payment_status: "unpaid", reimbursement_note: null, reimbursed_at: null, reimbursed_by: null, invoice_original_name: "invoice.pdf", invoice_number: "INV-2026-001", invoice_url: "https://storage.example.invalid/signed-invoice", created_by: id.supervisor, created_by_name: "Supervisor", created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z" }] };
       },
       async listManagedSupplierReceivings(input) {
         calls.push({ method: "managedSupplierReceivings", ...input });
@@ -1730,13 +1730,14 @@ describe("Phase 3A operational API", () => {
 
     const created = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs`, {
       method: "POST", headers: headers("supervisor"),
-      body: JSON.stringify({ category: "food_item", item_name: "  Receipt Book  ", quantity: "2", amount: "45.50", vendor_name: "   ", purchase_date: "2026-08-08", notes: "  Needed  ", payment_status: "unpaid", reimbursement_note: "" }),
+      body: JSON.stringify({ category: "food_item", item_name: "  Receipt Book  ", quantity: "2", amount: "45.50", vendor_name: "   ", purchase_date: "2026-08-08", invoice_number: "  INV-2026-001  ", notes: "  Needed  ", payment_status: "unpaid", reimbursement_note: "" }),
     });
     assert.equal(created.status, 201);
-    const body = await created.json() as { purchase_log: { id: string; vendor_name: string; payment_status: string; amount: number } };
+    const body = await created.json() as { purchase_log: { id: string; vendor_name: string; payment_status: string; amount: number; invoice_number: string | null } };
     assert.equal(body.purchase_log.id, id.purchaseLog);
     assert.equal(body.purchase_log.vendor_name, "N/A");
     assert.equal(body.purchase_log.amount, 45.5);
+    assert.equal(body.purchase_log.invoice_number, "INV-2026-001");
     assert.equal("organization_id" in body.purchase_log, false);
     assert.equal("supervisor_team_id" in body.purchase_log, false);
     assert.equal("invoice_storage_path" in body.purchase_log, false);
@@ -1753,6 +1754,7 @@ describe("Phase 3A operational API", () => {
         amount: "45.50",
         vendor_name: "N/A",
         purchase_date: "2026-08-08",
+        invoice_number: "INV-2026-001",
         notes: "Needed",
         payment_status: "unpaid",
         reimbursement_note: null,
@@ -1781,6 +1783,7 @@ describe("Phase 3A operational API", () => {
         amount: "25.00",
         vendor_name: "N/A",
         purchase_date: "2026-08-09",
+        invoice_number: null,
         notes: "Other note",
         payment_status: "unpaid",
         reimbursement_note: null,
@@ -1794,9 +1797,10 @@ describe("Phase 3A operational API", () => {
       body: JSON.stringify({ payment_status: "reimbursed", reimbursement_note: "  Paid by manager  " }),
     });
     assert.equal(updated.status, 200);
-    const body = await updated.json() as { purchase_log: { payment_status: string; reimbursement_note: string | null } };
+    const body = await updated.json() as { purchase_log: { payment_status: string; reimbursement_note: string | null; invoice_number: string | null } };
     assert.equal(body.purchase_log.payment_status, "reimbursed");
     assert.equal(body.purchase_log.reimbursement_note, "Paid by manager");
+    assert.equal(body.purchase_log.invoice_number, "INV-2026-001");
     assert.deepEqual(calls.at(-1), {
       method: "updatePurchasePayment",
       actorUserId: id.supervisor,
@@ -2390,8 +2394,9 @@ describe("Phase 3A operational API", () => {
     assert.equal(list.status, 200);
     const text = await list.text();
     assert.doesNotMatch(text, /invoice_storage_path|branches\//);
-    const body = JSON.parse(text) as { purchase_logs: Array<{ invoice_url: string | null; payment_status: string }> };
+    const body = JSON.parse(text) as { purchase_logs: Array<{ invoice_url: string | null; invoice_number: string | null; payment_status: string }> };
     assert.equal(body.purchase_logs[0]?.invoice_url, "https://storage.example.invalid/signed-invoice");
+    assert.equal(body.purchase_logs[0]?.invoice_number, "INV-2026-001");
     assert.equal(body.purchase_logs[0]?.payment_status, "unpaid");
     assert.deepEqual(calls.at(-1), { method: "managedPurchaseLogs", actorUserId: id.manager, organizationId: id.organization, branchId: id.branch, category: "kitchen", paymentStatus: "unpaid", dateFrom: "2026-08-01", dateTo: "2026-08-31" });
 
