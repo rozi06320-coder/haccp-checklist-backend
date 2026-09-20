@@ -53,7 +53,7 @@ select set_config('test.move_assignment',(select id::text from public.operationa
 set local role service_role;
 select throws_ok($$select * from public.move_operational_staff_team('18200000-0000-4000-8000-000000000002','38200000-0000-4000-8000-000000000001',current_setting('test.move_staff')::uuid,current_setting('test.move_assignment')::uuid,current_setting('test.destination_team')::uuid)$$,'42501','staff move denied','Destination Supervisor cannot pull from source team');
 select throws_ok($$select * from public.move_operational_staff_team('18200000-0000-4000-8000-000000000001','38200000-0000-4000-8000-000000000001',current_setting('test.move_staff')::uuid,current_setting('test.move_assignment')::uuid,current_setting('test.source_team')::uuid)$$,'23505','staff already belongs to team','same-team destination is rejected');
-select throws_ok($$select * from public.move_operational_staff_team('18200000-0000-4000-8000-000000000001','38200000-0000-4000-8000-000000000001',current_setting('test.move_staff')::uuid,current_setting('test.move_assignment')::uuid,current_setting('test.cross_branch_team')::uuid)$$,'42501','staff move denied','cross-branch destination is rejected');
+select throws_ok($$select * from public.move_operational_staff_team('18200000-0000-4000-8000-000000000001','38200000-0000-4000-8000-000000000001',current_setting('test.move_staff')::uuid,current_setting('test.move_assignment')::uuid,current_setting('test.cross_branch_team')::uuid)$$,'22023','invalid destination team','cross-branch destination is rejected before source-team authorization');
 reset role;
 
 update public.branch_operational_teams set active=false where id=current_setting('test.inactive_team')::uuid;
@@ -93,7 +93,9 @@ select set_config('test.hygiene_assignment',(select id::text from public.operati
 set local role service_role;
 select lives_ok($$select * from public.upsert_operational_staff_health_card('18200000-0000-4000-8000-000000000001','38200000-0000-4000-8000-000000000001',jsonb_build_object('operational_staff_id',current_setting('test.hygiene_staff'),'status','passed','certificate_number','HC-SOURCE'))$$,'Health Card is saved before move');
 select lives_ok($$select * from public.save_operational_staff_monthly_evaluation('18200000-0000-4000-8000-000000000001','38200000-0000-4000-8000-000000000001',current_setting('test.hygiene_staff')::uuid,date_trunc('month',current_date)::date,'Source Supervisor',jsonb_build_array(jsonb_build_object('section','Performance','factor_key','performance','factor_label','Performance','rating',5,'comment','Good')), 'completed')$$,'Monthly Evaluation is saved before move');
+reset role;
 update public.branches set timezone='Etc/GMT+12' where id='38200000-0000-4000-8000-000000000001';
+set local role service_role;
 select lives_ok($$select * from public.submit_operational_team_hygiene('18200000-0000-4000-8000-000000000001','38200000-0000-4000-8000-000000000001',current_setting('test.source_team')::uuid,'78200000-0000-4000-8000-000000000001',repeat('c',64),jsonb_build_array(jsonb_build_object('staff_id',current_setting('test.move_staff'),'uniform','pass','fingernails','pass','hair','pass','facial_hair','pass','remark',''),jsonb_build_object('staff_id',current_setting('test.hygiene_staff'),'uniform','pass','fingernails','pass','hair','pass','facial_hair','pass','remark','')))$$,'Source team submits Hygiene before move');
 reset role;
 select set_config('test.hygiene_submission',(select id::text from public.checklist_submissions where operational_team_id=current_setting('test.source_team')::uuid and checklist_type='staff_hygiene' and state='submitted'),false);
