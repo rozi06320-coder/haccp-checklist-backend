@@ -294,6 +294,8 @@ const purchaseLogRow = z.object({
   item_name: z.string(),
   quantity: z.union([z.number(), z.string()]),
   amount: z.union([z.number(), z.string()]),
+  before_tax_amount: z.union([z.number(), z.string()]).nullable().optional(),
+  tax_amount: z.union([z.number(), z.string()]).nullable().optional(),
   vendor_name: z.string(),
   purchase_date: z.iso.date(),
   notes: optionalStaffText,
@@ -641,7 +643,9 @@ export type OperationalAdmin = {
       category: z.infer<typeof purchaseLogCategory>;
       item_name: string;
       quantity: string | number;
-      amount: string | number;
+      amount?: string | number;
+      before_tax_amount?: string | number;
+      tax_amount?: string | number;
       vendor_name?: string | null;
       purchase_date: string;
       notes?: string | null;
@@ -1201,6 +1205,8 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         ...safeRow,
         quantity: Number(row.quantity),
         amount: Number(row.amount),
+        before_tax_amount: row.before_tax_amount == null ? null : Number(row.before_tax_amount),
+        tax_amount: row.tax_amount == null ? null : Number(row.tax_amount),
         invoice_url: await signPurchaseInvoice(invoice_storage_path),
       };
     });
@@ -1215,6 +1221,8 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         ...safeRow,
         quantity: Number(row.quantity),
         amount: Number(row.amount),
+        before_tax_amount: row.before_tax_amount == null ? null : Number(row.before_tax_amount),
+        tax_amount: row.tax_amount == null ? null : Number(row.tax_amount),
         invoice_url: await signPurchaseInvoice(invoice_storage_path),
       };
     });

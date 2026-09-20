@@ -223,11 +223,23 @@ const monthlyEvaluationBodySchema = z.object({
 }).strict();
 const purchaseLogCategorySchema = z.enum(["stationery", "kitchen", "equipment", "food_item", "other"]);
 const purchaseLogPaymentStatusSchema = z.enum(["unpaid", "reimbursed"]);
+const moneyAmountSchema = z.preprocess((value) => {
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : value;
+  if (typeof value === "string") return value.trim();
+  return value;
+}, z.string().regex(/^(0|[1-9][0-9]{0,9})(\.[0-9]{1,2})?$/u));
+const maxMoneyCents = 999999999999n;
+function moneyCents(value: string) {
+  const [whole, fraction = ""] = value.split(".");
+  return BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
+}
 const purchaseLogBodySchema = z.object({
   category: purchaseLogCategorySchema,
   item_name: normalizedNameSchema,
   quantity: z.union([z.number(), z.string()]).transform(Number).pipe(z.number().positive()),
-  amount: z.union([z.number(), z.string()]).transform(Number).pipe(z.number().nonnegative()),
+  amount: moneyAmountSchema.optional(),
+  before_tax_amount: moneyAmountSchema.optional(),
+  tax_amount: moneyAmountSchema.optional(),
   vendor_name: z.string().max(120).optional().nullable().transform((value) => {
     const trimmed = (value ?? "").trim().replace(/\s+/gu, " ");
     return trimmed.length ? trimmed : "N/A";
@@ -236,7 +248,26 @@ const purchaseLogBodySchema = z.object({
   notes: optionalStaffTextSchema(2000),
   payment_status: purchaseLogPaymentStatusSchema.default("unpaid"),
   reimbursement_note: optionalStaffTextSchema(500),
-}).strict();
+}).strict().superRefine((value, context) => {
+  const hasBreakdown = value.before_tax_amount !== undefined || value.tax_amount !== undefined;
+  if (hasBreakdown && (value.before_tax_amount === undefined || value.tax_amount === undefined)) {
+    context.addIssue({ code: "custom", path: ["before_tax_amount"], message: "Before tax and tax are required together." });
+  }
+  if (!hasBreakdown && value.amount === undefined) {
+    context.addIssue({ code: "custom", path: ["before_tax_amount"], message: "Before tax and tax are required." });
+  }
+  const beforeTax = value.before_tax_amount !== undefined ? moneyCents(value.before_tax_amount) : value.amount !== undefined ? moneyCents(value.amount) : null;
+  const tax = value.tax_amount !== undefined ? moneyCents(value.tax_amount) : value.amount !== undefined ? 0n : null;
+  if (beforeTax !== null && tax !== null) {
+    const total = beforeTax + tax;
+    if (total > maxMoneyCents) {
+      context.addIssue({ code: "custom", path: ["before_tax_amount"], message: "Purchase total is too large." });
+    }
+    if (value.amount !== undefined && moneyCents(value.amount) !== total) {
+      context.addIssue({ code: "custom", path: ["amount"], message: "Amount must match before tax plus tax." });
+    }
+  }
+});
 const purchaseLogPaymentStatusBodySchema = z.object({
   payment_status: purchaseLogPaymentStatusSchema,
   reimbursement_note: optionalStaffTextSchema(500),
@@ -249,6 +280,8 @@ const purchaseLogResponseRowSchema = z.object({
   item_name: z.string(),
   quantity: z.union([z.number(), z.string()]),
   amount: z.union([z.number(), z.string()]),
+  before_tax_amount: z.union([z.number(), z.string()]).nullable().optional(),
+  tax_amount: z.union([z.number(), z.string()]).nullable().optional(),
   vendor_name: z.string(),
   purchase_date: dateOnlySchema,
   notes: z.string().nullable(),

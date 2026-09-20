@@ -1740,6 +1740,7 @@ describe("Phase 3A operational API", () => {
     assert.equal("organization_id" in body.purchase_log, false);
     assert.equal("supervisor_team_id" in body.purchase_log, false);
     assert.equal("invoice_storage_path" in body.purchase_log, false);
+    assert.equal((calls.at(-1) as { payload?: { amount?: unknown } } | undefined)?.payload?.amount, "45.50");
     assert.deepEqual(calls.at(-1), {
       method: "createPurchaseLog",
       hasInvoice: false,
@@ -1749,7 +1750,7 @@ describe("Phase 3A operational API", () => {
         category: "food_item",
         item_name: "Receipt Book",
         quantity: 2,
-        amount: 45.5,
+        amount: "45.50",
         vendor_name: "N/A",
         purchase_date: "2026-08-08",
         notes: "Needed",
@@ -1768,6 +1769,7 @@ describe("Phase 3A operational API", () => {
     assert.equal(otherBody.purchase_log.id, id.purchaseLog);
     assert.equal(otherBody.purchase_log.category, "other");
     assert.equal(otherBody.purchase_log.amount, 25);
+    assert.equal((calls.at(-1) as { payload?: { amount?: unknown } } | undefined)?.payload?.amount, "25.00");
     assert.deepEqual(calls.at(-1), {
       method: "createPurchaseLog",
       hasInvoice: false,
@@ -1777,7 +1779,7 @@ describe("Phase 3A operational API", () => {
         category: "other",
         item_name: "Cleaning Supplies",
         quantity: 1,
-        amount: 25,
+        amount: "25.00",
         vendor_name: "N/A",
         purchase_date: "2026-08-09",
         notes: "Other note",
