@@ -1467,8 +1467,9 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         actor_user_id: actorUserId, target_branch_id: branchId, requested_date: date,
       }));
       // A supervisor who has active branch access but no assigned operational team
-      // is an unassigned supervisor. Filter to teams where the actor has an active
-      // assignment (primary or backup) so other teams' staff are not leaked.
+      // is an unassigned supervisor. Keep that assignment check separate from the
+      // team metadata list so same-branch destination teams can be shown without
+      // leaking their staff or granting write access.
       const assignedRows = rows.filter((row) => row.assignment_role !== null);
       if (assignedRows.length === 0) {
         return { teams: [], unassigned: true };
@@ -1483,18 +1484,24 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         hygiene_submitted_today: boolean;
         staff: Array<unknown>;
       }>();
-      for (const row of assignedRows) {
+      for (const row of rows) {
+        const hasAssignment = row.assignment_role !== null;
         const team = teams.get(row.team_id) ?? {
           id: row.team_id,
           name: row.team_name,
           active: row.team_active,
-          can_write: row.can_write,
-          assignment_role: row.assignment_role,
-          company_name: row.company_name,
+          can_write: hasAssignment ? row.can_write : false,
+          assignment_role: hasAssignment ? row.assignment_role : null,
+          company_name: hasAssignment ? row.company_name : null,
           hygiene_submitted_today: false,
           staff: [],
         };
-        if (row.staff_id !== null) {
+        if (hasAssignment) {
+          team.can_write = row.can_write;
+          team.assignment_role = row.assignment_role;
+          team.company_name = row.company_name;
+        }
+        if (hasAssignment && row.staff_id !== null) {
           team.staff.push({
             id: row.staff_id, display_name: row.display_name, company_name: row.staff_company_name, staff_code: row.staff_code,
             country_code: row.country_code,

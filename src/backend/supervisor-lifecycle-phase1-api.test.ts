@@ -15,8 +15,11 @@ const ids = {
   branch: "30000000-0000-4000-8000-000000000001",
   teamVacant: "40000000-0000-4000-8000-000000000001",
   teamAssigned: "40000000-0000-4000-8000-000000000002",
+  teamMetadataOnly: "40000000-0000-4000-8000-000000000003",
   staff1: "50000000-0000-4000-8000-000000000001",
+  staff2: "50000000-0000-4000-8000-000000000002",
   assignment1: "60000000-0000-4000-8000-000000000001",
+  assignment2: "60000000-0000-4000-8000-000000000002",
 };
 
 describe("Supervisor Lifecycle Phase 1 - Unassigned Supervisor & Primary Vacant", () => {
@@ -244,7 +247,97 @@ describe("Supervisor Lifecycle Phase 1 - Unassigned Supervisor & Primary Vacant"
     }
   });
 
-  it("5. operationalAdmin.listManagedTeams unit logic parses vacant team with supervisor_user_id: null", async () => {
+  it("5. operationalAdmin.getSupervisorTeam includes unassigned destination team metadata without leaking its staff", async () => {
+    const rpcServer = createServer(async (req, res) => {
+      res.setHeader("content-type", "application/json");
+      if (req.url === "/rest/v1/rpc/get_supervisor_operational_team") {
+        res.end(JSON.stringify([
+          {
+            team_id: ids.teamAssigned,
+            team_name: "Team Alpha",
+            team_active: true,
+            can_write: true,
+            assignment_role: "primary",
+            company_name: "Org 1",
+            staff_id: ids.staff1,
+            display_name: "Visible Staff",
+            staff_company_name: "Org 1",
+            staff_code: "STF-01",
+            country_code: "SA",
+            iqama_number: null,
+            iqama_expiry_date: null,
+            phone_number: null,
+            email: null,
+            employment_status: "active",
+            assignment_id: ids.assignment1,
+            operational_roles: ["kitchen"],
+            duty_status: "on_duty",
+          },
+          {
+            team_id: ids.teamMetadataOnly,
+            team_name: "Team Beta",
+            team_active: true,
+            can_write: true,
+            assignment_role: null,
+            company_name: "Org 1",
+            staff_id: ids.staff2,
+            display_name: "Hidden Staff",
+            staff_company_name: "Hidden Company",
+            staff_code: "HIDDEN-02",
+            country_code: "SA",
+            iqama_number: "9999999999",
+            iqama_expiry_date: "2027-01-01",
+            phone_number: "+966500000000",
+            email: "hidden@example.invalid",
+            employment_status: "active",
+            assignment_id: ids.assignment2,
+            operational_roles: ["front_of_house"],
+            duty_status: "on_duty",
+          },
+        ]));
+        return;
+      }
+      res.end(JSON.stringify([]));
+    });
+    await new Promise<void>((resolve) => rpcServer.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const port = (rpcServer.address() as AddressInfo).port;
+      const admin = createOperationalAdmin(`http://127.0.0.1:${port}`, "service-key");
+      const result = await admin.getSupervisorTeam(ids.assignedSupervisor, ids.branch, "2026-09-19") as {
+        teams: Array<{
+          id: string;
+          name: string;
+          active: boolean;
+          can_write: boolean;
+          assignment_role: "primary" | "backup" | null;
+          staff: Array<{ id: string; display_name: string }>;
+        }>;
+      };
+
+      assert.equal(result.teams.length, 2);
+      const assignedTeam = result.teams.find((team) => team.id === ids.teamAssigned);
+      assert.ok(assignedTeam);
+      assert.equal(assignedTeam.can_write, true);
+      assert.equal(assignedTeam.assignment_role, "primary");
+      assert.deepEqual(assignedTeam.staff.map((staff) => staff.display_name), ["Visible Staff"]);
+
+      const metadataTeam = result.teams.find((team) => team.id === ids.teamMetadataOnly);
+      assert.ok(metadataTeam);
+      assert.equal(metadataTeam.name, "Team Beta");
+      assert.equal(metadataTeam.active, true);
+      assert.equal(metadataTeam.can_write, false);
+      assert.equal(metadataTeam.assignment_role, null);
+      assert.deepEqual(metadataTeam.staff, []);
+
+      const serialized = JSON.stringify(result);
+      assert.doesNotMatch(serialized, /Hidden Staff|Hidden Company|HIDDEN-02|9999999999|\+966500000000|hidden@example\.invalid/);
+    } finally {
+      await new Promise<void>((resolve, reject) => rpcServer.close((err) => err ? reject(err) : resolve()));
+    }
+  });
+
+  it("6. operationalAdmin.listManagedTeams unit logic parses vacant team with supervisor_user_id: null", async () => {
     const rpcServer = createServer(async (req, res) => {
       res.setHeader("content-type", "application/json");
       if (req.url === "/rest/v1/rpc/list_managed_supervisor_teams") {
