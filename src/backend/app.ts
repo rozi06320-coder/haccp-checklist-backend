@@ -295,7 +295,7 @@ const purchaseLogResponseRowSchema = z.object({
   created_at: z.string(),
   updated_at: z.string(),
 });
-const purchaseLogListResponseSchema = z.object({ purchase_logs: z.array(purchaseLogResponseRowSchema).max(500) }).strict();
+const purchaseLogListResponseSchema = z.object({ purchase_logs: z.array(purchaseLogResponseRowSchema) }).strict();
 const purchaseLogMutationResponseSchema = z.object({ purchase_log: purchaseLogResponseRowSchema }).strict();
 const receiptReadUrlResponseSchema = z.object({
   signed_url: z.url(),
@@ -6051,7 +6051,7 @@ export function createApp(
         const auth = requireAuthContext(request);
         const context = await loadActiveUser(request);
         if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin) throw new HttpError(403, "forbidden", "Access is denied.");
-        const result = purchaseLogListResponseSchema.parse(await dependencies.operationalAdmin.listPurchaseLogs(auth.userId, branchId.data, { dateFrom: query.data.date_from ?? null, dateTo: query.data.date_to ?? null }));
+        const result = purchaseLogListResponseSchema.parse(await dependencies.operationalAdmin.listPurchaseLogs(auth.userId, branchId.data));
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json(result);
       } catch (error) {

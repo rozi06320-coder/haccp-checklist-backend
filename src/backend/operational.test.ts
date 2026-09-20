@@ -254,8 +254,8 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
           ],
         };
       },
-      async listPurchaseLogs(actorUserId, branchId, filters) {
-        calls.push({ method: "purchaseLogs", actorUserId, branchId, filters: filters ?? null });
+      async listPurchaseLogs(actorUserId, branchId) {
+        calls.push({ method: "purchaseLogs", actorUserId, branchId });
         if (actorUserId !== id.supervisor) throw new Error("denied");
         return { purchase_logs: [] };
       },
@@ -1719,11 +1719,11 @@ describe("Phase 3A operational API", () => {
     const list = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs`, { headers: headers("supervisor") });
     assert.equal(list.status, 200);
     assert.deepEqual(await list.json(), { purchase_logs: [] });
-    assert.deepEqual(calls.at(-1), { method: "purchaseLogs", actorUserId: id.supervisor, branchId: id.branch, filters: { dateFrom: null, dateTo: null } });
+    assert.deepEqual(calls.at(-1), { method: "purchaseLogs", actorUserId: id.supervisor, branchId: id.branch });
 
     const periodList = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs?date_from=2026-08-23&date_to=2026-08-29`, { headers: headers("supervisor") });
     assert.equal(periodList.status, 200);
-    assert.deepEqual(calls.at(-1), { method: "purchaseLogs", actorUserId: id.supervisor, branchId: id.branch, filters: { dateFrom: "2026-08-23", dateTo: "2026-08-29" } });
+    assert.deepEqual(calls.at(-1), { method: "purchaseLogs", actorUserId: id.supervisor, branchId: id.branch });
 
     const invalidPeriod = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs?date_from=2026-08-29&date_to=2026-08-23`, { headers: headers("supervisor") });
     assert.equal(invalidPeriod.status, 400);

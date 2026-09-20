@@ -633,7 +633,7 @@ export type OperationalAdmin = {
     evaluationMonth: string;
   }): Promise<unknown>;
   listMonthlyEvaluationFactors?(): Promise<unknown>;
-  listPurchaseLogs(actorUserId: string, branchId: string, filters?: { dateFrom?: string | null; dateTo?: string | null }): Promise<unknown>;
+  listPurchaseLogs(actorUserId: string, branchId: string): Promise<unknown>;
   createPurchaseLogReceiptReadUrl?(input: { actorUserId: string; purchaseLogId: string }): Promise<unknown>;
   createManagedPurchaseLogReceiptReadUrl?(input: { actorUserId: string; organizationId: string; purchaseLogId: string }): Promise<unknown>;
   createPurchaseLog(input: {
@@ -1196,7 +1196,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     };
   }
   async function normalizePurchaseRows(rows: unknown[]) {
-    const parsed = z.array(purchaseLogRow.omit({ invoice_url: true })).max(500).parse(rows);
+    const parsed = z.array(purchaseLogRow.omit({ invoice_url: true })).parse(rows);
     return mapWithBoundedConcurrency(parsed, DEFAULT_STORAGE_SIGNING_CONCURRENCY, async (row) => {
       const { organization_id, supervisor_team_id, invoice_storage_path, ...safeRow } = row;
       void organization_id;
@@ -1790,15 +1790,12 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       const rows = await rpc("list_operational_staff_monthly_evaluation_factors", {});
       return { factors: z.array(monthlyEvaluationFactorRow).length(30).parse(rows) };
     },
-    async listPurchaseLogs(actorUserId, branchId, filters) {
+    async listPurchaseLogs(actorUserId, branchId) {
       const rows = await normalizePurchaseRows(await rpc("list_branch_purchase_logs", {
         actor_user_id: actorUserId,
         target_branch_id: branchId,
       }));
-      return { purchase_logs: rows.filter((row) =>
-        (!filters?.dateFrom || row.purchase_date >= filters.dateFrom) &&
-        (!filters?.dateTo || row.purchase_date <= filters.dateTo),
-      ) };
+      return { purchase_logs: rows };
     },
     async createPurchaseLogReceiptReadUrl(input) {
       const result = await client.from("branch_purchase_logs")

@@ -120,6 +120,42 @@ describe("Operational Storage Signing Concurrency", () => {
     }
   });
 
+  it("listPurchaseLogs accepts all-time history beyond the old 500-row validation cap", async () => {
+    const admin = createOperationalAdmin(baseUrl, "mock-key");
+    const count = 501;
+    rpcResponse = Array.from({ length: count }, (_, i) => ({
+      id: `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
+      branch_id: "10000000-0000-4000-8000-000000000001",
+      category: "stationery",
+      item_name: `Item ${i + 1}`,
+      quantity: 1,
+      amount: 10,
+      before_tax_amount: null,
+      tax_amount: null,
+      vendor_name: "Vendor Inc",
+      purchase_date: i % 2 === 0 ? "2026-08-18" : "2026-09-18",
+      notes: null,
+      payment_status: i % 2 === 0 ? "unpaid" : "reimbursed",
+      reimbursement_note: null,
+      reimbursed_at: null,
+      reimbursed_by: null,
+      invoice_storage_path: null,
+      invoice_original_name: null,
+      created_by: "20000000-0000-4000-8000-000000000001",
+      created_at: "2026-09-18T00:00:00.000Z",
+      updated_at: "2026-09-18T00:00:00.000Z",
+    }));
+
+    const result = await admin.listPurchaseLogs(
+      "20000000-0000-4000-8000-000000000001",
+      "10000000-0000-4000-8000-000000000001",
+    );
+
+    assert.strictEqual(result.purchase_logs.length, count);
+    assert.strictEqual(result.purchase_logs[0].purchase_date, "2026-08-18");
+    assert.strictEqual(result.purchase_logs.at(-1)?.payment_status, "unpaid");
+  });
+
   it("normalizeManagedPurchaseRows bounds concurrency <= 6 and preserves row order", async () => {
     const admin = createOperationalAdmin(baseUrl, "mock-key");
     const count = 12;
