@@ -1,5 +1,5 @@
 begin;
-select plan(29);
+select plan(41);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000',id,'authenticated','authenticated',id||'@example.invalid','{}','{}',now(),now()
@@ -36,6 +36,9 @@ values
 select has_table('public','branch_purchase_logs','branch purchase logs table exists');
 select has_column('public','branch_purchase_logs','invoice_storage_path','purchase logs store invoice storage path');
 select has_column('public','branch_purchase_logs','payment_status','purchase logs store payment status');
+select has_column('public','branch_purchase_logs','before_tax_amount','purchase logs store before tax amount');
+select has_column('public','branch_purchase_logs','tax_amount','purchase logs store tax amount');
+select hasnt_column('public','branch_purchase_logs','total_amount','purchase logs do not store a duplicate total amount');
 select ok((select not public and file_size_limit=5242880 and allowed_mime_types=array['image/jpeg','image/png','image/webp','application/pdf'] from storage.buckets where id='branch-purchase-invoices'),'purchase invoice bucket is private and bounded');
 select ok(not has_function_privilege('authenticated','public.list_branch_purchase_logs(uuid,uuid)','execute')
  and has_function_privilege('service_role','public.list_branch_purchase_logs(uuid,uuid)','execute'),
@@ -50,6 +53,13 @@ select ok(not has_function_privilege('authenticated','public.update_branch_purch
 select is((select count(*)::int from public.list_branch_purchase_logs(
  '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001')),
  0,'purchase log list returns empty before entries exist');
+select lives_ok($$insert into public.branch_purchase_logs(
+ organization_id,branch_id,supervisor_team_id,category,item_name,quantity,amount,purchase_date,created_by
+) values (
+ '2f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001',
+ '5f000000-0000-4000-8000-000000000001','kitchen','Historical Amount Only',1,150,'2026-08-07','1f000000-0000-4000-8000-000000000001'
+)$$,'historical amount-only rows with null new monetary fields remain valid');
+delete from public.branch_purchase_logs where item_name='Historical Amount Only';
 
 set local role service_role;
 select lives_ok($$select * from public.create_branch_purchase_log(
@@ -72,6 +82,7 @@ reset role;
 select is((select item_name from public.branch_purchase_logs limit 1),'Receipt Book','item name is trimmed');
 select is((select vendor_name from public.branch_purchase_logs limit 1),'N/A','blank vendor defaults to N/A');
 select is((select amount from public.branch_purchase_logs limit 1),45.50::numeric,'amount is stored');
+select ok((select before_tax_amount is null and tax_amount is null from public.branch_purchase_logs limit 1),'legacy amount-only payload does not fabricate tax breakdown');
 select is((select invoice_original_name from public.branch_purchase_logs limit 1),'receipt.pdf','invoice name is stored');
 select is((select count(*)::int from public.list_branch_purchase_logs(
  '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001')),
@@ -114,6 +125,36 @@ select throws_ok($$select * from public.create_branch_purchase_log(
  '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001',
  jsonb_build_object('category','kitchen','item_name','Book','quantity','1','amount','-1','purchase_date','2026-08-08'))$$,
  '22023','invalid purchase log payload','negative amount is rejected');
+select throws_ok($$select * from public.create_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001',
+ jsonb_build_object('category','kitchen','item_name','Book','quantity','1','before_tax_amount','1.001','tax_amount','0','purchase_date','2026-08-08'))$$,
+ '22023','invalid purchase log payload','excessive decimal places are rejected');
+select throws_ok($$select * from public.create_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001',
+ jsonb_build_object('category','kitchen','item_name','Book','quantity','1','before_tax_amount','10.00','tax_amount','1.50','amount','10.00','purchase_date','2026-08-08'))$$,
+ '22023','invalid purchase log payload','client amount cannot contradict calculated total');
+select lives_ok($$select * from public.create_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001',
+ jsonb_build_object('category','kitchen','item_name','Taxed Purchase','quantity','1','before_tax_amount','10.00','tax_amount','1.50','purchase_date','2026-08-08'))$$,
+ 'before tax and tax payload is accepted');
+select ok((select amount=11.50::numeric and before_tax_amount=10.00::numeric and tax_amount=1.50::numeric from public.branch_purchase_logs where item_name='Taxed Purchase'),'calculated total is stored as amount');
+select lives_ok($$select * from public.create_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001',
+ jsonb_build_object('category','kitchen','item_name','Zero Tax Purchase','quantity','1','before_tax_amount','25.00','tax_amount','0','purchase_date','2026-08-08'))$$,
+ 'explicit zero tax breakdown is accepted');
+select ok((select amount=25.00::numeric and before_tax_amount=25.00::numeric and tax_amount=0::numeric from public.branch_purchase_logs where item_name='Zero Tax Purchase'),'zero tax breakdown stores amount as before tax plus tax');
+select throws_ok($$insert into public.branch_purchase_logs(
+ organization_id,branch_id,supervisor_team_id,category,item_name,quantity,amount,before_tax_amount,tax_amount,purchase_date,created_by
+) values (
+ '2f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001',
+ '5f000000-0000-4000-8000-000000000001','kitchen','Bad Direct Precision',1,1.001,1.001,0,'2026-08-08','1f000000-0000-4000-8000-000000000001'
+)$$,'23514',null,'database constraint rejects direct overprecision monetary values');
+select throws_ok($$insert into public.branch_purchase_logs(
+ organization_id,branch_id,supervisor_team_id,category,item_name,quantity,amount,before_tax_amount,tax_amount,purchase_date,created_by
+) values (
+ '2f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001',
+ '5f000000-0000-4000-8000-000000000001','kitchen','Bad Direct Total',1,12,10,1,'2026-08-08','1f000000-0000-4000-8000-000000000001'
+)$$,'23514',null,'database constraint rejects inconsistent direct monetary totals');
 select lives_ok($$select * from public.create_branch_purchase_log(
  '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001',
  jsonb_build_object('category','stationery','item_name','Pens','quantity','1','amount','1','purchase_date','2026-08-08'))$$,
