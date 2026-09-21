@@ -128,7 +128,7 @@ const monthlyEvaluationScore = z.object({
   factor_label: z.string(),
   rating: z.number().int().min(1).max(5).nullable(),
   comment: optionalStaffText,
-}).strict();
+});
 
 const teamRow = z.object({
   team_id: uuid,
@@ -311,6 +311,7 @@ const purchaseLogRow = z.object({
   created_by_name: optionalStaffText.optional(),
   created_at: z.string(),
   updated_at: z.string(),
+  revision: z.union([z.number(), z.string()]).transform(Number),
 }).strict();
 const supplierReceivingRow = z.object({
   id: uuid,
@@ -662,6 +663,33 @@ export type OperationalAdmin = {
     purchaseLogId: string;
     paymentStatus: z.infer<typeof purchaseLogPaymentStatus>;
     reimbursementNote?: string | null;
+  }): Promise<unknown>;
+  updatePurchaseLog?(input: {
+    actorUserId: string;
+    branchId: string;
+    purchaseLogId: string;
+    expectedRevision: number;
+    correctionReason: string;
+    payload: {
+      category: z.infer<typeof purchaseLogCategory>;
+      item_name: string;
+      quantity: string | number;
+      amount?: string | number;
+      before_tax_amount?: string | number;
+      tax_amount?: string | number;
+      vendor_name?: string | null;
+      purchase_date: string;
+      invoice_number?: string | null;
+      notes?: string | null;
+    };
+  }): Promise<unknown>;
+  softDeletePurchaseLog?(input: {
+    actorUserId: string;
+    branchId: string;
+    purchaseLogId: string;
+    expectedRevision: number;
+    deleteReason: "duplicate" | "wrong_entry" | "purchase_cancelled" | "other";
+    deleteReasonNote?: string | null;
   }): Promise<unknown>;
   listSupplierReceivings(actorUserId: string, branchId: string, filters?: { dateFrom?: string | null; dateTo?: string | null }): Promise<unknown>;
   createSupplierReceivingPhotoReadUrl?(input: { actorUserId: string; supplierReceivingId: string }): Promise<unknown>;
@@ -1871,6 +1899,28 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         target_purchase_log_id: input.purchaseLogId,
         new_payment_status: input.paymentStatus,
         new_reimbursement_note: input.reimbursementNote ?? null,
+      }));
+      return { purchase_log: rows[0] };
+    },
+    async updatePurchaseLog(input) {
+      const rows = await normalizePurchaseRows(await rpc("update_branch_purchase_log", {
+        actor_user_id: input.actorUserId,
+        target_branch_id: input.branchId,
+        target_purchase_log_id: input.purchaseLogId,
+        expected_revision: input.expectedRevision,
+        correction_reason: input.correctionReason,
+        payload: input.payload,
+      }));
+      return { purchase_log: rows[0] };
+    },
+    async softDeletePurchaseLog(input) {
+      const rows = await normalizePurchaseRows(await rpc("soft_delete_branch_purchase_log", {
+        actor_user_id: input.actorUserId,
+        target_branch_id: input.branchId,
+        target_purchase_log_id: input.purchaseLogId,
+        expected_revision: input.expectedRevision,
+        delete_reason: input.deleteReason,
+        delete_reason_note: input.deleteReasonNote ?? null,
       }));
       return { purchase_log: rows[0] };
     },

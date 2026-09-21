@@ -92,7 +92,7 @@ const createOperationalStaffBodySchema = z.object({
 });
 const createSupervisorOwnedTeamBodySchema = z.object({
   name: z.string().max(80).transform((value) => value.trim().replace(/\s+/gu, " ")).pipe(z.string().min(1).max(80)),
-}).strict();
+});
 const supervisorOwnedTeamResponseSchema = z.object({
   team: z.object({
     id: z.uuid(),
@@ -273,6 +273,42 @@ const purchaseLogPaymentStatusBodySchema = z.object({
   payment_status: purchaseLogPaymentStatusSchema,
   reimbursement_note: optionalStaffTextSchema(500),
 }).strict();
+const purchaseLogEditBodySchema = z.object({
+  category: purchaseLogCategorySchema,
+  item_name: normalizedNameSchema,
+  quantity: z.union([z.number(), z.string()]).transform(Number).pipe(z.number().positive()),
+  amount: moneyAmountSchema.optional(),
+  before_tax_amount: moneyAmountSchema,
+  tax_amount: moneyAmountSchema,
+  vendor_name: z.string().max(120).optional().nullable().transform((value) => {
+    const trimmed = (value ?? "").trim().replace(/\s+/gu, " ");
+    return trimmed.length ? trimmed : "N/A";
+  }),
+  purchase_date: dateOnlySchema,
+  invoice_number: optionalStaffTextSchema(120),
+  notes: optionalStaffTextSchema(2000),
+  expected_revision: z.union([z.number().int(), z.string().regex(/^[1-9][0-9]*$/u).transform(Number)]),
+  correction_reason: optionalStaffTextSchema(500).pipe(z.string().min(10).max(500)),
+}).strict().superRefine((value, context) => {
+  const beforeTax = moneyCents(value.before_tax_amount);
+  const tax = moneyCents(value.tax_amount);
+  const total = beforeTax + tax;
+  if (total > maxMoneyCents) {
+    context.addIssue({ code: "custom", path: ["before_tax_amount"], message: "Purchase total is too large." });
+  }
+  if (value.amount !== undefined && moneyCents(value.amount) !== total) {
+    context.addIssue({ code: "custom", path: ["amount"], message: "Amount must match before tax plus tax." });
+  }
+});
+const purchaseLogDeleteBodySchema = z.object({
+  expected_revision: z.union([z.number().int(), z.string().regex(/^[1-9][0-9]*$/u).transform(Number)]),
+  delete_reason: z.enum(["duplicate", "wrong_entry", "purchase_cancelled", "other"]),
+  delete_reason_note: optionalStaffTextSchema(500),
+}).strict().superRefine((value, context) => {
+  if (value.delete_reason === "other" && (!value.delete_reason_note || value.delete_reason_note.length < 10)) {
+    context.addIssue({ code: "custom", path: ["delete_reason_note"], message: "Explain the other deletion reason." });
+  }
+});
 const purchaseLogResponseRowSchema = z.object({
   id: z.uuid(),
   branch_id: z.uuid(),
@@ -296,6 +332,7 @@ const purchaseLogResponseRowSchema = z.object({
   created_by: z.uuid(),
   created_at: z.string(),
   updated_at: z.string(),
+  revision: z.number().int().positive(),
 });
 const purchaseLogListResponseSchema = z.object({ purchase_logs: z.array(purchaseLogResponseRowSchema) }).strict();
 const purchaseLogMutationResponseSchema = z.object({ purchase_log: purchaseLogResponseRowSchema }).strict();
@@ -6093,6 +6130,57 @@ export function createApp(
         }));
         response.setHeader("Cache-Control", "private, no-store");
         response.status(201).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchaseError(error));
+      }
+    });
+
+  app.patch("/api/v1/supervisor/branches/:branchId/purchase-logs/:purchaseLogId", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const purchaseLogId = z.uuid().safeParse(request.params.purchaseLogId);
+        const body = purchaseLogEditBodySchema.safeParse(request.body);
+        if (!branchId.success || !purchaseLogId.success || !body.success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin?.updatePurchaseLog) throw new HttpError(403, "forbidden", "Access is denied.");
+        const { expected_revision, correction_reason, ...payload } = body.data;
+        const result = purchaseLogMutationResponseSchema.parse(await dependencies.operationalAdmin.updatePurchaseLog({
+          actorUserId: auth.userId,
+          branchId: branchId.data,
+          purchaseLogId: purchaseLogId.data,
+          expectedRevision: expected_revision,
+          correctionReason: correction_reason,
+          payload,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchaseError(error));
+      }
+    });
+
+  app.delete("/api/v1/supervisor/branches/:branchId/purchase-logs/:purchaseLogId", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const purchaseLogId = z.uuid().safeParse(request.params.purchaseLogId);
+        const body = purchaseLogDeleteBodySchema.safeParse(request.body);
+        if (!branchId.success || !purchaseLogId.success || !body.success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin?.softDeletePurchaseLog) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = purchaseLogMutationResponseSchema.parse(await dependencies.operationalAdmin.softDeletePurchaseLog({
+          actorUserId: auth.userId,
+          branchId: branchId.data,
+          purchaseLogId: purchaseLogId.data,
+          expectedRevision: body.data.expected_revision,
+          deleteReason: body.data.delete_reason,
+          deleteReasonNote: body.data.delete_reason_note,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
       } catch (error) {
         next(error instanceof HttpError ? error : operationalPurchaseError(error));
       }

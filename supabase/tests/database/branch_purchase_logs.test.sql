@@ -1,5 +1,5 @@
 begin;
-select plan(49);
+select plan(72);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000',id,'authenticated','authenticated',id||'@example.invalid','{}','{}',now(),now()
@@ -39,6 +39,10 @@ select has_column('public','branch_purchase_logs','invoice_number','purchase log
 select has_column('public','branch_purchase_logs','payment_status','purchase logs store payment status');
 select has_column('public','branch_purchase_logs','before_tax_amount','purchase logs store before tax amount');
 select has_column('public','branch_purchase_logs','tax_amount','purchase logs store tax amount');
+select has_column('public','branch_purchase_logs','revision','purchase logs carry optimistic concurrency revision');
+select has_column('public','branch_purchase_logs','deleted_at','purchase logs support soft delete timestamp');
+select has_column('public','branch_purchase_logs','delete_reason','purchase logs store soft delete reason');
+select has_table('public','branch_purchase_log_events','purchase log audit event table exists');
 select hasnt_column('public','branch_purchase_logs','total_amount','purchase logs do not store a duplicate total amount');
 select ok((select not public and file_size_limit=5242880 and allowed_mime_types=array['image/jpeg','image/png','image/webp','application/pdf'] from storage.buckets where id='branch-purchase-invoices'),'purchase invoice bucket is private and bounded');
 select ok(not has_function_privilege('authenticated','public.list_branch_purchase_logs(uuid,uuid)','execute')
@@ -50,6 +54,12 @@ select ok(not has_function_privilege('authenticated','public.create_branch_purch
 select ok(not has_function_privilege('authenticated','public.update_branch_purchase_log_payment_status(uuid,uuid,uuid,text,text)','execute')
  and has_function_privilege('service_role','public.update_branch_purchase_log_payment_status(uuid,uuid,uuid,text,text)','execute'),
  'purchase log payment RPC is service-role only');
+select ok(not has_function_privilege('authenticated','public.update_branch_purchase_log(uuid,uuid,uuid,bigint,text,jsonb)','execute')
+ and has_function_privilege('service_role','public.update_branch_purchase_log(uuid,uuid,uuid,bigint,text,jsonb)','execute'),
+ 'purchase log edit RPC is service-role only');
+select ok(not has_function_privilege('authenticated','public.soft_delete_branch_purchase_log(uuid,uuid,uuid,bigint,text,text)','execute')
+ and has_function_privilege('service_role','public.soft_delete_branch_purchase_log(uuid,uuid,uuid,bigint,text,text)','execute'),
+ 'purchase log soft delete RPC is service-role only');
 
 select is((select count(*)::int from public.list_branch_purchase_logs(
  '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001')),
@@ -89,6 +99,8 @@ select is((select invoice_original_name from public.branch_purchase_logs limit 1
 select is((select invoice_number from public.branch_purchase_logs limit 1),'INV-2026-001','invoice number is trimmed and stored');
 select is((select invoice_number from public.list_branch_purchase_logs(
  '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001') limit 1),'INV-2026-001','supervisor list returns invoice number');
+select is((select revision from public.list_branch_purchase_logs(
+ '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001') limit 1),1::bigint,'supervisor list returns revision');
 select is((select count(*)::int from public.list_branch_purchase_logs(
  '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001')),
  1,'purchase log list restores saved entries');
@@ -110,6 +122,29 @@ reset role;
 select ok((select payment_status='reimbursed' and reimbursement_note='Paid from petty cash' and reimbursed_at is not null and reimbursed_by='1f000000-0000-4000-8000-000000000001'
  from public.branch_purchase_logs limit 1),'reimbursement state is persisted');
 select is((select invoice_number from public.branch_purchase_logs where id=(select purchase_log_id from purchase_log_test_ids limit 1)),'INV-2026-001','payment update preserves invoice number');
+select is((select reason_note from public.branch_purchase_log_events where event_type='payment_status_changed' and purchase_log_id=(select purchase_log_id from purchase_log_test_ids limit 1) order by created_at desc limit 1),null,'payment status audit event does not require reimbursement note as reason');
+
+set local role service_role;
+select lives_ok($$select * from public.create_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000001',
+ '3f000000-0000-4000-8000-000000000001',
+ jsonb_build_object('category','kitchen','item_name','Short Note Purchase','quantity','1','amount','5','purchase_date','2026-08-08')
+)$$,'supervisor creates purchase for short reimbursement note regression');
+reset role;
+create temp table purchase_log_short_note_ids as
+select id as purchase_log_id from public.branch_purchase_logs where item_name='Short Note Purchase' limit 1;
+grant select on purchase_log_short_note_ids to service_role;
+set local role service_role;
+select lives_ok($$select * from public.update_branch_purchase_log_payment_status(
+ '1f000000-0000-4000-8000-000000000001',
+ '3f000000-0000-4000-8000-000000000001',
+ (select purchase_log_id from purchase_log_short_note_ids limit 1),
+ 'reimbursed',
+ 'Paid'
+)$$,'payment update with short reimbursement note succeeds');
+reset role;
+select is((select reimbursement_note from public.branch_purchase_logs where id=(select purchase_log_id from purchase_log_short_note_ids limit 1)),'Paid','short reimbursement note remains on purchase row');
+select ok((select reason_note is null and new_values->>'reimbursement_note'='Paid' from public.branch_purchase_log_events where event_type='payment_status_changed' and purchase_log_id=(select purchase_log_id from purchase_log_short_note_ids limit 1) order by created_at desc limit 1),'payment audit snapshot preserves short reimbursement note while event reason note stays null');
 
 select ok(not has_function_privilege('authenticated','public.list_managed_purchase_logs(uuid,uuid,uuid,text,text,date,date)','execute')
  and has_function_privilege('service_role','public.list_managed_purchase_logs(uuid,uuid,uuid,text,text,date,date)','execute'),
@@ -181,10 +216,55 @@ select ok((select invoice_number is null from public.branch_purchase_logs where 
 select is((select count(*)::int from public.list_managed_purchase_logs(
  '1f000000-0000-4000-8000-000000000003','2f000000-0000-4000-8000-000000000001',null,'food_item',null,null,null)),
  1,'manager can filter read-only Purchase Logs by Food Item');
+
+create temp table purchase_log_edit_ids as
+select
+ (select id from public.branch_purchase_logs where item_name='Taxed Purchase' limit 1) as edit_purchase_log_id,
+ (select revision from public.branch_purchase_logs where item_name='Taxed Purchase' limit 1) as edit_revision,
+ (select id from public.branch_purchase_logs where item_name='Zero Tax Purchase' limit 1) as delete_purchase_log_id,
+ (select revision from public.branch_purchase_logs where item_name='Zero Tax Purchase' limit 1) as delete_revision;
+grant select on purchase_log_edit_ids to service_role;
+
+set local role service_role;
+select lives_ok($$select * from public.update_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000001',
+ '3f000000-0000-4000-8000-000000000001',
+ (select edit_purchase_log_id from purchase_log_edit_ids limit 1),
+ (select edit_revision from purchase_log_edit_ids limit 1),
+ 'Correcting the supplier invoice amount',
+ jsonb_build_object('category','kitchen','item_name','Taxed Purchase Edited','quantity','2','before_tax_amount','20.00','tax_amount','3.00','amount','23.00','vendor_name','Edited Vendor','purchase_date','2026-08-09','invoice_number','INV-EDIT-001','notes','Corrected record')
+)$$,'unpaid purchase log can be edited with a correction reason');
+reset role;
+select ok((select item_name='Taxed Purchase Edited' and amount=23.00::numeric and revision=2 from public.branch_purchase_logs where item_name='Taxed Purchase Edited'),'edit updates monetary fields and increments revision');
+select ok((select old_values->>'item_name'='Taxed Purchase' and new_values->>'item_name'='Taxed Purchase Edited' from public.branch_purchase_log_events where event_type='edited' and reason_code='correction' limit 1),'edit audit event records old and new values');
+select throws_ok($$select * from public.update_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000001',
+ '3f000000-0000-4000-8000-000000000001',
+ (select id from public.branch_purchase_logs where item_name='Taxed Purchase Edited' limit 1),
+ 1,
+ 'Trying to reuse a stale revision',
+ jsonb_build_object('category','kitchen','item_name','Stale','quantity','1','before_tax_amount','1.00','tax_amount','0.00','amount','1.00','purchase_date','2026-08-09')
+)$$,'40001','purchase log changed','stale edit revision is rejected');
+
+set local role service_role;
+select lives_ok($$select * from public.soft_delete_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000001',
+ '3f000000-0000-4000-8000-000000000001',
+ (select delete_purchase_log_id from purchase_log_edit_ids limit 1),
+ (select delete_revision from purchase_log_edit_ids limit 1),
+ 'wrong_entry',
+ 'Wrong branch purchase entry'
+)$$,'unpaid purchase log can be soft deleted with a reason');
+reset role;
+select is((select count(*)::int from public.list_branch_purchase_logs(
+ '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001') where item_name='Zero Tax Purchase'),0,'soft-deleted purchase is excluded from active supervisor list');
+select ok((select deleted_at is not null and delete_reason='wrong_entry' and revision=2 from public.branch_purchase_logs where item_name='Zero Tax Purchase'),'soft-deleted purchase row remains preserved with deletion metadata');
+select ok((select old_values->>'deleted_at' is null and new_values->>'delete_reason'='wrong_entry' from public.branch_purchase_log_events where event_type='soft_deleted' limit 1),'soft delete audit event records deletion metadata');
+
 select throws_ok($$select * from public.create_branch_purchase_log(
  '1f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001',
  jsonb_build_object('category','kitchen','item_name','Long Invoice','quantity','1','amount','1','purchase_date','2026-08-08','invoice_number',repeat('A',121)))$$,
- '22023','invalid purchase text','overlong invoice number is rejected');
+ '22023','invalid maintenance purchase payload','overlong invoice number is rejected');
 select lives_ok($$select * from public.create_branch_purchase_log(
  '1f000000-0000-4000-8000-000000000002','3f000000-0000-4000-8000-000000000001',
  jsonb_build_object('category','kitchen','item_name','Book','quantity','1','amount','1','purchase_date','2026-08-08'))$$,
@@ -193,6 +273,23 @@ select throws_ok($$select * from public.create_branch_purchase_log(
  '1f000000-0000-4000-8000-000000000003','3f000000-0000-4000-8000-000000000001',
  jsonb_build_object('category','kitchen','item_name','Book','quantity','1','amount','1','purchase_date','2026-08-08'))$$,
  '42501','purchase log access denied','manager denied');
+
+select throws_ok($$select * from public.update_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000001',
+ '3f000000-0000-4000-8000-000000000001',
+ (select purchase_log_id from purchase_log_test_ids limit 1),
+ (select revision from public.branch_purchase_logs where id=(select purchase_log_id from purchase_log_test_ids limit 1)),
+ 'Trying to edit a reimbursed purchase',
+ jsonb_build_object('category','kitchen','item_name','Readonly','quantity','1','before_tax_amount','1.00','tax_amount','0.00','amount','1.00','purchase_date','2026-08-08')
+)$$,'55000','reimbursed purchase logs are read only','reimbursed purchase edit is rejected');
+select throws_ok($$select * from public.soft_delete_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000001',
+ '3f000000-0000-4000-8000-000000000001',
+ (select purchase_log_id from purchase_log_test_ids limit 1),
+ (select revision from public.branch_purchase_logs where id=(select purchase_log_id from purchase_log_test_ids limit 1)),
+ 'duplicate',
+ null
+)$$,'55000','reimbursed purchase logs are read only','reimbursed purchase soft delete is rejected');
 
 set local role authenticated;
 select throws_ok($$insert into public.branch_purchase_logs(
