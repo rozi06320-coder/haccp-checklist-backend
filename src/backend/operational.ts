@@ -27,6 +27,8 @@ const dailyAuditItem = z.object({item_id:z.string(),item_number:z.number().int()
 const dailyAuditCurrent = z.object({submission_id:uuid.nullable().optional(),branch_id:uuid,business_date:z.iso.date(),state:z.enum(["empty","draft","submitted"]).nullable(),revision:z.number().int().nonnegative().default(0),auditor_display_name:z.string().nullable().optional(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),submitted_at:z.string().nullable().optional(),updated_at:z.string().nullable().optional(),items:z.array(dailyAuditItem).length(13)}).strict();
 const purchaseLogCategory = z.enum(["stationery", "kitchen", "equipment", "food_item", "other"]);
 const purchaseLogPaymentStatus = z.enum(["unpaid", "reimbursed"]);
+const purchaseRequestCategory = z.enum(["stationary", "kitchen", "other"]);
+const purchaseRequestStatus = z.enum(["submitted", "processing", "purchased"]);
 const supplierReceivingCategory = z.enum(["raw", "frozen", "juice"]);
 const maintenanceIssueCategory = z.enum(["equipment", "plumbing", "electrical", "refrigeration", "building", "other"]);
 const maintenanceIssuePriority = z.enum(["low", "normal", "high", "urgent"]);
@@ -636,6 +638,25 @@ export type OperationalAdmin = {
   }): Promise<unknown>;
   listMonthlyEvaluationFactors?(): Promise<unknown>;
   listPurchaseLogs(actorUserId: string, branchId: string): Promise<unknown>;
+  listSupervisorPurchaseRequests?(actorUserId: string, branchId: string): Promise<unknown>;
+  createSupervisorPurchaseRequest?(input: {
+    actorUserId: string;
+    branchId: string;
+    category: z.infer<typeof purchaseRequestCategory>;
+    notes?: string | null;
+    items: Array<{ name: string; quantity: string | number; unit?: string | null; notes?: string | null }>;
+  }): Promise<unknown>;
+  listPurchasingPurchaseRequests?(input: {
+    actorUserId: string;
+    organizationId: string;
+    status?: z.infer<typeof purchaseRequestStatus> | null;
+  }): Promise<unknown>;
+  setPurchasingPurchaseRequestStatus?(input: {
+    actorUserId: string;
+    organizationId: string;
+    requestId: string;
+    status: Extract<z.infer<typeof purchaseRequestStatus>, "processing" | "purchased">;
+  }): Promise<unknown>;
   createPurchaseLogReceiptReadUrl?(input: { actorUserId: string; purchaseLogId: string }): Promise<unknown>;
   createManagedPurchaseLogReceiptReadUrl?(input: { actorUserId: string; organizationId: string; purchaseLogId: string }): Promise<unknown>;
   createPurchaseLog(input: {
@@ -1833,6 +1854,36 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         target_branch_id: branchId,
       }));
       return { purchase_logs: rows };
+    },
+    async listSupervisorPurchaseRequests(actorUserId, branchId) {
+      return await rpcObject("list_supervisor_purchase_requests", {
+        actor_user_id: actorUserId,
+        target_branch_id: branchId,
+      });
+    },
+    async createSupervisorPurchaseRequest(input) {
+      return await rpcObject("create_supervisor_purchase_request", {
+        actor_user_id: input.actorUserId,
+        target_branch_id: input.branchId,
+        request_category: input.category,
+        request_notes: input.notes ?? null,
+        request_items: input.items,
+      });
+    },
+    async listPurchasingPurchaseRequests(input) {
+      return await rpcObject("list_purchasing_purchase_requests", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        status_filter: input.status ?? null,
+      });
+    },
+    async setPurchasingPurchaseRequestStatus(input) {
+      return await rpcObject("set_purchasing_purchase_request_status", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_request_id: input.requestId,
+        next_status: input.status,
+      });
     },
     async createPurchaseLogReceiptReadUrl(input) {
       const result = await client.from("branch_purchase_logs")

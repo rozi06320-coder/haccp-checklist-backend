@@ -336,6 +336,49 @@ const purchaseLogResponseRowSchema = z.object({
 });
 const purchaseLogListResponseSchema = z.object({ purchase_logs: z.array(purchaseLogResponseRowSchema) }).strict();
 const purchaseLogMutationResponseSchema = z.object({ purchase_log: purchaseLogResponseRowSchema }).strict();
+const purchaseRequestCategorySchema = z.enum(["stationary", "kitchen", "other"]);
+const purchaseRequestStatusSchema = z.enum(["submitted", "processing", "purchased"]);
+const purchaseRequestItemBodySchema = z.object({
+  name: normalizedNameSchema,
+  quantity: z.union([z.number(), z.string()]).transform(Number).pipe(z.number().positive()),
+  unit: optionalStaffTextSchema(40),
+  notes: optionalStaffTextSchema(1000),
+}).strict();
+const purchaseRequestBodySchema = z.object({
+  category: purchaseRequestCategorySchema,
+  notes: optionalStaffTextSchema(2000),
+  items: z.array(purchaseRequestItemBodySchema).min(1).max(50),
+}).strict();
+const purchaseRequestStatusBodySchema = z.object({
+  status: z.enum(["processing", "purchased"]),
+}).strict();
+const purchaseRequestItemResponseSchema = z.object({
+  id: z.uuid(),
+  purchase_request_id: z.uuid(),
+  item_name: z.string(),
+  quantity: z.union([z.number(), z.string()]),
+  unit: z.string().nullable(),
+  notes: z.string().nullable(),
+  sort_order: z.number().int().positive(),
+  created_at: z.string(),
+}).strict();
+const purchaseRequestResponseRowSchema = z.object({
+  id: z.uuid(),
+  organization_id: z.uuid(),
+  branch_id: z.uuid(),
+  branch_name: z.string().nullable(),
+  branch_code: z.string().nullable(),
+  requested_by: z.uuid(),
+  requested_by_name: z.string().nullable(),
+  category: purchaseRequestCategorySchema,
+  status: purchaseRequestStatusSchema,
+  notes: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  items: z.array(purchaseRequestItemResponseSchema).min(1).max(50),
+}).strict();
+const purchaseRequestListResponseSchema = z.object({ purchase_requests: z.array(purchaseRequestResponseRowSchema).max(500) }).strict();
+const purchaseRequestMutationResponseSchema = z.object({ purchase_request: purchaseRequestResponseRowSchema }).strict();
 const receiptReadUrlResponseSchema = z.object({
   signed_url: z.url(),
   expires_in: z.number().int().min(1).max(5 * 60),
@@ -715,6 +758,9 @@ const managedAnnualEvaluationQuerySchema=z.object({evaluation_year:z.coerce.numb
 const managedAnnualEvaluationDraftSchema=z.object({branch_id:z.uuid(),evaluation_year:z.number().int().min(2000).max(2200),subject_type:annualEvaluationSubjectTypeSchema,subject_id:z.uuid(),expected_revision:z.number().int().nonnegative(),scores:z.array(annualEvaluationScoreSchema).max(20)}).strict();
 const managedAnnualEvaluationSubmitSchema=z.object({expected_revision:z.number().int().nonnegative()}).strict();
 const supervisorPurchaseLogQuerySchema=z.object({date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
+const purchasingPurchaseRequestQuerySchema = z.object({
+  status: z.enum(["submitted", "processing", "purchased"]).optional(),
+}).strict();
 const supervisorSupplierReceivingQuerySchema=z.object({date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const managedPurchaseLogQuerySchema=z.object({branch_id:z.uuid().optional(),category:z.enum(["stationery","kitchen","equipment","food_item","other"]).optional(),payment_status:z.enum(["unpaid","reimbursed"]).optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const managedSupplierReceivingQuerySchema=z.object({branch_id:z.uuid().optional(),category:supplierReceivingCategorySchema.optional(),supplier_id:z.uuid().optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
@@ -2088,6 +2134,13 @@ function operationalPurchaseError(error: unknown) {
   if (error instanceof OperationalAttachmentNotFoundError) return new HttpError(404, "not_found", "The receipt is unavailable.");
   if (error instanceof OperationalAccessError) return new HttpError(403, "forbidden", "Access is denied.");
   return new HttpError(503, "service_unavailable", "Purchase Log is temporarily unavailable.");
+}
+
+function operationalPurchaseRequestError(error: unknown) {
+  if (error instanceof OperationalInputError) return new HttpError(422, "unprocessable_entity", "The purchase request is invalid.");
+  if (error instanceof OperationalConflictError) return new HttpError(409, "conflict", "The purchase request conflicts with current workflow state.");
+  if (error instanceof OperationalAccessError) return new HttpError(403, "forbidden", "Access is denied.");
+  return new HttpError(503, "service_unavailable", "Purchase Requests are temporarily unavailable.");
 }
 
 function operationalSupplierReceivingError(error: unknown) {
@@ -4047,6 +4100,51 @@ export function createApp(
       }
     },
   );
+  app.get("/api/v1/purchasing/organizations/:organizationId/purchase-requests", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const query = purchasingPurchaseRequestQuerySchema.safeParse(request.query);
+        if (!organizationId.success || !query.success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        const hasPurchasingAccess = (context.purchasing_organizations ?? []).some((organization) => organization.id === organizationId.data);
+        if (context.must_change_password || !hasPurchasingAccess || !dependencies.operationalAdmin?.listPurchasingPurchaseRequests) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = purchaseRequestListResponseSchema.parse(await dependencies.operationalAdmin.listPurchasingPurchaseRequests({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          status: query.data.status ?? null,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchaseRequestError(error));
+      }
+    });
+
+  app.patch("/api/v1/purchasing/organizations/:organizationId/purchase-requests/:requestId/status", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const requestId = z.uuid().safeParse(request.params.requestId);
+        const body = purchaseRequestStatusBodySchema.safeParse(request.body);
+        if (!organizationId.success || !requestId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        const hasPurchasingAccess = (context.purchasing_organizations ?? []).some((organization) => organization.id === organizationId.data);
+        if (context.must_change_password || !hasPurchasingAccess || !dependencies.operationalAdmin?.setPurchasingPurchaseRequestStatus) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = purchaseRequestMutationResponseSchema.parse(await dependencies.operationalAdmin.setPurchasingPurchaseRequestStatus({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          requestId: requestId.data,
+          status: body.data.status,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchaseRequestError(error));
+      }
+    });
   app.get(
     "/api/v1/internal-admin/organizations/:organizationId/branches",
     protectedRateLimit, authenticate, async (request, response, next) => {
@@ -6230,6 +6328,45 @@ export function createApp(
         response.status(200).json(result);
       } catch (error) {
         next(error instanceof HttpError ? error : operationalPurchaseError(error));
+      }
+    });
+
+  app.get("/api/v1/supervisor/branches/:branchId/purchase-requests", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        if (!branchId.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin?.listSupervisorPurchaseRequests) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = purchaseRequestListResponseSchema.parse(await dependencies.operationalAdmin.listSupervisorPurchaseRequests(auth.userId, branchId.data));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchaseRequestError(error));
+      }
+    });
+
+  app.post("/api/v1/supervisor/branches/:branchId/purchase-requests", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const body = purchaseRequestBodySchema.safeParse(request.body);
+        if (!branchId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin?.createSupervisorPurchaseRequest) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = purchaseRequestMutationResponseSchema.parse(await dependencies.operationalAdmin.createSupervisorPurchaseRequest({
+          actorUserId: auth.userId,
+          branchId: branchId.data,
+          category: body.data.category,
+          notes: body.data.notes,
+          items: body.data.items,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(201).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchaseRequestError(error));
       }
     });
 
