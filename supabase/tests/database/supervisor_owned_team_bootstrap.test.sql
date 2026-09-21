@@ -1,5 +1,5 @@
 begin;
-select plan(22);
+select plan(23);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated',
@@ -41,6 +41,7 @@ insert into public.branch_memberships(branch_id,user_id,role) values
   ('39000000-0000-4000-8000-000000000002','19000000-0000-4000-8000-000000000005','branch_manager');
 
 select is((select count(*) from public.branch_operational_teams where branch_id = '39000000-0000-4000-8000-000000000001'), 0::bigint, 'new branch starts with zero operational teams');
+select lives_ok($$select * from public.get_supervisor_branch_timezone('19000000-0000-4000-8000-000000000001','39000000-0000-4000-8000-000000000001')$$, 'zero-team supervisor can resolve branch timezone before setup');
 select is((select count(*) from public.get_supervisor_operational_team('19000000-0000-4000-8000-000000000001','39000000-0000-4000-8000-000000000001',current_date)), 0::bigint, 'zero-team supervisor gets empty team rows for adapter setup-required state');
 
 create temporary table created_supervisor_team on commit drop as

@@ -1,5 +1,5 @@
 begin;
-select plan(51);
+select plan(52);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000',id,'authenticated','authenticated',id||'@training.invalid','{}','{}',now(),now()
@@ -134,6 +134,7 @@ select ok((public.get_managed_annual_evaluation_workspace('17100000-0000-4000-80
 select ok((select must_change_password from public.profiles where id='17100000-0000-4000-8000-000000000005'),'promoted Supervisor must change temporary password on first login');
 update public.profiles set must_change_password=false where id='17100000-0000-4000-8000-000000000005';
 select ok(private.actor_can_write_operational_team('17100000-0000-4000-8000-000000000005','37100000-0000-4000-8000-000000000001',current_setting('test.training_team_a')::uuid),'promoted Supervisor can write inherited team after password completion');
+select lives_ok($$select * from public.get_supervisor_branch_timezone('17100000-0000-4000-8000-000000000005','37100000-0000-4000-8000-000000000001')$$,'promoted Supervisor resolves branch timezone without active legacy team or staff assignment');
 select is((select team_id::text from public.get_supervisor_operational_team('17100000-0000-4000-8000-000000000005','37100000-0000-4000-8000-000000000001',current_date) limit 1),current_setting('test.training_team_a'),'supervisor read path resolves inherited operational team after password completion');
 select is((public.get_managed_supervisor_training_promotion_state('17100000-0000-4000-8000-000000000001','27100000-0000-4000-8000-000000000001','57100000-0000-4000-8000-000000000002')->>'status'),'promoted','promotion preflight returns promoted state for retry');
 set local role service_role;

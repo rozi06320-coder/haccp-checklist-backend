@@ -222,9 +222,9 @@ update public.branch_memberships set active=true where branch_id='36000000-0000-
  and user_id='16000000-0000-4000-8000-000000000002';
 update public.branch_supervisor_teams set active=false where branch_id='36000000-0000-4000-8000-000000000002'
  and supervisor_user_id='16000000-0000-4000-8000-000000000002';
-select throws_ok($$select * from public.get_supervisor_branch_timezone(
+select lives_ok($$select * from public.get_supervisor_branch_timezone(
  '16000000-0000-4000-8000-000000000002','36000000-0000-4000-8000-000000000002')$$,
- '42501','branch access denied','inactive team denies Supervisor access');
+ 'inactive legacy team does not deny branch timezone access');
 update public.branch_supervisor_teams set active=true where branch_id='36000000-0000-4000-8000-000000000002'
  and supervisor_user_id='16000000-0000-4000-8000-000000000002';
 select throws_ok($$insert into public.branch_supervisor_teams(
