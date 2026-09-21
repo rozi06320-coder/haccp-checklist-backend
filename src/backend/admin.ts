@@ -60,6 +60,13 @@ export type FinalizeProvisionedOrganizationManagerInput = {
   fullName: string;
   fullNameAr?: string | null;
 };
+export type FinalizeProvisionedPurchasingUserInput = {
+  actorUserId: string;
+  organizationId: string;
+  newUserId: string;
+  fullName: string;
+  fullNameAr?: string | null;
+};
 export type FinalizeProvisionedTrainingAccountInput = {
   actorUserId: string;
   organizationId: string;
@@ -75,6 +82,7 @@ export type ProvisioningAdmin = {
   finalize(input: FinalizeProvisionedUserInput): Promise<void>;
   finalizeMaintenance?(input: FinalizeProvisionedMaintenanceUserInput): Promise<void>;
   finalizeOrganizationManager?(input: FinalizeProvisionedOrganizationManagerInput): Promise<void>;
+  finalizePurchasing?(input: FinalizeProvisionedPurchasingUserInput): Promise<void>;
   finalizeTrainingAccount?(input: FinalizeProvisionedTrainingAccountInput): Promise<void>;
 };
 
@@ -236,6 +244,18 @@ export type ManagedMaintenanceUser = {
   email: string;
   active: boolean;
   must_change_password: boolean;
+  created_at: string;
+  updated_at: string;
+  updated_by_name: string | null;
+};
+export type ManagedPurchasingUser = {
+  id: string;
+  full_name: string | null;
+  full_name_ar?: string | null;
+  email: string;
+  active: boolean;
+  must_change_password: boolean;
+  disabled: boolean;
   created_at: string;
   updated_at: string;
   updated_by_name: string | null;
@@ -491,6 +511,18 @@ export type ManagementAdmin = {
     actorUserId: string;
     organizationId: string;
     email: string;
+  }): Promise<void>;
+  listPurchasingUsers?(actorUserId: string, organizationId: string): Promise<ManagedPurchasingUser[]>;
+  grantExistingPurchasingUser?(input: {
+    actorUserId: string;
+    organizationId: string;
+    email: string;
+  }): Promise<void>;
+  setPurchasingUserActive?(input: {
+    actorUserId: string;
+    organizationId: string;
+    userId: string;
+    active: boolean;
   }): Promise<void>;
   listTrainingAccountsForInternalAdmin?(actorUserId: string, organizationId: string): Promise<InternalAdminTrainingAccount[]>;
   updateTrainingAccountForInternalAdmin?(input: {
@@ -1602,6 +1634,70 @@ export function createManagementAdmin(
       }).strict()).length(1).safeParse(data);
       if (!rows.success) throw new AdminOperationError();
     },
+    async listPurchasingUsers(actorUserId, organizationId) {
+      const { data, error } = await admin.rpc("list_managed_purchasing_memberships", {
+        actor_user_id: actorUserId,
+        target_organization_id: organizationId,
+      });
+      if (error || !Array.isArray(data)) {
+        if (error?.code === "42501") throw new AdminAccessError();
+        throw new AdminOperationError();
+      }
+      const rows = z.array(z.object({
+        id: z.string().uuid(),
+        full_name: z.string().nullable(),
+        full_name_ar: z.string().nullable().optional(),
+        email: z.string().email(),
+        active: z.boolean(),
+        must_change_password: z.boolean(),
+        disabled: z.boolean(),
+        created_at: z.string(),
+        updated_at: z.string(),
+        updated_by_name: z.string().nullable(),
+      }).strict()).max(500).safeParse(data);
+      if (!rows.success) throw new AdminOperationError();
+      return rows.data;
+    },
+    async grantExistingPurchasingUser(input) {
+      const { data, error } = await admin.rpc("grant_existing_purchasing_membership", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_email: input.email,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        throw new AdminOperationError();
+      }
+      const rows = z.array(z.object({
+        id: z.string().uuid(),
+        full_name: z.string().nullable(),
+        email: z.string().email(),
+        active: z.literal(true),
+        updated_at: z.string(),
+      }).strict()).length(1).safeParse(data);
+      if (!rows.success) throw new AdminOperationError();
+    },
+    async setPurchasingUserActive(input) {
+      const { data, error } = await admin.rpc("set_purchasing_membership_active", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_user_id: input.userId,
+        new_active: input.active,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        throw new AdminOperationError();
+      }
+      const rows = z.array(z.object({
+        id: z.string().uuid(),
+        full_name: z.string().nullable(),
+        email: z.string().email(),
+        active: z.boolean(),
+        updated_at: z.string(),
+      }).strict()).length(1).safeParse(data);
+      if (!rows.success) throw new AdminOperationError();
+    },
   };
 }
 
@@ -2311,6 +2407,20 @@ export function createProvisioningAdmin(url: string, secretKey: string): Provisi
         p_full_name_ar: input.fullNameAr ?? null,
       });
       if (error) throw new ProvisioningStageError("database_finalize", "rpc_failed");
+    },
+    async finalizePurchasing(input) {
+      const { error } = await client.rpc("finalize_provisioned_purchasing_user", {
+        p_actor_user_id: input.actorUserId,
+        p_organization_id: input.organizationId,
+        p_new_user_id: input.newUserId,
+        p_full_name: input.fullName,
+        p_full_name_ar: input.fullNameAr ?? null,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "23505" || error.code === "23514" || error.code === "22023") throw new AdminConflictError();
+        throw new ProvisioningStageError("database_finalize", "rpc_failed", null, error.code ?? null);
+      }
     },
     async finalizeTrainingAccount(input) {
       const { error } = await client.rpc("finalize_provisioned_training_account", {

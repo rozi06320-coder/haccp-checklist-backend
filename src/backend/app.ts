@@ -916,6 +916,7 @@ const maintenanceUserBodySchema = z
     temporary_password: z.string().min(6).max(128),
   })
   .strict();
+const purchasingUserBodySchema = maintenanceUserBodySchema;
 const trainingAccountBodySchema = z.object({
   account_name: normalizedNameSchema,
   email: z.string().trim().toLowerCase().max(254).pipe(z.email()),
@@ -2794,6 +2795,133 @@ export function createApp(
     },
   );
   app.get(
+    "/api/v1/management/organizations/:organizationId/purchasing-users",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        if (!organizationId.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password ||
+          !(await auth.userContext.hasOrganizationManagerAccess(auth.userId, organizationId.data))) {
+          throw new HttpError(403, "forbidden", "Access is denied.");
+        }
+        if (!dependencies.managementAdmin.listPurchasingUsers) {
+          throw new HttpError(503, "service_unavailable", "Purchasing users are unavailable.");
+        }
+        const users = await dependencies.managementAdmin.listPurchasingUsers(auth.userId, organizationId.data);
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ users });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Purchasing users are unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/management/organizations/:organizationId/purchasing-users/existing",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const body = existingUserGrantBodySchema.safeParse(request.body);
+        if (!organizationId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password ||
+          !(await auth.userContext.hasOrganizationManagerAccess(auth.userId, organizationId.data))) {
+          throw new HttpError(403, "forbidden", "Access is denied.");
+        }
+        if (!dependencies.managementAdmin.grantExistingPurchasingUser) {
+          throw new HttpError(503, "service_unavailable", "Purchasing users are unavailable.");
+        }
+        await dependencies.managementAdmin.grantExistingPurchasingUser({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          email: body.data.email,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "No existing account was found for that email."));
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Purchasing users are unavailable."));
+      }
+    },
+  );
+  app.patch(
+    "/api/v1/management/organizations/:organizationId/purchasing-users/:userId",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        const body = reactivateAccessBodySchema.safeParse(request.body);
+        if (!organizationId.success || !userId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password ||
+          !(await auth.userContext.hasOrganizationManagerAccess(auth.userId, organizationId.data))) {
+          throw new HttpError(403, "forbidden", "Access is denied.");
+        }
+        if (!dependencies.managementAdmin.setPurchasingUserActive) {
+          throw new HttpError(503, "service_unavailable", "Purchasing users are unavailable.");
+        }
+        await dependencies.managementAdmin.setPurchasingUserActive({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+          active: true,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Purchasing users are unavailable."));
+      }
+    },
+  );
+  app.delete(
+    "/api/v1/management/organizations/:organizationId/purchasing-users/:userId",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        if (!organizationId.success || !userId.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password ||
+          !(await auth.userContext.hasOrganizationManagerAccess(auth.userId, organizationId.data))) {
+          throw new HttpError(403, "forbidden", "Access is denied.");
+        }
+        if (!dependencies.managementAdmin.setPurchasingUserActive) {
+          throw new HttpError(503, "service_unavailable", "Purchasing users are unavailable.");
+        }
+        await dependencies.managementAdmin.setPurchasingUserActive({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+          active: false,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Purchasing users are unavailable."));
+      }
+    },
+  );
+  app.get(
     "/api/v1/internal-admin/organizations",
     protectedRateLimit, authenticate, async (request, response, next) => {
       try {
@@ -3872,6 +4000,177 @@ export function createApp(
         if (error instanceof HttpError) next(error);
         else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
         else next(new HttpError(503, "service_unavailable", "Maintenance users are unavailable."));
+      }
+    },
+  );
+  app.get(
+    "/api/v1/internal-admin/organizations/:organizationId/purchasing-users",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        if (!organizationId.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.listPurchasingUsers) {
+          throw new HttpError(503, "service_unavailable", "Purchasing users are unavailable.");
+        }
+        const users = await dependencies.managementAdmin.listPurchasingUsers(auth.userId, organizationId.data);
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ users });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Purchasing users are unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/purchasing-users",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const body = purchasingUserBodySchema.safeParse(request.body);
+        if (!organizationId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.provisioningAdmin.finalizePurchasing) {
+          throw new HttpError(503, "service_unavailable", "Purchasing users are unavailable.");
+        }
+        let newUserId: string;
+        try {
+          newUserId = (await dependencies.provisioningAdmin.createUser({
+            email: body.data.email,
+            password: body.data.temporary_password,
+          })).id;
+        } catch (error) {
+          if (error instanceof AdminConflictError) {
+            throw new HttpError(409, "conflict", "An account with that email already exists.");
+          }
+          throw new HttpError(503, "service_unavailable", "Purchasing users are unavailable.");
+        }
+        try {
+          await dependencies.provisioningAdmin.finalizePurchasing({
+            actorUserId: auth.userId,
+            organizationId: organizationId.data,
+            newUserId,
+            fullName: body.data.full_name,
+            fullNameAr: body.data.full_name_ar,
+          });
+        } catch {
+          try {
+            await dependencies.provisioningAdmin.deleteUser(newUserId);
+          } catch {
+            if (config.nodeEnv !== "test") {
+              console.error("Purchasing user provisioning compensation failed", { requestId: request.id });
+            }
+          }
+          throw new HttpError(503, "service_unavailable", "Purchasing users are unavailable.");
+        }
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(201).json({
+          id: newUserId,
+          full_name: body.data.full_name,
+          full_name_ar: body.data.full_name_ar ?? null,
+          email: body.data.email,
+          role: "purchasing",
+          organization_id: organizationId.data,
+          must_change_password: true,
+        });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else next(new HttpError(503, "service_unavailable", "Purchasing users are unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/purchasing-users/existing",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const body = existingUserGrantBodySchema.safeParse(request.body);
+        if (!organizationId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.grantExistingPurchasingUser) {
+          throw new HttpError(503, "service_unavailable", "Purchasing users are unavailable.");
+        }
+        await dependencies.managementAdmin.grantExistingPurchasingUser({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          email: body.data.email,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "No existing account was found for that email."));
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Purchasing users are unavailable."));
+      }
+    },
+  );
+  app.patch(
+    "/api/v1/internal-admin/organizations/:organizationId/purchasing-users/:userId",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        const body = reactivateAccessBodySchema.safeParse(request.body);
+        if (!organizationId.success || !userId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.setPurchasingUserActive) {
+          throw new HttpError(503, "service_unavailable", "Purchasing users are unavailable.");
+        }
+        await dependencies.managementAdmin.setPurchasingUserActive({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+          active: true,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Purchasing users are unavailable."));
+      }
+    },
+  );
+  app.delete(
+    "/api/v1/internal-admin/organizations/:organizationId/purchasing-users/:userId",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        if (!organizationId.success || !userId.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.setPurchasingUserActive) {
+          throw new HttpError(503, "service_unavailable", "Purchasing users are unavailable.");
+        }
+        await dependencies.managementAdmin.setPurchasingUserActive({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+          active: false,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Purchasing users are unavailable."));
       }
     },
   );

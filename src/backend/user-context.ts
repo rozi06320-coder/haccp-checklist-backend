@@ -36,6 +36,14 @@ const organizationMembershipSchema = z.object({
   }),
 });
 
+const purchasingMembershipSchema = z.object({
+  active: z.boolean(),
+  organizations: z.object({
+    id: z.uuid(),
+    name: z.string(),
+  }),
+});
+
 export type UserContext = {
   id: string;
   full_name: string | null;
@@ -51,6 +59,11 @@ export type UserContext = {
     id: string;
     name: string;
     role: "organization_manager";
+  }>;
+  purchasing_organizations?: Array<{
+    id: string;
+    name: string;
+    role: "purchasing";
   }>;
 };
 
@@ -114,7 +127,7 @@ export function createUserContextRepository(
   return {
     async getUserContext(userId) {
       return cachePromise(userContextPromises, userId, async () => {
-        const [profileResult, branchResult, organizationResult] = await Promise.all([
+        const [profileResult, branchResult, organizationResult, purchasingResult] = await Promise.all([
           client
             .from("profiles")
             .select("id, full_name, must_change_password, disabled_at")
@@ -133,9 +146,15 @@ export function createUserContextRepository(
             .eq("user_id", userId)
             .eq("role", "organization_manager")
             .eq("active", true),
+          client
+            .from("purchasing_memberships")
+            .select("active, organizations!inner(id, name)")
+            .eq("user_id", userId)
+            .eq("active", true)
+            .eq("organizations.active", true),
         ]);
 
-        if (profileResult.error || branchResult.error || organizationResult.error) {
+        if (profileResult.error || branchResult.error || organizationResult.error || purchasingResult.error) {
           throw new UserContextQueryError();
         }
 
@@ -146,12 +165,15 @@ export function createUserContextRepository(
         const organizations = z
           .array(organizationMembershipSchema)
           .safeParse(organizationResult.data);
+        const purchasingOrganizations = z
+          .array(purchasingMembershipSchema)
+          .safeParse(purchasingResult.data);
 
         if (!profile.success) {
           resolvedUserContexts.set(userId, null);
           return null;
         }
-        if (!branches.success || !organizations.success) {
+        if (!branches.success || !organizations.success || !purchasingOrganizations.success) {
           throw new UserContextQueryError();
         }
 
@@ -170,6 +192,11 @@ export function createUserContextRepository(
             id: membership.organizations.id,
             name: membership.organizations.name,
             role: membership.role,
+          })),
+          purchasing_organizations: purchasingOrganizations.data.map((membership) => ({
+            id: membership.organizations.id,
+            name: membership.organizations.name,
+            role: "purchasing" as const,
           })),
         };
         resolvedUserContexts.set(userId, context);
