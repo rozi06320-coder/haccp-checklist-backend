@@ -1,5 +1,5 @@
 begin;
-select plan(47);
+select plan(51);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000',id,'authenticated','authenticated',id||'@training.invalid','{}','{}',now(),now()
@@ -8,15 +8,17 @@ from unnest(array[
   '17100000-0000-4000-8000-000000000002',
   '17100000-0000-4000-8000-000000000003',
   '17100000-0000-4000-8000-000000000004',
-  '17100000-0000-4000-8000-000000000005'
+  '17100000-0000-4000-8000-000000000005',
+  '17100000-0000-4000-8000-000000000006'
 ]) id;
 update public.profiles set full_name=case id
   when '17100000-0000-4000-8000-000000000001' then 'Training Manager'
   when '17100000-0000-4000-8000-000000000002' then 'Training Supervisor A'
   when '17100000-0000-4000-8000-000000000003' then 'Training Supervisor B'
-  when '17100000-0000-4000-8000-000000000005' then 'Promoted Supervisor Candidate'
-  else 'Other Training Manager' end,must_change_password=false
-where id in('17100000-0000-4000-8000-000000000001','17100000-0000-4000-8000-000000000002','17100000-0000-4000-8000-000000000003','17100000-0000-4000-8000-000000000004','17100000-0000-4000-8000-000000000005');
+	  when '17100000-0000-4000-8000-000000000005' then 'Promoted Supervisor Candidate'
+	  when '17100000-0000-4000-8000-000000000006' then 'Second Promoted Supervisor Candidate'
+	  else 'Other Training Manager' end,must_change_password=false
+where id in('17100000-0000-4000-8000-000000000001','17100000-0000-4000-8000-000000000002','17100000-0000-4000-8000-000000000003','17100000-0000-4000-8000-000000000004','17100000-0000-4000-8000-000000000005','17100000-0000-4000-8000-000000000006');
 
 insert into public.organizations(id,name,slug) values
   ('27100000-0000-4000-8000-000000000001','Training Org','training-org'),
@@ -97,13 +99,14 @@ select is((select cancelled_by_user_id from public.operational_staff_supervisor_
 
 set local role service_role;
 select lives_ok($$select public.start_managed_operational_staff_supervisor_training('17100000-0000-4000-8000-000000000001','27100000-0000-4000-8000-000000000001','57100000-0000-4000-8000-000000000001')$$,'employee can start a new training cycle after cancellation');
-select lives_ok($$select * from public.transfer_operational_staff_branch('17100000-0000-4000-8000-000000000001','27100000-0000-4000-8000-000000000001','57100000-0000-4000-8000-000000000001','67100000-0000-4000-8000-000000000001',current_setting('test.training_team_b')::uuid)$$,'Change Store succeeds with active training designation');
+select lives_ok($$select * from public.transfer_operational_staff_branch('17100000-0000-4000-8000-000000000002','27100000-0000-4000-8000-000000000001','37100000-0000-4000-8000-000000000001','57100000-0000-4000-8000-000000000001','67100000-0000-4000-8000-000000000001','37100000-0000-4000-8000-000000000002',current_setting('test.training_team_b')::uuid)$$,'Change Store succeeds with active training designation');
 reset role;
 select is((select count(*) from public.operational_staff_supervisor_training where operational_staff_id='57100000-0000-4000-8000-000000000001'),2::bigint,'historical cancelled row is preserved with new active row');
 select is((select count(*) from public.operational_staff_supervisor_training where operational_staff_id='57100000-0000-4000-8000-000000000001' and status='training'),1::bigint,'active training remains attached to employee after transfer');
 select is((select branch_id from public.operational_staff where id='57100000-0000-4000-8000-000000000001'),'37100000-0000-4000-8000-000000000002'::uuid,'employee current branch changes after transfer');
 select is((select branch_id_at_start from public.operational_staff_supervisor_training where operational_staff_id='57100000-0000-4000-8000-000000000001' and status='training'),'37100000-0000-4000-8000-000000000001'::uuid,'branch-at-start remains unchanged after transfer');
 select is((public.list_managed_employee_team('17100000-0000-4000-8000-000000000001','27100000-0000-4000-8000-000000000001',null,date_trunc('month',current_date)::date)->'employees'->0->>'supervisor_training_status'),'training','Manager Employee Directory returns training status');
+update public.branch_supervisor_teams set active=false where id='47100000-0000-4000-8000-000000000001';
 
 set local role service_role;
 select lives_ok($$select public.promote_managed_operational_staff_supervisor_training(
@@ -123,21 +126,15 @@ select is((select count(*) from public.operational_staff_assignments where opera
 select is((select closure_reason from public.operational_staff_assignments where id='67100000-0000-4000-8000-000000000002'),'promoted_to_supervisor','promotion records closure reason');
 select is((select operational_roles from public.operational_staff_assignments where id='67100000-0000-4000-8000-000000000002'),array['cashier']::text[],'promotion preserves historical cashier role');
 select is((select count(*) from public.branch_memberships where branch_id='37100000-0000-4000-8000-000000000001' and user_id='17100000-0000-4000-8000-000000000005' and role='branch_manager' and active),1::bigint,'promotion grants branch Supervisor membership');
-select is((select count(*) from public.branch_operational_team_supervisors where supervisor_user_id='17100000-0000-4000-8000-000000000005' and active),0::bigint,'promotion creates no Employee Team assignment');
+select is((select count(*) from public.branch_operational_team_supervisors where operational_team_id=current_setting('test.training_team_a')::uuid and supervisor_user_id='17100000-0000-4000-8000-000000000005' and assignment_role='primary' and active),1::bigint,'promotion makes promoted employee primary Supervisor of their existing unsupervised team');
+select is((select count(*) from public.operational_staff_assignments where operational_team_id=current_setting('test.training_team_a')::uuid and operational_staff_id in('57100000-0000-4000-8000-000000000003','57100000-0000-4000-8000-000000000004') and active),2::bigint,'other staff remain assigned to the same team');
 select is((select count(*) from public.branch_supervisor_teams where supervisor_user_id='17100000-0000-4000-8000-000000000005' and active),0::bigint,'promotion creates no legacy compatibility team');
 select is((select count(*) from public.branch_operational_teams where branch_id='37100000-0000-4000-8000-000000000001'),1::bigint,'promotion creates no fake operational team');
-select ok(not private.actor_can_write_operational_team('17100000-0000-4000-8000-000000000005','37100000-0000-4000-8000-000000000001',current_setting('test.training_team_a')::uuid),'promoted zero-team Supervisor cannot write existing team');
 select ok((public.get_managed_annual_evaluation_workspace('17100000-0000-4000-8000-000000000001','27100000-0000-4000-8000-000000000001',2026,null,null,null,null)->'subjects')@>'[{"subject_type":"supervisor","subject_id":"17100000-0000-4000-8000-000000000005"}]'::jsonb,'promoted Supervisor appears as future Supervisor Annual Evaluation subject');
 select ok((select must_change_password from public.profiles where id='17100000-0000-4000-8000-000000000005'),'promoted Supervisor must change temporary password on first login');
 update public.profiles set must_change_password=false where id='17100000-0000-4000-8000-000000000005';
-create temporary table promoted_supervisor_team on commit drop as
-select * from public.create_supervisor_owned_operational_team(
-  '17100000-0000-4000-8000-000000000005',
-  '37100000-0000-4000-8000-000000000001',
-  'Promoted Supervisor Team'
-);
-select is((select count(*) from public.branch_operational_team_supervisors where operational_team_id=(select team_id from promoted_supervisor_team) and supervisor_user_id='17100000-0000-4000-8000-000000000005' and assignment_role='primary' and active),1::bigint,'promoted Supervisor becomes primary after creating own team');
-select ok(private.actor_can_write_operational_team('17100000-0000-4000-8000-000000000005','37100000-0000-4000-8000-000000000001',(select team_id from promoted_supervisor_team)),'promoted Supervisor can write only their own newly created team');
+select ok(private.actor_can_write_operational_team('17100000-0000-4000-8000-000000000005','37100000-0000-4000-8000-000000000001',current_setting('test.training_team_a')::uuid),'promoted Supervisor can write inherited team after password completion');
+select is((select team_id::text from public.get_supervisor_operational_team('17100000-0000-4000-8000-000000000005','37100000-0000-4000-8000-000000000001',current_date) limit 1),current_setting('test.training_team_a'),'supervisor read path resolves inherited operational team after password completion');
 select is((public.get_managed_supervisor_training_promotion_state('17100000-0000-4000-8000-000000000001','27100000-0000-4000-8000-000000000001','57100000-0000-4000-8000-000000000002')->>'status'),'promoted','promotion preflight returns promoted state for retry');
 set local role service_role;
 select lives_ok($$select public.promote_managed_operational_staff_supervisor_training(
@@ -150,6 +147,19 @@ select lives_ok($$select public.promote_managed_operational_staff_supervisor_tra
 )$$,'same DB promotion finalize is idempotent after success');
 reset role;
 select is((select count(*) from public.operational_staff_supervisor_training where operational_staff_id='57100000-0000-4000-8000-000000000002' and status='promoted'),1::bigint,'promotion retry does not duplicate training rows');
+set local role service_role;
+select throws_ok($$select public.promote_managed_operational_staff_supervisor_training(
+  '17100000-0000-4000-8000-000000000001',
+  '27100000-0000-4000-8000-000000000001',
+  '57100000-0000-4000-8000-000000000003',
+  '17100000-0000-4000-8000-000000000006',
+  'Second Promoted Supervisor',
+  null
+)$$,'23505','operational team already has active primary supervisor','promotion fails safely when original team already has a primary Supervisor');
+reset role;
+select is((select count(*) from public.operational_staff_assignments where operational_staff_id='57100000-0000-4000-8000-000000000003' and active),1::bigint,'failed promotion keeps candidate assignment active');
+select is((select status from public.operational_staff_supervisor_training where operational_staff_id='57100000-0000-4000-8000-000000000003'),'training','failed promotion keeps training row in training status');
+select is((select count(*) from public.branch_operational_team_supervisors where operational_team_id=current_setting('test.training_team_a')::uuid and assignment_role='primary' and active),1::bigint,'failed promotion does not create a second active primary Supervisor');
 
 set local role service_role;
 select throws_ok($$select public.start_managed_operational_staff_supervisor_training('17100000-0000-4000-8000-000000000002','27100000-0000-4000-8000-000000000001','57100000-0000-4000-8000-000000000002')$$,'42501','supervisor training access denied','Supervisor cannot grant training');
