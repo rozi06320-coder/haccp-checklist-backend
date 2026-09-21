@@ -1,5 +1,5 @@
 begin;
-select plan(28);
+select plan(33);
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000',id,'authenticated','authenticated',id||'@example.invalid','{}','{}',now(),now()
 from unnest(array['1a000000-0000-4000-8000-000000000001'::uuid,'1a000000-0000-4000-8000-000000000002','1a000000-0000-4000-8000-000000000003'])id;
@@ -72,6 +72,22 @@ select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-00000
 select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'totals'->>'answered_checks')::bigint,(select sum((row->>'answered_checks')::int)from jsonb_array_elements(public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists')row),'Overview totals answered equals component sum');
 select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists')::text,(public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000002','3a000000-0000-4000-8000-000000000001')->'checklists')::text,'same-branch Supervisors see identical Overview after Hygiene aggregate fix');
 select throws_ok($$select * from public.save_operational_team_hygiene_draft('1a000000-0000-4000-8000-000000000002','3a000000-0000-4000-8000-000000000001',current_setting('test.overview_team_a')::uuid,0,'[]')$$,'42501',null,'Staff Hygiene write scope remains team scoped');
+insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
+values('00000000-0000-0000-0000-000000000000','1a000000-0000-4000-8000-000000000004','authenticated','authenticated','canonical-overview@example.invalid','{}','{}',now(),now());
+update public.profiles set full_name='Canonical Overview Supervisor',must_change_password=false where id='1a000000-0000-4000-8000-000000000004';
+insert into public.organizations(id,name,slug)values('2a000000-0000-4000-8000-000000000002','Canonical Overview Org','canonical-overview-pgtap-org');
+insert into public.branches(id,organization_id,name,code,timezone)values('3a000000-0000-4000-8000-000000000002','2a000000-0000-4000-8000-000000000002','Canonical Overview Branch','COV','Asia/Riyadh');
+insert into public.branch_memberships(branch_id,user_id,role,active)values('3a000000-0000-4000-8000-000000000002','1a000000-0000-4000-8000-000000000004','branch_manager',true);
+insert into public.branch_operational_teams(id,organization_id,branch_id,name,active,legacy_supervisor_team_id)
+values('4a000000-0000-4000-8000-000000000004','2a000000-0000-4000-8000-000000000002','3a000000-0000-4000-8000-000000000002','Canonical Overview Team',true,null);
+insert into public.branch_operational_team_supervisors(id,organization_id,branch_id,operational_team_id,supervisor_user_id,assignment_role,active,created_by)
+values('4a000000-0000-4000-8000-000000000005','2a000000-0000-4000-8000-000000000002','3a000000-0000-4000-8000-000000000002','4a000000-0000-4000-8000-000000000004','1a000000-0000-4000-8000-000000000004','primary',true,'1a000000-0000-4000-8000-000000000004');
+select ok(not exists(select 1 from public.branch_supervisor_teams where supervisor_user_id='1a000000-0000-4000-8000-000000000004' and active),'canonical Overview Supervisor has no active legacy team row');
+select is(pg_catalog.jsonb_array_length(public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000004','3a000000-0000-4000-8000-000000000002')->'checklists'),5,'canonical-only Supervisor Overview returns five checklist rows');
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000004','3a000000-0000-4000-8000-000000000002')->'totals'->>'expected_checks')::bigint,(select sum((row->>'expected_checks')::int)from jsonb_array_elements(public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000004','3a000000-0000-4000-8000-000000000002')->'checklists')row),'canonical-only Supervisor Overview totals reconcile');
+select throws_ok($$select public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000004','3a000000-0000-4000-8000-000000000001')$$,'42501','overview access denied','canonical-only Supervisor unauthorized branch denied');
+update public.profiles set must_change_password=true where id='1a000000-0000-4000-8000-000000000004';
+select throws_ok($$select public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000004','3a000000-0000-4000-8000-000000000002')$$,'42501','overview access denied','canonical-only forced-password Supervisor denied');
 select throws_ok($$select public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000003','3a000000-0000-4000-8000-000000000001')$$,'42501','overview access denied','legacy Staff denied');
 update public.profiles set must_change_password=true where id='1a000000-0000-4000-8000-000000000001';
 select throws_ok($$select public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')$$,'42501','overview access denied','forced-password Supervisor denied');
