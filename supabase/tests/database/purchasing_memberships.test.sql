@@ -1,5 +1,5 @@
 begin;
-select plan(18);
+select plan(21);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated', email, '{}', '{}', now(), now()
@@ -45,15 +45,24 @@ select ok(has_function_privilege('service_role','public.grant_existing_purchasin
 select ok(not has_function_privilege('authenticated','public.grant_existing_purchasing_membership(uuid,uuid,text)','execute'),'authenticated cannot execute Purchasing grant RPC');
 select is((select count(*) from information_schema.columns where table_schema='public' and table_name='purchasing_memberships' and column_name='branch_id'),0::bigint,'Purchasing membership is organization-scoped, not branch-scoped');
 
-select lives_ok($$select * from public.grant_existing_purchasing_membership(
+select throws_ok($$select * from public.grant_existing_purchasing_membership(
  '1d000000-0000-4000-8000-000000000002',
  '2d000000-0000-4000-8000-000000000001',
  ' BUYER@example.invalid '
-)$$,'organization manager grants Purchasing access in managed organization');
+)$$,'42501','purchasing membership access denied','organization manager cannot grant Purchasing access in managed organization');
+select lives_ok($$select * from public.grant_existing_purchasing_membership(
+ '1d000000-0000-4000-8000-000000000001',
+ '2d000000-0000-4000-8000-000000000001',
+ ' BUYER@example.invalid '
+)$$,'internal admin grants Purchasing access in target organization');
 select is((select count(*) from public.purchasing_memberships where organization_id='2d000000-0000-4000-8000-000000000001' and user_id='1d000000-0000-4000-8000-000000000004' and active),1::bigint,'active Purchasing membership created explicitly');
 select is((select count(*) from public.organization_memberships where user_id='1d000000-0000-4000-8000-000000000004'),0::bigint,'Purchasing grant does not create organization manager membership');
 select is((select count(*) from public.maintenance_memberships where user_id='1d000000-0000-4000-8000-000000000004'),0::bigint,'Purchasing grant does not create maintenance membership');
-select is((select count(*) from public.list_managed_purchasing_memberships('1d000000-0000-4000-8000-000000000002','2d000000-0000-4000-8000-000000000001') where email='buyer@example.invalid' and active),1::bigint,'manager lists Purchasing memberships in managed organization');
+select throws_ok($$select * from public.list_managed_purchasing_memberships(
+ '1d000000-0000-4000-8000-000000000002',
+ '2d000000-0000-4000-8000-000000000001'
+)$$,'42501','purchasing membership access denied','organization manager cannot list Purchasing memberships');
+select is((select count(*) from public.list_managed_purchasing_memberships('1d000000-0000-4000-8000-000000000001','2d000000-0000-4000-8000-000000000001') where email='buyer@example.invalid' and active),1::bigint,'internal admin lists Purchasing memberships in target organization');
 select throws_ok($$select * from public.grant_existing_purchasing_membership(
  '1d000000-0000-4000-8000-000000000003',
  '2d000000-0000-4000-8000-000000000001',
@@ -65,12 +74,18 @@ select throws_ok($$select * from public.grant_existing_purchasing_membership(
  'buyer@example.invalid'
 )$$,'42501','purchasing membership access denied','supervisor cannot grant Purchasing access');
 select lives_ok($$select * from public.set_purchasing_membership_active(
- '1d000000-0000-4000-8000-000000000002',
+ '1d000000-0000-4000-8000-000000000001',
  '2d000000-0000-4000-8000-000000000001',
  '1d000000-0000-4000-8000-000000000004',
  false
-)$$,'manager deactivates Purchasing membership');
+)$$,'internal admin deactivates Purchasing membership');
 select ok(not private.has_active_purchasing_membership('1d000000-0000-4000-8000-000000000004','2d000000-0000-4000-8000-000000000001'),'deactivation immediately removes active Purchasing helper access');
+select lives_ok($$select * from public.set_purchasing_membership_active(
+ '1d000000-0000-4000-8000-000000000001',
+ '2d000000-0000-4000-8000-000000000001',
+ '1d000000-0000-4000-8000-000000000004',
+ true
+)$$,'internal admin reactivates Purchasing membership');
 select lives_ok($$select public.finalize_provisioned_purchasing_user(
  '1d000000-0000-4000-8000-000000000001',
  '2d000000-0000-4000-8000-000000000002',

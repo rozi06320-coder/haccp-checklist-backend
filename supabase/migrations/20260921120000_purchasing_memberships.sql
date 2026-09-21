@@ -141,13 +141,12 @@ as $$
   );
 $$;
 
-create policy purchasing_memberships_select_own_or_manager_or_internal_admin
+create policy purchasing_memberships_select_own_or_internal_admin
 on public.purchasing_memberships
 for select
 to authenticated
 using (
   user_id = auth.uid()
-  or private.is_organization_manager(organization_id)
   or private.is_internal_admin(auth.uid())
 );
 
@@ -172,22 +171,7 @@ security definer
 set search_path = ''
 as $$
 begin
-  if not (
-    private.is_internal_admin(actor_user_id)
-    or exists (
-      select 1
-      from public.organization_memberships manager_membership
-      join public.profiles manager_profile on manager_profile.id = manager_membership.user_id
-      join public.organizations organization on organization.id = manager_membership.organization_id
-      where manager_membership.organization_id = target_organization_id
-        and manager_membership.user_id = actor_user_id
-        and manager_membership.role = 'organization_manager'
-        and manager_membership.active
-        and organization.active
-        and manager_profile.disabled_at is null
-        and not manager_profile.must_change_password
-    )
-  ) then
+  if not private.is_internal_admin(actor_user_id) then
     raise exception 'purchasing membership access denied' using errcode = '42501';
   end if;
 
@@ -229,22 +213,7 @@ begin
     raise exception 'invalid existing user email' using errcode = '22023';
   end if;
 
-  if not (
-    private.is_internal_admin(actor_user_id)
-    or exists (
-      select 1
-      from public.organization_memberships manager_membership
-      join public.profiles manager_profile on manager_profile.id = manager_membership.user_id
-      join public.organizations organization on organization.id = manager_membership.organization_id
-      where manager_membership.organization_id = target_organization_id
-        and manager_membership.user_id = actor_user_id
-        and manager_membership.role = 'organization_manager'
-        and manager_membership.active
-        and organization.active
-        and manager_profile.disabled_at is null
-        and not manager_profile.must_change_password
-    )
-  ) then
+  if not private.is_internal_admin(actor_user_id) then
     raise exception 'purchasing membership access denied' using errcode = '42501';
   end if;
 
@@ -305,22 +274,7 @@ as $$
 declare
   saved public.purchasing_memberships%rowtype;
 begin
-  if not (
-    private.is_internal_admin(actor_user_id)
-    or exists (
-      select 1
-      from public.organization_memberships manager_membership
-      join public.profiles manager_profile on manager_profile.id = manager_membership.user_id
-      join public.organizations organization on organization.id = manager_membership.organization_id
-      where manager_membership.organization_id = target_organization_id
-        and manager_membership.user_id = actor_user_id
-        and manager_membership.role = 'organization_manager'
-        and manager_membership.active
-        and organization.active
-        and manager_profile.disabled_at is null
-        and not manager_profile.must_change_password
-    )
-  ) then
+  if not private.is_internal_admin(actor_user_id) then
     raise exception 'purchasing membership access denied' using errcode = '42501';
   end if;
 

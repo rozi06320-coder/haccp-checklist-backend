@@ -72,35 +72,43 @@ afterEach(async () => Promise.all(servers.splice(0).map((server) => new Promise<
 const request = (origin: string, path: string, init: RequestInit = {}) => fetch(`${origin}${path}`, { ...init, headers: { Authorization: "Bearer valid", ...(init.headers ?? {}) } });
 
 describe("Purchasing access API", () => {
-  it("lets an organization manager list, grant, deactivate, and reactivate Purchasing users only in their organization", async () => {
+  it("does not expose manager-side Purchasing management endpoints", async () => {
     const calls: Record<string, unknown> = {};
     const origin = await start(deps({ calls, manager: true }));
-    assert.equal((await request(origin, `/api/v1/management/organizations/${ids.organization}/purchasing-users`)).status, 200);
-    const grant = await request(origin, `/api/v1/management/organizations/${ids.organization}/purchasing-users/existing`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: " buyer@example.invalid " }) });
-    assert.equal(grant.status, 204);
-    assert.deepEqual(calls.grantExistingPurchasingUser, { actorUserId: ids.actor, organizationId: ids.organization, email: "buyer@example.invalid" });
-    assert.equal((await request(origin, `/api/v1/management/organizations/${ids.organization}/purchasing-users/${ids.purchasingUser}`, { method: "DELETE" })).status, 204);
-    assert.deepEqual(calls.setPurchasingUserActive, { actorUserId: ids.actor, organizationId: ids.organization, userId: ids.purchasingUser, active: false });
-    assert.equal((await request(origin, `/api/v1/management/organizations/${ids.organization}/purchasing-users/${ids.purchasingUser}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active: true }) })).status, 204);
-    assert.deepEqual(calls.setPurchasingUserActive, { actorUserId: ids.actor, organizationId: ids.organization, userId: ids.purchasingUser, active: true });
-    assert.equal((await request(origin, `/api/v1/management/organizations/${ids.otherOrganization}/purchasing-users`)).status, 403);
+    assert.equal((await request(origin, `/api/v1/management/organizations/${ids.organization}/purchasing-users`)).status, 404);
+    assert.equal((await request(origin, `/api/v1/management/organizations/${ids.organization}/purchasing-users/existing`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: " buyer@example.invalid " }) })).status, 404);
+    assert.equal((await request(origin, `/api/v1/management/organizations/${ids.organization}/purchasing-users/${ids.purchasingUser}`, { method: "DELETE" })).status, 404);
+    assert.equal((await request(origin, `/api/v1/management/organizations/${ids.organization}/purchasing-users/${ids.purchasingUser}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active: true }) })).status, 404);
+    assert.equal(calls.listPurchasingUsers, undefined);
+    assert.equal(calls.grantExistingPurchasingUser, undefined);
+    assert.equal(calls.setPurchasingUserActive, undefined);
   });
 
-  it("lets verified Internal Admin provision Purchasing users without leaking credentials", async () => {
+  it("lets verified Internal Admin list, provision, assign, deactivate, and reactivate Purchasing users", async () => {
     const calls: Record<string, unknown> = {};
     const origin = await start(deps({ calls, manager: false, internalAdmin: true }));
+    assert.equal((await request(origin, `/api/v1/internal-admin/organizations/${ids.organization}/purchasing-users`)).status, 200);
+    assert.deepEqual(calls.listPurchasingUsers, { actorUserId: ids.actor, organizationId: ids.organization });
     const response = await request(origin, `/api/v1/internal-admin/organizations/${ids.organization}/purchasing-users`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ full_name: "  Buyer  ", email: "BUYER@EXAMPLE.INVALID", temporary_password: "temporary-secret" }) });
     assert.equal(response.status, 201, await response.clone().text());
     assert.deepEqual(await response.json(), { id: ids.purchasingUser, full_name: "Buyer", full_name_ar: null, email: "buyer@example.invalid", role: "purchasing", organization_id: ids.organization, must_change_password: true });
     assert.deepEqual(calls.createAuthUser, { email: "buyer@example.invalid", password: "temporary-secret" });
     assert.deepEqual(calls.finalizePurchasing, { actorUserId: ids.actor, organizationId: ids.organization, newUserId: ids.purchasingUser, fullName: "Buyer", fullNameAr: null });
+    const grant = await request(origin, `/api/v1/internal-admin/organizations/${ids.organization}/purchasing-users/existing`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: " buyer@example.invalid " }) });
+    assert.equal(grant.status, 204);
+    assert.deepEqual(calls.grantExistingPurchasingUser, { actorUserId: ids.actor, organizationId: ids.organization, email: "buyer@example.invalid" });
+    assert.equal((await request(origin, `/api/v1/internal-admin/organizations/${ids.organization}/purchasing-users/${ids.purchasingUser}`, { method: "DELETE" })).status, 204);
+    assert.deepEqual(calls.setPurchasingUserActive, { actorUserId: ids.actor, organizationId: ids.organization, userId: ids.purchasingUser, active: false });
+    assert.equal((await request(origin, `/api/v1/internal-admin/organizations/${ids.organization}/purchasing-users/${ids.purchasingUser}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active: true }) })).status, 204);
+    assert.deepEqual(calls.setPurchasingUserActive, { actorUserId: ids.actor, organizationId: ids.organization, userId: ids.purchasingUser, active: true });
   });
 
   it("denies unauthorized users and invalid Purchasing payloads", async () => {
     const origin = await start(deps({ manager: false, internalAdmin: false }));
-    assert.equal((await fetch(`${origin}/api/v1/management/organizations/${ids.organization}/purchasing-users`)).status, 401);
-    assert.equal((await request(origin, `/api/v1/management/organizations/${ids.organization}/purchasing-users`)).status, 403);
-    assert.equal((await request(origin, `/api/v1/management/organizations/${ids.organization}/purchasing-users/existing`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "bad" }) })).status, 400);
+    assert.equal((await fetch(`${origin}/api/v1/internal-admin/organizations/${ids.organization}/purchasing-users`)).status, 401);
+    assert.equal((await request(origin, `/api/v1/internal-admin/organizations/${ids.organization}/purchasing-users`)).status, 403);
+    const admin = await start(deps({ internalAdmin: true }));
+    assert.equal((await request(admin, `/api/v1/internal-admin/organizations/${ids.organization}/purchasing-users/existing`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: "bad" }) })).status, 400);
     assert.equal((await request(origin, `/api/v1/internal-admin/organizations/${ids.organization}/purchasing-users`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ full_name: "Buyer", email: "buyer@example.invalid", temporary_password: "secret1" }) })).status, 403);
   });
 });
@@ -114,6 +122,9 @@ describe("Purchasing membership migration boundary", () => {
     assert.match(migration, /private\.has_active_purchasing_membership/);
     assert.match(migration, /grant execute on function public\.grant_existing_purchasing_membership\(uuid, uuid, text\) to service_role/);
     assert.match(migration, /grant execute on function public\.set_purchasing_membership_active\(uuid, uuid, uuid, boolean\) to service_role/);
+    const grantRpc = migration.slice(migration.indexOf("create function public.grant_existing_purchasing_membership"), migration.indexOf("create function public.set_purchasing_membership_active"));
+    const lifecycleRpc = migration.slice(migration.indexOf("create function public.set_purchasing_membership_active"), migration.indexOf("create function public.finalize_provisioned_purchasing_user"));
+    assert.doesNotMatch(`${grantRpc}\n${lifecycleRpc}`, /manager_membership|organization_manager/);
     assert.doesNotMatch(migration, /insert into public\.maintenance_memberships|update public\.maintenance_memberships/i);
     assert.doesNotMatch(migration, /insert into public\.organization_memberships|update public\.organization_memberships/i);
     assert.doesNotMatch(migration, /purchase_requests|purchasing_inbox/i);
