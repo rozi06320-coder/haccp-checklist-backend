@@ -106,10 +106,10 @@ revoke execute on function public.create_sales_tracking_online_order_provider(uu
 revoke execute on function public.create_sales_tracking_online_order_provider(uuid, uuid, text) from authenticated;
 grant execute on function public.create_sales_tracking_online_order_provider(uuid, uuid, text) to service_role;
 
-revoke execute on function public.create_supervisor_cold_storage_equipment(uuid, uuid, text, text) from public;
-revoke execute on function public.create_supervisor_cold_storage_equipment(uuid, uuid, text, text) from anon;
-revoke execute on function public.create_supervisor_cold_storage_equipment(uuid, uuid, text, text) from authenticated;
-grant execute on function public.create_supervisor_cold_storage_equipment(uuid, uuid, text, text) to service_role;
+revoke execute on function public.create_supervisor_cold_storage_equipment(uuid, uuid, text, text, text) from public;
+revoke execute on function public.create_supervisor_cold_storage_equipment(uuid, uuid, text, text, text) from anon;
+revoke execute on function public.create_supervisor_cold_storage_equipment(uuid, uuid, text, text, text) from authenticated;
+grant execute on function public.create_supervisor_cold_storage_equipment(uuid, uuid, text, text, text) to service_role;
 
 revoke execute on function public.create_supervisor_operational_staff(uuid, uuid, text, text[]) from public;
 revoke execute on function public.create_supervisor_operational_staff(uuid, uuid, text, text[]) from anon;
