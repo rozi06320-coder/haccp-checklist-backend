@@ -290,7 +290,7 @@ const purchaseLogRow = z.object({
   id: uuid,
   organization_id: uuid.optional(),
   branch_id: uuid,
-  supervisor_team_id: uuid.optional(),
+  supervisor_team_id: uuid.nullable().optional(),
   branch_name: z.string().optional(),
   category: purchaseLogCategory,
   item_name: z.string(),

@@ -976,6 +976,52 @@ describe("cross-branch staff transfer operational adapter", () => {
   });
 });
 
+describe("Purchase Log operational adapter", () => {
+  it("accepts null legacy supervisor-team attribution from branch-owned Purchase Log rows", async () => {
+    const rpc = createServer((request, response) => {
+      assert.equal(request.url, "/rest/v1/rpc/list_branch_purchase_logs");
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify([{
+        id: id.purchaseLog,
+        organization_id: id.organization,
+        branch_id: id.branch,
+        supervisor_team_id: null,
+        branch_name: "Branch",
+        category: "kitchen",
+        item_name: "Modern Supervisor Purchase",
+        quantity: "1",
+        amount: "12.00",
+        before_tax_amount: null,
+        tax_amount: null,
+        vendor_name: "N/A",
+        purchase_date: "2026-08-08",
+        notes: null,
+        payment_status: "unpaid",
+        reimbursement_note: null,
+        reimbursed_at: null,
+        reimbursed_by: null,
+        invoice_storage_path: null,
+        invoice_original_name: null,
+        invoice_number: null,
+        created_by: id.supervisor,
+        created_at: "2026-08-09T00:00:00.000Z",
+        updated_at: "2026-08-09T00:00:00.000Z",
+        revision: "1",
+      }]));
+    });
+    await new Promise<void>((resolve) => rpc.listen(0, "127.0.0.1", resolve));
+    try {
+      const admin = createOperationalAdmin(`http://127.0.0.1:${(rpc.address() as AddressInfo).port}`, "service-key");
+      const result = await admin.listPurchaseLogs(id.supervisor, id.branch);
+      assert.equal(result.purchase_logs[0]?.item_name, "Modern Supervisor Purchase");
+      assert.equal(result.purchase_logs[0]?.amount, 12);
+      assert.equal("supervisor_team_id" in result.purchase_logs[0]!, false);
+    } finally {
+      await new Promise<void>((resolve, reject) => rpc.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+});
+
 describe("Operational Staff removal migration", () => {
   it("soft-deactivates staff, closes assignments, and records a durable reason audit without hard delete", () => {
     const migration = readFileSync(

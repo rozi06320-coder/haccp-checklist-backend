@@ -1,37 +1,57 @@
 begin;
-select plan(72);
+select plan(88);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000',id,'authenticated','authenticated',id||'@example.invalid','{}','{}',now(),now()
 from unnest(array[
  '1f000000-0000-4000-8000-000000000001'::uuid,
  '1f000000-0000-4000-8000-000000000002',
- '1f000000-0000-4000-8000-000000000003'
+ '1f000000-0000-4000-8000-000000000003',
+ '1f000000-0000-4000-8000-000000000004',
+ '1f000000-0000-4000-8000-000000000005',
+ '1f000000-0000-4000-8000-000000000006'
 ]) id;
 update public.profiles set full_name=case id
  when '1f000000-0000-4000-8000-000000000001' then 'Purchase Supervisor'
  when '1f000000-0000-4000-8000-000000000002' then 'Other Purchase Supervisor'
+ when '1f000000-0000-4000-8000-000000000004' then 'Modern Purchase Supervisor'
+ when '1f000000-0000-4000-8000-000000000005' then 'Purchasing Only'
+ when '1f000000-0000-4000-8000-000000000006' then 'Maintenance Only'
  else 'Purchase Manager' end,
  must_change_password=false
 where id in (
  '1f000000-0000-4000-8000-000000000001',
  '1f000000-0000-4000-8000-000000000002',
- '1f000000-0000-4000-8000-000000000003'
+ '1f000000-0000-4000-8000-000000000003',
+ '1f000000-0000-4000-8000-000000000004',
+ '1f000000-0000-4000-8000-000000000005',
+ '1f000000-0000-4000-8000-000000000006'
 );
 insert into public.organizations(id,name,slug)
 values('2f000000-0000-4000-8000-000000000001','Purchase Org','purchase-org');
 insert into public.branches(id,organization_id,name,code,timezone)
-values('3f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001','Purchase Branch','PB','Asia/Riyadh');
+values
+ ('3f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001','Purchase Branch','PB','Asia/Riyadh'),
+ ('3f000000-0000-4000-8000-000000000002','2f000000-0000-4000-8000-000000000001','Other Purchase Branch','OPB','Asia/Riyadh');
 insert into public.organization_memberships(organization_id,user_id,role)
 values('2f000000-0000-4000-8000-000000000001','1f000000-0000-4000-8000-000000000003','organization_manager');
+insert into public.purchasing_memberships(organization_id,user_id,active,created_by,updated_by)
+values('2f000000-0000-4000-8000-000000000001','1f000000-0000-4000-8000-000000000005',true,'1f000000-0000-4000-8000-000000000003','1f000000-0000-4000-8000-000000000003');
+insert into public.maintenance_memberships(organization_id,user_id,active,created_by)
+values('2f000000-0000-4000-8000-000000000001','1f000000-0000-4000-8000-000000000006',true,'1f000000-0000-4000-8000-000000000003');
 insert into public.branch_memberships(branch_id,user_id,role)
 values
  ('3f000000-0000-4000-8000-000000000001','1f000000-0000-4000-8000-000000000001','branch_manager'),
- ('3f000000-0000-4000-8000-000000000001','1f000000-0000-4000-8000-000000000002','branch_manager');
+ ('3f000000-0000-4000-8000-000000000001','1f000000-0000-4000-8000-000000000002','branch_manager'),
+ ('3f000000-0000-4000-8000-000000000001','1f000000-0000-4000-8000-000000000004','branch_manager');
 insert into public.branch_supervisor_teams(id,organization_id,branch_id,supervisor_user_id,company_name)
 values
  ('5f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001','1f000000-0000-4000-8000-000000000001','Purchase Company'),
  ('5f000000-0000-4000-8000-000000000002','2f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001','1f000000-0000-4000-8000-000000000002','Purchase Company');
+insert into public.branch_operational_teams(id,organization_id,branch_id,name,active)
+values('6f000000-0000-4000-8000-000000000004','2f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001','Modern Purchase Team',true);
+insert into public.branch_operational_team_supervisors(organization_id,branch_id,operational_team_id,supervisor_user_id,assignment_role,created_by)
+values('2f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001','6f000000-0000-4000-8000-000000000004','1f000000-0000-4000-8000-000000000004','primary','1f000000-0000-4000-8000-000000000004');
 
 select has_table('public','branch_purchase_logs','branch purchase logs table exists');
 select has_column('public','branch_purchase_logs','invoice_storage_path','purchase logs store invoice storage path');
@@ -216,6 +236,74 @@ select ok((select invoice_number is null from public.branch_purchase_logs where 
 select is((select count(*)::int from public.list_managed_purchase_logs(
  '1f000000-0000-4000-8000-000000000003','2f000000-0000-4000-8000-000000000001',null,'food_item',null,null,null)),
  1,'manager can filter read-only Purchase Logs by Food Item');
+select lives_ok($$select * from public.create_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000004','3f000000-0000-4000-8000-000000000001',
+ jsonb_build_object('category','kitchen','item_name','Modern Supervisor Purchase','quantity','1','amount','12.00','purchase_date','2026-08-08'))$$,
+ 'modern branch supervisor without legacy team can create purchase log');
+select ok((select supervisor_team_id is null from public.branch_purchase_logs where item_name='Modern Supervisor Purchase'),'modern purchase log stores null legacy supervisor team attribution');
+select is((select count(*)::int from public.list_branch_purchase_logs(
+ '1f000000-0000-4000-8000-000000000004','3f000000-0000-4000-8000-000000000001') where item_name='Modern Supervisor Purchase'),
+ 1,'modern branch supervisor can list their branch purchase log');
+select is((select count(*) from public.branch_supervisor_teams where supervisor_user_id='1f000000-0000-4000-8000-000000000004'),0::bigint,'purchase log compatibility does not create a legacy supervisor team');
+select is((select count(*) from public.branch_operational_team_supervisors where supervisor_user_id='1f000000-0000-4000-8000-000000000004' and operational_team_id='6f000000-0000-4000-8000-000000000004' and active),1::bigint,'canonical supervisor assignment remains intact');
+select throws_ok($$select * from public.list_branch_purchase_logs(
+ '1f000000-0000-4000-8000-000000000004','3f000000-0000-4000-8000-000000000002')$$,'42501','purchase log access denied','modern supervisor cannot list another branch');
+select throws_ok($$select * from public.create_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000005','3f000000-0000-4000-8000-000000000001',
+ jsonb_build_object('category','kitchen','item_name','Purchasing Bypass','quantity','1','amount','1','purchase_date','2026-08-08'))$$,'42501','purchase log access denied','purchasing-only user cannot create Purchase Log');
+select throws_ok($$select * from public.create_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000006','3f000000-0000-4000-8000-000000000001',
+ jsonb_build_object('category','kitchen','item_name','Maintenance Bypass','quantity','1','amount','1','purchase_date','2026-08-08'))$$,'42501','purchase log access denied','maintenance-only user cannot create Purchase Log');
+create temp table modern_purchase_log_ids as
+select id as purchase_log_id, revision as purchase_revision
+from public.branch_purchase_logs
+where item_name='Modern Supervisor Purchase'
+limit 1;
+grant select on modern_purchase_log_ids to service_role;
+set local role service_role;
+select lives_ok($$select * from public.update_branch_purchase_log_payment_status(
+ '1f000000-0000-4000-8000-000000000004',
+ '3f000000-0000-4000-8000-000000000001',
+ (select purchase_log_id from modern_purchase_log_ids limit 1),
+ 'reimbursed',
+ 'Modern supervisor paid'
+)$$,'modern null-attribution purchase log can be reimbursed');
+reset role;
+select ok((select supervisor_team_id is null and payment_status='reimbursed' and reimbursed_by='1f000000-0000-4000-8000-000000000004' from public.branch_purchase_logs where id=(select purchase_log_id from modern_purchase_log_ids limit 1)),'modern reimbursement preserves null legacy team and records actor');
+select lives_ok($$select * from public.create_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000004','3f000000-0000-4000-8000-000000000001',
+ jsonb_build_object('category','kitchen','item_name','Modern Editable Purchase','quantity','1','amount','14.00','purchase_date','2026-08-08'))$$,
+ 'modern branch supervisor creates second editable purchase log');
+create temp table modern_editable_purchase_log_ids as
+select id as purchase_log_id, revision as purchase_revision
+from public.branch_purchase_logs
+where item_name='Modern Editable Purchase'
+limit 1;
+grant select on modern_editable_purchase_log_ids to service_role;
+set local role service_role;
+select lives_ok($$select * from public.update_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000004',
+ '3f000000-0000-4000-8000-000000000001',
+ (select purchase_log_id from modern_editable_purchase_log_ids limit 1),
+ (select purchase_revision from modern_editable_purchase_log_ids limit 1),
+ 'Correcting modern purchase amount',
+ jsonb_build_object('category','kitchen','item_name','Modern Editable Purchase Edited','quantity','2','before_tax_amount','20.00','tax_amount','3.00','amount','23.00','purchase_date','2026-08-09')
+)$$,'modern null-attribution unpaid purchase log can be edited');
+reset role;
+select ok((select supervisor_team_id is null and revision=2 and amount=23.00::numeric from public.branch_purchase_logs where item_name='Modern Editable Purchase Edited'),'modern edit keeps null legacy team and increments revision');
+select ok((select exists(select 1 from public.branch_purchase_log_events where purchase_log_id=(select purchase_log_id from modern_editable_purchase_log_ids limit 1) and event_type='edited')),'modern edit writes an audit event');
+set local role service_role;
+select lives_ok($$select * from public.soft_delete_branch_purchase_log(
+ '1f000000-0000-4000-8000-000000000004',
+ '3f000000-0000-4000-8000-000000000001',
+ (select purchase_log_id from modern_editable_purchase_log_ids limit 1),
+ 2,
+ 'wrong_entry',
+ 'Wrong modern branch purchase entry'
+)$$,'modern null-attribution unpaid purchase log can be soft deleted');
+reset role;
+select is((select count(*)::int from public.list_branch_purchase_logs(
+ '1f000000-0000-4000-8000-000000000004','3f000000-0000-4000-8000-000000000001') where item_name='Modern Editable Purchase Edited'),0,'soft-deleted modern purchase is excluded from active supervisor list');
 
 create temp table purchase_log_edit_ids as
 select
@@ -236,7 +324,7 @@ select lives_ok($$select * from public.update_branch_purchase_log(
 )$$,'unpaid purchase log can be edited with a correction reason');
 reset role;
 select ok((select item_name='Taxed Purchase Edited' and amount=23.00::numeric and revision=2 from public.branch_purchase_logs where item_name='Taxed Purchase Edited'),'edit updates monetary fields and increments revision');
-select ok((select old_values->>'item_name'='Taxed Purchase' and new_values->>'item_name'='Taxed Purchase Edited' from public.branch_purchase_log_events where event_type='edited' and reason_code='correction' limit 1),'edit audit event records old and new values');
+select ok((select old_values->>'item_name'='Taxed Purchase' and new_values->>'item_name'='Taxed Purchase Edited' from public.branch_purchase_log_events where purchase_log_id=(select edit_purchase_log_id from purchase_log_edit_ids limit 1) and event_type='edited' and reason_code='correction' limit 1),'edit audit event records old and new values');
 select throws_ok($$select * from public.update_branch_purchase_log(
  '1f000000-0000-4000-8000-000000000001',
  '3f000000-0000-4000-8000-000000000001',
