@@ -36,6 +36,10 @@ const rpcPurchase = {
   quantity: "2",
   unit: "meter",
   amount: "35.50",
+  invoice_number: "INV-M-001",
+  before_tax_amount: "30.00",
+  tax_amount: "5.50",
+  total_amount: "35.50",
   vendor_name: "Parts Shop",
   purchase_date: "2026-09-02",
   notes: "Urgent",
@@ -152,6 +156,10 @@ describe("Maintenance Purchase History public response boundary", () => {
     assert.equal(purchase.branch_name, "Main Branch");
     assert.equal(purchase.issue_title, "Freezer door");
     assert.equal(purchase.payment_method, "cash");
+    assert.equal(purchase.invoice_number, "INV-M-001");
+    assert.equal(purchase.before_tax_amount, 30);
+    assert.equal(purchase.tax_amount, 5.5);
+    assert.equal(purchase.total_amount, 35.5);
     assert.equal(purchase.reimbursed_by, null);
     assert.match(String(purchase.receipt_url), /\/storage\/v1\/object\/sign\//);
     assert.equal("storage_path" in (purchase.attachments as Array<Record<string, unknown>>)[0], false);
@@ -172,6 +180,10 @@ describe("Maintenance Purchase History public response boundary", () => {
     assert.equal("maintenance_user_id" in body.maintenance_purchases[0], false);
     assert.equal("receipt_storage_path" in body.maintenance_purchases[0], false);
     assert.equal(body.maintenance_purchases[0]?.maintenance_user_name, "Maintenance User");
+    assert.equal(body.maintenance_purchases[0]?.invoice_number, "INV-M-001");
+    assert.equal(body.maintenance_purchases[0]?.before_tax_amount, 30);
+    assert.equal(body.maintenance_purchases[0]?.tax_amount, 5.5);
+    assert.equal(body.maintenance_purchases[0]?.total_amount, 35.5);
     assert.equal(body.total_count, 1);
   });
 

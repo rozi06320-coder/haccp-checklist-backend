@@ -88,7 +88,7 @@ describe("authoritative Maintenance Vendor/Service reader compatibility", () => 
 
     assert.match(operational, /createMaintenancePurchase\(input:[\s\S]*?payload:CanonicalMaintenancePurchasePayload/);
     assert.match(operational, /maintenancePurchaseListRpcRow=z\.object\([^;]*category:maintenancePurchaseReadCategory[^;]*unit:maintenancePurchaseReadUnit/);
-    assert.match(operational, /managedMaintenancePurchaseRpcRow=z\.object\([^;]*category:maintenancePurchaseReadCategory[^;]*unit:maintenancePurchaseReadUnit/);
+    assert.match(operational, /managedMaintenancePurchaseRpcRow\s*=\s*z\.object\([^;]*category:\s*maintenancePurchaseReadCategory[^;]*unit:\s*maintenancePurchaseReadUnit/);
   });
 
   it("uses the Phase B canonical payload for both hashing and the v2 RPC", async () => {
@@ -97,7 +97,7 @@ describe("authoritative Maintenance Vendor/Service reader compatibility", () => 
       source("src/backend/operational.ts"),
     ]);
     const route = app.slice(app.indexOf('app.post("/api/v1/maintenance/purchases/general"'), app.indexOf('app.patch("/api/v1/maintenance/purchases/'));
-    assert.match(route, /canonicalizeMaintenancePurchasePayload\(\{issueId:null,payload:body\.data\}\)/);
+    assert.match(route, /canonicalizeMaintenancePurchasePayload\(\{issueId:null,payload:maintenancePurchaseWriterPayload\(body\.data\)\}\)/);
     assert.match(route, /payload:canonicalPayload/);
     const writer = operational.slice(operational.indexOf("async createMaintenancePurchase(input)"), operational.indexOf("async reimburseMaintenancePurchase(input)"));
     assert.match(writer, /const canonicalPayload=input\.payload/);

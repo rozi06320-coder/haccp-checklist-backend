@@ -1,5 +1,5 @@
 begin;
-select plan(37);
+select plan(50);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000',id,'authenticated','authenticated',id||'@maintenance-vendor-service.invalid','{}','{}',now(),now()
@@ -62,6 +62,27 @@ select ok(
   'replacement enum and shape constraints are installed and validated'
 );
 
+select ok(
+  (select count(*) = 4
+   from information_schema.columns
+   where table_schema = 'public'
+     and table_name = 'maintenance_purchase_logs'
+     and column_name in ('invoice_number','before_tax_amount','tax_amount','total_amount')),
+  'maintenance purchase money breakdown columns exist'
+);
+
+select ok(
+  (select count(*) = 2
+   from pg_constraint
+   where conrelid = 'public.maintenance_purchase_logs'::regclass
+     and conname in (
+       'maintenance_purchase_invoice_number_check',
+       'maintenance_purchase_money_breakdown_check'
+     )
+     and convalidated),
+  'invoice and money breakdown constraints are installed and validated'
+);
+
 set local role service_role;
 select lives_ok($$select * from public.create_supervisor_maintenance_issue_v2(
   'a2000000-0000-4000-8000-000000000001','c2000000-0000-4000-8000-000000000001',
@@ -76,6 +97,54 @@ select lives_ok($$select * from public.create_maintenance_purchase_log_v2(
 )$$,'existing general-other purchase remains valid');
 reset role;
 select is((select purchase_scope||':'||destination from public.maintenance_purchase_logs where id='f2000000-0000-4000-8000-000000000001'),'other:Warehouse Store','existing general-other destination remains normalized');
+select is((select before_tax_amount::text||':'||tax_amount::text||':'||total_amount::text from public.maintenance_purchase_logs where id='f2000000-0000-4000-8000-000000000001'),'40:0:40','legacy amount-only payload stores zero-tax breakdown');
+
+set local role service_role;
+select lives_ok($$select * from public.create_maintenance_purchase_log_v2(
+  'a2000000-0000-4000-8000-000000000002',null,
+  jsonb_build_object('purchase_id','f2000000-0000-4000-8000-000000000040','purchase_type','general','purchase_scope','other','destination','Money test','category','general_supplies','item_name','Split money','quantity',1,'unit','pcs','amount',115,'invoice_number',' INV-M-040 ','before_tax_amount',100,'tax_amount',15,'total_amount',115,'vendor_name','Vendor','purchase_date',current_date,'payment_method','cash')
+)$$,'split maintenance purchase money succeeds');
+reset role;
+select is((select invoice_number||':'||before_tax_amount::text||':'||tax_amount::text||':'||total_amount::text||':'||amount::text from public.maintenance_purchase_logs where id='f2000000-0000-4000-8000-000000000040'),'INV-M-040:100:15:115:115','split maintenance purchase money is persisted consistently');
+
+set local role service_role;
+select lives_ok($$select * from public.create_maintenance_purchase_log_v2(
+  'a2000000-0000-4000-8000-000000000002',null,
+  jsonb_build_object('purchase_id','f2000000-0000-4000-8000-000000000041','purchase_type','general','purchase_scope','other','destination','Money test','category','general_supplies','item_name','Decimal split','quantity',1,'unit','pcs','amount','114.99','before_tax_amount','99.99','tax_amount','15.00','total_amount','114.99','vendor_name','Vendor','purchase_date',current_date,'payment_method','cash')
+)$$,'99.99 plus 15.00 persists as 114.99');
+reset role;
+select is((select before_tax_amount::text||':'||tax_amount::text||':'||total_amount::text||':'||amount::text from public.maintenance_purchase_logs where id='f2000000-0000-4000-8000-000000000041'),'99.99:15.00:114.99:114.99','decimal split is stored without floating-point drift');
+
+set local role service_role;
+select lives_ok($$select * from public.create_maintenance_purchase_log_v2(
+  'a2000000-0000-4000-8000-000000000002',null,
+  jsonb_build_object('purchase_id','f2000000-0000-4000-8000-000000000042','purchase_type','general','purchase_scope','other','destination','Money test','category','general_supplies','item_name','Zero split','quantity',1,'unit','pcs','amount','0','before_tax_amount','0','tax_amount','0','total_amount','0','vendor_name','Vendor','purchase_date',current_date,'payment_method','cash')
+)$$,'0 plus 0 persists as 0');
+reset role;
+
+set local role service_role;
+select lives_ok($$select * from public.create_maintenance_purchase_log_v2(
+  'a2000000-0000-4000-8000-000000000002',null,
+  jsonb_build_object('purchase_id','f2000000-0000-4000-8000-000000000043','purchase_type','general','purchase_scope','other','destination','Money test','category','general_supplies','item_name','Cent split','quantity',1,'unit','pcs','amount','0.02','before_tax_amount','0.01','tax_amount','0.01','total_amount','0.02','vendor_name','Vendor','purchase_date',current_date,'payment_method','cash')
+)$$,'0.01 plus 0.01 persists as 0.02');
+reset role;
+
+select throws_ok($$select * from public.create_maintenance_purchase_log_v2(
+  'a2000000-0000-4000-8000-000000000002',null,
+  jsonb_build_object('purchase_type','general','purchase_scope','other','destination','Money test','category','general_supplies','item_name','Bad split','quantity',1,'unit','pcs','amount',115,'before_tax_amount',100,'tax_amount',10,'total_amount',115,'vendor_name','Vendor','purchase_date',current_date)
+)$$,'22023','invalid maintenance purchase payload','incorrect split total is rejected');
+select throws_ok($$select * from public.create_maintenance_purchase_log_v2(
+  'a2000000-0000-4000-8000-000000000002',null,
+  jsonb_build_object('purchase_type','general','purchase_scope','other','destination','Money test','category','general_supplies','item_name','Negative split','quantity',1,'unit','pcs','amount','0','before_tax_amount','-1','tax_amount','1','total_amount','0','vendor_name','Vendor','purchase_date',current_date)
+)$$,'22023','invalid maintenance purchase payload','negative money values are rejected');
+select throws_ok($$select * from public.create_maintenance_purchase_log_v2(
+  'a2000000-0000-4000-8000-000000000002',null,
+  jsonb_build_object('purchase_type','general','purchase_scope','other','destination','Money test','category','general_supplies','item_name','Over precise split','quantity',1,'unit','pcs','amount','10.005','before_tax_amount','10.005','tax_amount','0','total_amount','10.005','vendor_name','Vendor','purchase_date',current_date)
+)$$,'22023','invalid maintenance purchase payload','over-precise money values are rejected');
+select throws_ok($$select * from public.create_maintenance_purchase_log_v2(
+  'a2000000-0000-4000-8000-000000000002',null,
+  jsonb_build_object('purchase_type','general','purchase_scope','other','destination','Money test','category','general_supplies','item_name','Missing split field','quantity',1,'unit','pcs','amount','10','before_tax_amount','10','total_amount','10','vendor_name','Vendor','purchase_date',current_date)
+)$$,'22023','invalid maintenance purchase payload','blank or missing split fields are rejected');
 
 set local role service_role;
 select lives_ok($$select * from public.create_maintenance_purchase_log_v2(

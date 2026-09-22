@@ -6,7 +6,7 @@ import { after, before, describe, it } from "node:test";
 import { createApp } from "./app";
 import { loadBackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
-import { branchLocalDate, createOperationalAdmin, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, parseMaintenanceUndefinedObjectIdentity } from "./operational";
+import { branchLocalDate, canonicalizeMaintenancePurchasePayload, createOperationalAdmin, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, parseMaintenanceUndefinedObjectIdentity } from "./operational";
 import type { UserContext } from "./user-context";
 
 const id = {
@@ -625,7 +625,7 @@ describe("managed maintenance operational adapter", () => {
       response.setHeader("content-type","application/json");
       response.end(JSON.stringify([{
         id:id.purchaseLog,organization_id:id.organization,branch_id:id.branch,purchase_type:"issue",purchase_scope:"branch",destination:null,category:"spare_parts",maintenance_issue_id:id.maintenanceIssue,maintenance_user_id:id.staffAccount,
-        item_name:"Replacement seal",quantity:"2",unit:"meter",amount:"35.50",vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null,
+        item_name:"Replacement seal",quantity:"2",unit:"meter",amount:"35.50",invoice_number:"INV-M-001",before_tax_amount:"30.00",tax_amount:"5.50",total_amount:"35.50",vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null,
         payment_status:request.url?.includes("reimburse")?"reimbursed":"unpaid",reimbursement_note:request.url?.includes("reimburse")?"Paid":null,
         reimbursed_at:request.url?.includes("reimburse")?"2026-08-12T12:00:00.000Z":null,receipt_storage_path:null,receipt_original_name:null,attachments:[],
         created_at:"2026-08-12T10:00:00.000Z",updated_at:"2026-08-12T12:00:00.000Z",
@@ -634,7 +634,7 @@ describe("managed maintenance operational adapter", () => {
     await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
     try{
       const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
-      const created=await admin.createMaintenancePurchase?.({actorUserId:id.staffAccount,issueId:id.maintenanceIssue,payload:{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null},diagnostics:{requestId:"request-success",log:(event)=>diagnostics.push(event)}});
+      const created=await admin.createMaintenancePurchase?.({actorUserId:id.staffAccount,issueId:id.maintenanceIssue,payload:{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,invoice_number:"INV-M-001",before_tax_amount:30,tax_amount:5.5,total_amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null},diagnostics:{requestId:"request-success",log:(event)=>diagnostics.push(event)}});
       assert.equal((created as{maintenance_purchase:{payment_status:string}}).maintenance_purchase.payment_status,"unpaid");
       const reimbursed=await admin.reimburseMaintenancePurchase?.({actorUserId:id.staffAccount,purchaseId:id.purchaseLog,reimbursementNote:"Paid"});
       assert.equal((reimbursed as{maintenance_purchase:{payment_status:string}}).maintenance_purchase.payment_status,"reimbursed");
@@ -642,7 +642,7 @@ describe("managed maintenance operational adapter", () => {
       assert.equal(requests[0]?.body.actor_user_id,id.staffAccount);
       assert.equal(requests[0]?.body.target_issue_id,id.maintenanceIssue);
       assert.match(String((requests[0]?.body.payload as {purchase_id:string}).purchase_id),/^[0-9a-f-]{36}$/);
-      assert.deepEqual({...(requests[0]?.body.payload as Record<string,unknown>),purchase_id:"<uuid>"},{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null,purchase_id:"<uuid>",idempotency_key:null,request_hash:null,receipt_storage_path:null,receipt_original_name:null,attachments:[]});
+      assert.deepEqual({...(requests[0]?.body.payload as Record<string,unknown>),purchase_id:"<uuid>"},{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,invoice_number:"INV-M-001",before_tax_amount:30,tax_amount:5.5,total_amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null,purchase_id:"<uuid>",idempotency_key:null,request_hash:null,receipt_storage_path:null,receipt_original_name:null,attachments:[]});
       assert.deepEqual(requests[1],{path:"/rest/v1/rpc/reimburse_maintenance_purchase_log_v2",body:{actor_user_id:id.staffAccount,target_purchase_id:id.purchaseLog,new_note:"Paid"}});
       assert.deepEqual(diagnostics.map((event)=>({stage:event.stage,outcome:event.outcome})),[
         {stage:"evidence_validation",outcome:"start"},
@@ -655,6 +655,10 @@ describe("managed maintenance operational adapter", () => {
         {stage:"response_parse",outcome:"success"},
       ]);
     }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("rejects Maintenance purchase split totals before adapter RPC calls",async()=>{
+    assert.throws(()=>canonicalizeMaintenancePurchasePayload({issueId:id.maintenanceIssue,payload:{category:"spare_parts",item_name:"Replacement seal",quantity:2,unit:"meter",amount:35.5,before_tax_amount:30,tax_amount:4,total_amount:35.5,vendor_name:"Parts Shop",purchase_date:"2026-08-12",notes:null}}),OperationalInputError);
   });
 
   it("emits Maintenance purchase RPC diagnostics with safe error codes",async()=>{

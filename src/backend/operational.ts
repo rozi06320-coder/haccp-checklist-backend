@@ -475,6 +475,10 @@ export type MaintenancePurchaseWriterPayload={
   quantity:string|number;
   unit:z.infer<typeof maintenancePurchaseUnit>;
   amount:string|number;
+  invoice_number?:string|null;
+  before_tax_amount?:string|number|null;
+  tax_amount?:string|number|null;
+  total_amount?:string|number|null;
   vendor_name?:string|null;
   purchase_date:string;
   notes?:string|null;
@@ -493,9 +497,18 @@ export function canonicalizeMaintenancePurchasePayload(input:{issueId?:string|nu
   const payload=input.payload;
   const serviceCategory=payload.category==="service",serviceUnit=payload.unit==="service";
   if(serviceCategory!==serviceUnit)throw new OperationalInputError();
+  const quantity=Number(payload.quantity),amount=Number(payload.amount);
+  const beforeTax=payload.before_tax_amount==null?amount:Number(payload.before_tax_amount);
+  const tax=payload.tax_amount==null?0:Number(payload.tax_amount);
+  const total=payload.total_amount==null?amount:Number(payload.total_amount);
+  if(!Number.isFinite(quantity)||quantity<=0||!Number.isFinite(amount)||amount<0
+    ||!Number.isFinite(beforeTax)||beforeTax<0||!Number.isFinite(tax)||tax<0||!Number.isFinite(total)||total<0
+    ||Math.round((beforeTax+tax)*100)!==Math.round(total*100)
+    ||Math.round(amount*100)!==Math.round(total*100))throw new OperationalInputError();
+  const moneyFields={amount,invoice_number:normalizeMaintenancePurchaseCanonicalText(payload.invoice_number),before_tax_amount:beforeTax,tax_amount:tax,total_amount:total};
   if(input.issueId){
     if(serviceCategory)throw new OperationalInputError();
-    return payload;
+    return{...payload,quantity,...moneyFields};
   }
   if(payload.purchase_type==="issue")throw new OperationalInputError();
   const scope=payload.purchase_scope??"other";
@@ -507,8 +520,6 @@ export function canonicalizeMaintenancePurchasePayload(input:{issueId?:string|nu
   }
   const destination=scope==="branch"?null:scope==="office"?"Office":normalizeMaintenancePurchaseCanonicalText(payload.destination);
   if(scope==="other"&&!destination)throw new OperationalInputError();
-  const quantity=Number(payload.quantity),amount=Number(payload.amount);
-  if(!Number.isFinite(quantity)||quantity<=0||!Number.isFinite(amount)||amount<0)throw new OperationalInputError();
   const vendorName=normalizeMaintenancePurchaseCanonicalText(payload.vendor_name);
   if(serviceCategory&&(quantity!==1||!vendorName||/^n\/a$/iu.test(vendorName)))throw new OperationalInputError();
   return{
@@ -520,7 +531,7 @@ export function canonicalizeMaintenancePurchasePayload(input:{issueId?:string|nu
     item_name:payload.item_name,
     quantity,
     unit:payload.unit,
-    amount,
+    ...moneyFields,
     vendor_name:vendorName,
     purchase_date:payload.purchase_date,
     notes:payload.notes??null,
@@ -1047,7 +1058,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   }
   const maintenanceIssuePhotoRpcRow=z.object({id:uuid,maintenance_issue_id:uuid,attachment_type:z.enum(["issue","repair"]),storage_path:z.string(),original_filename:optionalStaffText,mime_type:optionalStaffText,size_bytes:z.union([z.number(),z.string()]).nullable(),attachment_position:z.number().int().min(1).max(MAX_MAINTENANCE_ISSUE_PHOTOS).optional().default(1),created_at:z.string()}).strict();
   const maintenancePurchaseAttachmentRpcRow=z.object({id:uuid,storage_path:z.string(),original_filename:optionalStaffText,mime_type:optionalStaffText,size_bytes:z.union([z.number(),z.string()]).nullable(),position:z.number().int().min(1).max(MAX_MAINTENANCE_PURCHASE_PHOTOS)}).strict();
-  const maintenancePurchaseListRpcRow=z.object({id:uuid,branch_id:uuid.nullable(),purchase_type:maintenancePurchaseType,purchase_scope:maintenancePurchaseScope,destination:optionalStaffText,category:maintenancePurchaseReadCategory,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseReadUnit,amount:z.union([z.number(),z.string()]),vendor_name:z.string(),purchase_date:z.string(),notes:optionalStaffText,payment_status:purchaseLogPaymentStatus,payment_method:maintenancePaymentMethod.nullable().optional().default(null),reimbursement_note:optionalStaffText,reimbursed_at:z.string().nullable(),reimbursed_by:uuid.nullable().optional().default(null),receipt_storage_path:optionalStaffText,receipt_original_name:optionalStaffText,attachments:z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
+  const maintenancePurchaseListRpcRow=z.object({id:uuid,branch_id:uuid.nullable(),purchase_type:maintenancePurchaseType,purchase_scope:maintenancePurchaseScope,destination:optionalStaffText,category:maintenancePurchaseReadCategory,item_name:z.string(),quantity:z.union([z.number(),z.string()]),unit:maintenancePurchaseReadUnit,amount:z.union([z.number(),z.string()]),invoice_number:optionalStaffText.optional().default(null),before_tax_amount:z.union([z.number(),z.string()]).nullable().optional().default(null),tax_amount:z.union([z.number(),z.string()]).nullable().optional().default(null),total_amount:z.union([z.number(),z.string()]).nullable().optional().default(null),vendor_name:z.string(),purchase_date:z.string(),notes:optionalStaffText,payment_status:purchaseLogPaymentStatus,payment_method:maintenancePaymentMethod.nullable().optional().default(null),reimbursement_note:optionalStaffText,reimbursed_at:z.string().nullable(),reimbursed_by:uuid.nullable().optional().default(null),receipt_storage_path:optionalStaffText,receipt_original_name:optionalStaffText,attachments:z.array(maintenancePurchaseAttachmentRpcRow).max(MAX_MAINTENANCE_PURCHASE_PHOTOS).default([]),created_at:z.string(),updated_at:z.string()}).strict();
   const maintenancePurchaseMutationRpcRow=maintenancePurchaseListRpcRow.extend({organization_id:uuid,maintenance_issue_id:uuid.nullable(),maintenance_user_id:uuid}).strict();
   type MaintenancePurchaseSigningTask =
     | { kind: 'attachment'; rowIndex: number; attachmentIndex: number; path: string }
@@ -1059,6 +1070,9 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       receipt_original_name?: string | null;
       quantity: number | string;
       amount: number | string;
+      before_tax_amount?: number | string | null;
+      tax_amount?: number | string | null;
+      total_amount?: number | string | null;
       attachments: Array<{
         id: string;
         storage_path: string;
@@ -1130,6 +1144,9 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         attachments,
         quantity: Number(row.quantity),
         amount: Number(row.amount),
+        before_tax_amount: row.before_tax_amount == null ? null : Number(row.before_tax_amount),
+        tax_amount: row.tax_amount == null ? null : Number(row.tax_amount),
+        total_amount: row.total_amount == null ? Number(row.amount) : Number(row.total_amount),
         receipt_url: receiptUrl,
         receipt_original_name: receiptOriginalName,
       };
@@ -1138,7 +1155,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
 
   async function normalizeMaintenancePurchaseRows(rows: z.infer<typeof maintenancePurchaseListRpcRow>[]) {
     const signedRows = await signMaintenancePurchaseRowsWithConcurrency(rows);
-    return signedRows.map(({ row, attachments, quantity, amount, receipt_url, receipt_original_name }) => {
+    return signedRows.map(({ row, attachments, quantity, amount, before_tax_amount, tax_amount, total_amount, receipt_url, receipt_original_name }) => {
       const { receipt_storage_path, ...safe } = row;
       void receipt_storage_path;
       return {
@@ -1146,6 +1163,9 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         attachments,
         quantity,
         amount,
+        before_tax_amount,
+        tax_amount,
+        total_amount,
         receipt_url,
         receipt_original_name,
       };
@@ -1185,6 +1205,10 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     quantity: z.union([z.number(), z.string()]),
     unit: maintenancePurchaseReadUnit,
     amount: z.union([z.number(), z.string()]),
+    invoice_number: optionalStaffText.optional().default(null),
+    before_tax_amount: z.union([z.number(), z.string()]).nullable().optional().default(null),
+    tax_amount: z.union([z.number(), z.string()]).nullable().optional().default(null),
+    total_amount: z.union([z.number(), z.string()]).nullable().optional().default(null),
     vendor_name: z.string(),
     purchase_date: z.string(),
     notes: optionalStaffText,
@@ -1202,7 +1226,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   async function normalizeManagedMaintenancePurchases(rows: unknown[]) {
     const parsed = z.array(managedMaintenancePurchaseRpcRow).max(1000).parse(rows);
     const signedRows = await signMaintenancePurchaseRowsWithConcurrency(parsed);
-    return signedRows.map(({ row, attachments, quantity, amount, receipt_url, receipt_original_name }) => {
+    return signedRows.map(({ row, attachments, quantity, amount, before_tax_amount, tax_amount, total_amount, receipt_url, receipt_original_name }) => {
       const { organization_id, receipt_storage_path, ...safe } = row;
       void organization_id;
       void receipt_storage_path;
@@ -1211,6 +1235,9 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         attachments,
         quantity,
         amount,
+        before_tax_amount,
+        tax_amount,
+        total_amount,
         receipt_url,
         receipt_original_name,
       };
@@ -1225,7 +1252,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       has_more: z.boolean(),
     }).strict().parse(raw);
     const signedRows = await signMaintenancePurchaseRowsWithConcurrency(parsed.maintenance_purchases);
-    const purchases = signedRows.map(({ row, attachments, quantity, amount, receipt_url, receipt_original_name }) => {
+    const purchases = signedRows.map(({ row, attachments, quantity, amount, before_tax_amount, tax_amount, total_amount, receipt_url, receipt_original_name }) => {
       const { receipt_storage_path, maintenance_user_id, ...safe } = row;
       void receipt_storage_path;
       void maintenance_user_id;
@@ -1234,6 +1261,9 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         attachments,
         quantity,
         amount,
+        before_tax_amount,
+        tax_amount,
+        total_amount,
         receipt_url,
         receipt_original_name,
       };
