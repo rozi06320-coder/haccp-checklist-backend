@@ -6,7 +6,7 @@ import { after, before, describe, it } from "node:test";
 import { createApp } from "./app";
 import { loadBackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
-import { branchLocalDate, canonicalizeMaintenancePurchasePayload, createOperationalAdmin, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, parseMaintenanceUndefinedObjectIdentity } from "./operational";
+import { branchLocalDate, canonicalizeMaintenancePurchasePayload, createOperationalAdmin, inspectMaintenancePurchaseReceipt, MAX_PURCHASE_INVOICE_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, parseMaintenanceUndefinedObjectIdentity } from "./operational";
 import type { UserContext } from "./user-context";
 
 const id = {
@@ -1148,6 +1148,263 @@ describe("Maintenance 42883 diagnostic identity",()=>{
     assert.equal(parseMaintenanceUndefinedObjectIdentity("42883","function private.foo(uuid) does not exist; select secret"),null);
     assert.equal(parseMaintenanceUndefinedObjectIdentity("42883",`function private.${"a".repeat(450)}(uuid) does not exist`),null);
     assert.equal(parseMaintenanceUndefinedObjectIdentity("22023","function private.foo(uuid) does not exist"),null);
+  });
+});
+
+describe("Purchase Request attachment lifecycle",()=>{
+  const requestId="47000000-0000-4000-8000-000000000001";
+  const itemId="57000000-0000-4000-8000-000000000001";
+  const retainedAttachmentId="77000000-0000-4000-8000-000000000001";
+  const removedAttachmentId="77000000-0000-4000-8000-000000000002";
+  const retainedPath=`purchasing/${id.organization}/requests/${requestId}/items/${itemId}/retained.pdf`;
+  const removedPath=`purchasing/${id.organization}/requests/${requestId}/items/${itemId}/removed.pdf`;
+  const pdfBytes=Buffer.from("%PDF-1.4\n");
+  const jpegBytes=Buffer.from([0xff,0xd8,0xff,0x00,0xff,0xd9]);
+  const pngBytes=Buffer.concat([Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]),Buffer.from([0,0,0,13]),Buffer.from("IHDR"),Buffer.alloc(9),Buffer.from("IEND"),Buffer.alloc(4)]);
+  const webpBytes=Buffer.concat([Buffer.from("RIFF"),Buffer.from([12,0,0,0]),Buffer.from("WEBP"),Buffer.alloc(8)]);
+  const requestJson=(attachments:Array<Record<string,unknown>>)=>({
+    purchase_request:{
+      id:requestId,organization_id:id.organization,branch_id:id.branch,branch_name:"Branch",branch_code:"BR",
+      requested_by:id.supervisor,requested_by_name:"Supervisor",category:"kitchen",status:"processing",notes:null,
+      created_at:"2026-09-21T08:00:00.000Z",updated_at:"2026-09-21T09:00:00.000Z",
+      items:[{id:itemId,purchase_request_id:requestId,item_name:"Gloves",quantity:"3",unit:"box",notes:null,sort_order:1,created_at:"2026-09-21T08:00:00.000Z",vendor_name:"Vendor",invoice_number:"INV",purchased_quantity:"3",actual_unit_cost:"10.00",actual_total_cost:"34.50",before_tax_amount:"30.00",tax_amount:"4.50",total_amount:"34.50",purchasing_notes:null,attachments}],
+    },
+  });
+  async function readJsonBody(request:import("node:http").IncomingMessage){
+    let raw="";
+    for await(const chunk of request)raw+=chunk;
+    try{return raw?JSON.parse(raw) as Record<string,unknown>:{};}
+    catch{return{};}
+  }
+
+  it("validates receipt MIME signatures and size limits",()=>{
+    assert.equal(inspectMaintenancePurchaseReceipt(jpegBytes,"image/jpeg").mime,"image/jpeg");
+    assert.equal(inspectMaintenancePurchaseReceipt(pngBytes,"image/png").mime,"image/png");
+    assert.equal(inspectMaintenancePurchaseReceipt(webpBytes,"image/webp").mime,"image/webp");
+    assert.equal(inspectMaintenancePurchaseReceipt(pdfBytes,"application/pdf").mime,"application/pdf");
+    assert.throws(()=>inspectMaintenancePurchaseReceipt(pdfBytes,"image/png"));
+    assert.throws(()=>inspectMaintenancePurchaseReceipt(Buffer.alloc(MAX_PURCHASE_INVOICE_BYTES+1,1),"application/pdf"));
+  });
+
+  it("replaces attachments after DB save and deletes only removed old storage objects",async()=>{
+    const calls:Array<{method:string;url:string;body:Record<string,unknown>}>=[],removed:Array<Record<string,unknown>>=[];
+    const rpc=createServer(async(request,response)=>{
+      const body=await readJsonBody(request);
+      calls.push({method:request.method??"",url:request.url??"",body});
+      response.setHeader("content-type","application/json");
+      if(request.method==="GET"&&request.url?.startsWith("/rest/v1/purchase_request_items")){
+        response.end(JSON.stringify([{id:itemId,purchase_request_item_attachments:[
+          {id:retainedAttachmentId,storage_path:retainedPath,original_filename:"retained.pdf",mime_type:"application/pdf",size_bytes:10,position:1},
+          {id:removedAttachmentId,storage_path:removedPath,original_filename:"removed.pdf",mime_type:"application/pdf",size_bytes:10,position:2},
+        ]}]));
+        return;
+      }
+      if(request.method==="POST"&&request.url?.startsWith("/storage/v1/object/purchase-request-attachments/")){
+        response.end(JSON.stringify({Key:"uploaded"}));
+        return;
+      }
+      if(request.method==="POST"&&request.url?.startsWith("/storage/v1/object/sign/purchase-request-attachments/")){
+        response.end(JSON.stringify({signedURL:"/signed-purchase-request-attachment"}));
+        return;
+      }
+      if(request.method==="DELETE"&&request.url==="/storage/v1/object/purchase-request-attachments"){
+        removed.push(body);
+        response.end(JSON.stringify([]));
+        return;
+      }
+      if(request.method==="POST"&&request.url==="/rest/v1/rpc/save_purchasing_purchase_request_details"){
+        const detail=((body.purchase_details as Array<Record<string,unknown>>)[0]);
+        const attachments=detail.attachments as Array<Record<string,unknown>>;
+        assert.equal(attachments.length,2);
+        assert.equal(attachments[0]?.id,retainedAttachmentId);
+        assert.equal(attachments[0]?.storage_path,retainedPath);
+        assert.match(String(attachments[1]?.storage_path),new RegExp(`^purchasing/${id.organization}/requests/${requestId}/items/${itemId}/`));
+        response.end(JSON.stringify(requestJson(attachments)));
+        return;
+      }
+      response.statusCode=404;
+      response.end(JSON.stringify({message:"unexpected"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      const result=await admin.savePurchasingPurchaseRequestDetails?.({actorUserId:id.staffAccount,organizationId:id.organization,requestId,purchaseDetails:[{item_id:itemId,vendor_name:"Vendor",invoice_number:"INV",before_tax_amount:"30.00",tax_amount:"4.50",total_amount:"34.50",attachments:[{id:retainedAttachmentId},{bytes:pdfBytes,mimeType:"application/pdf",originalName:"new.pdf"}]}]}) as {purchase_request:{items:Array<{attachments:Array<{url:string|null}>}>}};
+      assert.equal(result.purchase_request.items[0]?.attachments.length,2);
+      assert.deepEqual(result.purchase_request.items[0]?.attachments.map((attachment)=>attachment.url),[
+        `http://127.0.0.1:${(rpc.address()as AddressInfo).port}/storage/v1/signed-purchase-request-attachment`,
+        `http://127.0.0.1:${(rpc.address()as AddressInfo).port}/storage/v1/signed-purchase-request-attachment`,
+      ]);
+      assert.deepEqual(removed,[{prefixes:[removedPath]}]);
+      assert.equal(calls.filter((call)=>call.method==="DELETE").length,1);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("cleans newly uploaded attachments when the DB save fails and leaves old storage untouched",async()=>{
+    const removed:Array<Record<string,unknown>>=[];
+    let uploadedPath="";
+    const rpc=createServer(async(request,response)=>{
+      const body=await readJsonBody(request);
+      response.setHeader("content-type","application/json");
+      if(request.method==="GET"&&request.url?.startsWith("/rest/v1/purchase_request_items")){
+        response.end(JSON.stringify([{id:itemId,purchase_request_item_attachments:[{id:removedAttachmentId,storage_path:removedPath,original_filename:"removed.pdf",mime_type:"application/pdf",size_bytes:10,position:1}]}]));
+        return;
+      }
+      if(request.method==="POST"&&request.url?.startsWith("/storage/v1/object/purchase-request-attachments/")){
+        uploadedPath=decodeURIComponent((request.url??"").replace("/storage/v1/object/purchase-request-attachments/",""));
+        response.end(JSON.stringify({Key:"uploaded"}));
+        return;
+      }
+      if(request.method==="DELETE"&&request.url==="/storage/v1/object/purchase-request-attachments"){
+        removed.push(body);
+        response.end(JSON.stringify([]));
+        return;
+      }
+      if(request.method==="POST"&&request.url==="/rest/v1/rpc/save_purchasing_purchase_request_details"){
+        response.statusCode=400;
+        response.end(JSON.stringify({code:"22023",message:"invalid purchase detail"}));
+        return;
+      }
+      response.statusCode=404;
+      response.end(JSON.stringify({message:"unexpected"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await assert.rejects(()=>admin.savePurchasingPurchaseRequestDetails?.({actorUserId:id.staffAccount,organizationId:id.organization,requestId,purchaseDetails:[{item_id:itemId,vendor_name:"Vendor",before_tax_amount:"30.00",tax_amount:"4.50",total_amount:"34.50",attachments:[{bytes:pdfBytes,mimeType:"application/pdf",originalName:"new.pdf"}]}]}),OperationalInputError);
+      assert.ok(uploadedPath);
+      assert.deepEqual(removed,[{prefixes:[uploadedPath]}]);
+      assert.notEqual(uploadedPath,removedPath);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("cleans earlier uploads when a later upload fails before the DB save",async()=>{
+    const removed:Array<Record<string,unknown>>=[];
+    let uploadCount=0,firstPath="";
+    const rpc=createServer(async(request,response)=>{
+      const body=await readJsonBody(request);
+      response.setHeader("content-type","application/json");
+      if(request.method==="GET"&&request.url?.startsWith("/rest/v1/purchase_request_items")){
+        response.end(JSON.stringify([{id:itemId,purchase_request_item_attachments:[]}]));
+        return;
+      }
+      if(request.method==="POST"&&request.url?.startsWith("/storage/v1/object/purchase-request-attachments/")){
+        uploadCount++;
+        if(uploadCount===1){
+          firstPath=decodeURIComponent((request.url??"").replace("/storage/v1/object/purchase-request-attachments/",""));
+          response.end(JSON.stringify({Key:"uploaded"}));
+          return;
+        }
+        response.statusCode=500;
+        response.end(JSON.stringify({message:"upload failed"}));
+        return;
+      }
+      if(request.method==="DELETE"&&request.url==="/storage/v1/object/purchase-request-attachments"){
+        removed.push(body);
+        response.end(JSON.stringify([]));
+        return;
+      }
+      response.statusCode=404;
+      response.end(JSON.stringify({message:"unexpected"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await assert.rejects(()=>admin.savePurchasingPurchaseRequestDetails?.({actorUserId:id.staffAccount,organizationId:id.organization,requestId,purchaseDetails:[{item_id:itemId,vendor_name:"Vendor",before_tax_amount:"30.00",tax_amount:"4.50",total_amount:"34.50",attachments:[{bytes:pdfBytes,mimeType:"application/pdf",originalName:"one.pdf"},{bytes:pdfBytes,mimeType:"application/pdf",originalName:"two.pdf"}]}]}));
+      assert.deepEqual(removed,[{prefixes:[firstPath]}]);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("preserves existing attachments when the attachment field is omitted",async()=>{
+    let queriedExisting=false,detailPayload:Record<string,unknown>|null=null;
+    const rpc=createServer(async(request,response)=>{
+      const body=await readJsonBody(request);
+      response.setHeader("content-type","application/json");
+      if(request.method==="GET"&&request.url?.startsWith("/rest/v1/purchase_request_items")){
+        queriedExisting=true;
+        response.end(JSON.stringify([{id:itemId,purchase_request_item_attachments:[{id:retainedAttachmentId,storage_path:retainedPath,original_filename:"retained.pdf",mime_type:"application/pdf",size_bytes:10,position:1}]}]));
+        return;
+      }
+      if(request.method==="POST"&&request.url==="/rest/v1/rpc/save_purchasing_purchase_request_details"){
+        detailPayload=((body.purchase_details as Array<Record<string,unknown>>)[0]);
+        assert.equal("attachments" in detailPayload,false);
+        response.end(JSON.stringify(requestJson([{id:retainedAttachmentId,original_filename:"retained.pdf",mime_type:"application/pdf",size_bytes:10,position:1}])));
+        return;
+      }
+      response.statusCode=404;
+      response.end(JSON.stringify({message:"unexpected"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await admin.savePurchasingPurchaseRequestDetails?.({actorUserId:id.staffAccount,organizationId:id.organization,requestId,purchaseDetails:[{item_id:itemId,vendor_name:"Vendor",before_tax_amount:"30.00",tax_amount:"4.50",total_amount:"34.50"}]});
+      assert.equal(queriedExisting,false);
+      assert.ok(detailPayload);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("removes one of three attachments without deleting retained storage objects",async()=>{
+    const thirdAttachmentId="77000000-0000-4000-8000-000000000003";
+    const thirdPath=`purchasing/${id.organization}/requests/${requestId}/items/${itemId}/third.pdf`;
+    const removed:Array<Record<string,unknown>>=[];
+    const rpc=createServer(async(request,response)=>{
+      const body=await readJsonBody(request);
+      response.setHeader("content-type","application/json");
+      if(request.method==="GET"&&request.url?.startsWith("/rest/v1/purchase_request_items")){
+        response.end(JSON.stringify([{id:itemId,purchase_request_item_attachments:[
+          {id:retainedAttachmentId,storage_path:retainedPath,original_filename:"retained.pdf",mime_type:"application/pdf",size_bytes:10,position:1},
+          {id:removedAttachmentId,storage_path:removedPath,original_filename:"removed.pdf",mime_type:"application/pdf",size_bytes:10,position:2},
+          {id:thirdAttachmentId,storage_path:thirdPath,original_filename:"third.pdf",mime_type:"application/pdf",size_bytes:10,position:3},
+        ]}]));
+        return;
+      }
+      if(request.method==="DELETE"&&request.url==="/storage/v1/object/purchase-request-attachments"){
+        removed.push(body);
+        response.end(JSON.stringify([]));
+        return;
+      }
+      if(request.method==="POST"&&request.url==="/rest/v1/rpc/save_purchasing_purchase_request_details"){
+        const detail=((body.purchase_details as Array<Record<string,unknown>>)[0]);
+        const attachments=detail.attachments as Array<Record<string,unknown>>;
+        assert.deepEqual(attachments.map((attachment)=>attachment.id),[retainedAttachmentId,thirdAttachmentId]);
+        assert.deepEqual(attachments.map((attachment)=>attachment.position),[1,2]);
+        response.end(JSON.stringify(requestJson(attachments)));
+        return;
+      }
+      response.statusCode=404;
+      response.end(JSON.stringify({message:"unexpected"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await admin.savePurchasingPurchaseRequestDetails?.({actorUserId:id.staffAccount,organizationId:id.organization,requestId,purchaseDetails:[{item_id:itemId,vendor_name:"Vendor",before_tax_amount:"30.00",tax_amount:"4.50",total_amount:"34.50",attachments:[{id:retainedAttachmentId},{id:thirdAttachmentId}]}]});
+      assert.deepEqual(removed,[{prefixes:[removedPath]}]);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("rejects retained attachment ids that do not belong to the request item",async()=>{
+    const removed:Array<Record<string,unknown>>=[];
+    const foreignAttachmentId="77000000-0000-4000-8000-000000000099";
+    const rpc=createServer(async(request,response)=>{
+      const body=await readJsonBody(request);
+      response.setHeader("content-type","application/json");
+      if(request.method==="GET"&&request.url?.startsWith("/rest/v1/purchase_request_items")){
+        response.end(JSON.stringify([{id:itemId,purchase_request_item_attachments:[{id:retainedAttachmentId,storage_path:retainedPath,original_filename:"retained.pdf",mime_type:"application/pdf",size_bytes:10,position:1}]}]));
+        return;
+      }
+      if(request.method==="DELETE"&&request.url==="/storage/v1/object/purchase-request-attachments"){
+        removed.push(body);
+        response.end(JSON.stringify([]));
+        return;
+      }
+      response.statusCode=404;
+      response.end(JSON.stringify({message:"unexpected"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await assert.rejects(()=>admin.savePurchasingPurchaseRequestDetails?.({actorUserId:id.staffAccount,organizationId:id.organization,requestId,purchaseDetails:[{item_id:itemId,vendor_name:"Vendor",before_tax_amount:"30.00",tax_amount:"4.50",total_amount:"34.50",attachments:[{id:foreignAttachmentId}]}]}),OperationalAccessError);
+      assert.deepEqual(removed,[]);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
   });
 });
 
