@@ -667,6 +667,23 @@ export type OperationalAdmin = {
     organizationId: string;
     requestId: string;
     status: Extract<z.infer<typeof purchaseRequestStatus>, "processing" | "purchased">;
+    purchaseDetails?: Array<{
+      item_id: string;
+      vendor_name: string;
+      purchased_quantity?: string | number;
+      actual_unit_cost?: string | number;
+      actual_total_cost: string;
+      purchasing_notes?: string | null;
+    }> | null;
+  }): Promise<unknown>;
+  listPurchasingPurchaseLogs?(input: {
+    actorUserId: string;
+    organizationId: string;
+    branchId?: string;
+    paymentStatus?: z.infer<typeof purchaseLogPaymentStatus>;
+    dateFrom?: string;
+    dateTo?: string;
+    search?: string;
   }): Promise<unknown>;
   createPurchaseLogReceiptReadUrl?(input: { actorUserId: string; purchaseLogId: string }): Promise<unknown>;
   createManagedPurchaseLogReceiptReadUrl?(input: { actorUserId: string; organizationId: string; purchaseLogId: string }): Promise<unknown>;
@@ -1913,7 +1930,19 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         target_organization_id: input.organizationId,
         target_request_id: input.requestId,
         next_status: input.status,
+        purchase_details: input.purchaseDetails ?? null,
       });
+    },
+    async listPurchasingPurchaseLogs(input) {
+      return { purchase_logs: await normalizeManagedPurchaseRows(await rpc("list_purchasing_purchase_logs", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        branch_filter: input.branchId ?? null,
+        payment_status_filter: input.paymentStatus ?? null,
+        date_from_filter: input.dateFrom ?? null,
+        date_to_filter: input.dateTo ?? null,
+        search_filter: input.search ?? null,
+      })) };
     },
     async createPurchaseLogReceiptReadUrl(input) {
       const result = await client.from("branch_purchase_logs")

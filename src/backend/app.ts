@@ -351,7 +351,19 @@ const purchaseRequestBodySchema = z.object({
 }).strict();
 const purchaseRequestStatusBodySchema = z.object({
   status: z.enum(["processing", "purchased"]),
-}).strict();
+  items: z.array(z.object({
+    item_id: z.uuid(),
+    vendor_name: normalizedNameSchema,
+    purchased_quantity: z.union([z.number(), z.string()]).transform(Number).pipe(z.number().positive()).optional(),
+    actual_unit_cost: moneyAmountSchema.optional(),
+    actual_total_cost: moneyAmountSchema,
+    purchasing_notes: optionalStaffTextSchema(1000),
+  }).strict()).max(50).optional(),
+}).strict().superRefine((value, context) => {
+  if (value.status === "purchased" && (!value.items || value.items.length === 0)) {
+    context.addIssue({ code: "custom", path: ["items"], message: "Purchase details are required." });
+  }
+});
 const purchaseRequestItemResponseSchema = z.object({
   id: z.uuid(),
   purchase_request_id: z.uuid(),
@@ -361,6 +373,11 @@ const purchaseRequestItemResponseSchema = z.object({
   notes: z.string().nullable(),
   sort_order: z.number().int().positive(),
   created_at: z.string(),
+  vendor_name: z.string().nullable().optional().transform((value) => value ?? null),
+  purchased_quantity: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
+  actual_unit_cost: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
+  actual_total_cost: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
+  purchasing_notes: z.string().nullable().optional().transform((value) => value ?? null),
 }).strict();
 const purchaseRequestResponseRowSchema = z.object({
   id: z.uuid(),
@@ -389,6 +406,8 @@ const maintenancePurchaseReceiptReadUrlQuerySchema = z.object({
 }).strict();
 const managedPurchaseLogRowSchema = purchaseLogResponseRowSchema.extend({ created_by_name: z.string().nullable().optional() }).strict();
 const managedPurchaseLogListResponseSchema = z.object({ purchase_logs: z.array(managedPurchaseLogRowSchema).max(500) }).strict();
+const purchasingPurchaseLogRowSchema = purchaseLogResponseRowSchema.extend({ created_by_name: z.string().nullable().optional() }).strict();
+const purchasingPurchaseLogListResponseSchema = z.object({ purchase_logs: z.array(purchasingPurchaseLogRowSchema).max(500) }).strict();
 const supplierReceivingCategorySchema = z.enum(["raw", "frozen", "juice"]);
 const supplierReceivingUnits = ["pcs", "bag", "kg", "box"] as const;
 const supplierReceivingUnitSchema = z.preprocess(
@@ -766,6 +785,13 @@ const supervisorPurchaseLogQuerySchema=z.object({date_from:dateOnlySchema.option
 const purchasingPurchaseRequestQuerySchema = z.object({
   status: z.enum(["submitted", "processing", "purchased"]).optional(),
 }).strict();
+const purchasingPurchaseLogQuerySchema = z.object({
+  branch_id: z.uuid().optional(),
+  payment_status: z.enum(["unpaid", "reimbursed"]).optional(),
+  date_from: dateOnlySchema.optional(),
+  date_to: dateOnlySchema.optional(),
+  search: z.string().trim().min(1).max(120).optional(),
+}).strict().refine((value) => !value.date_from || !value.date_to || value.date_from <= value.date_to);
 const supervisorSupplierReceivingQuerySchema=z.object({date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const managedPurchaseLogQuerySchema=z.object({branch_id:z.uuid().optional(),category:z.enum(["stationery","kitchen","equipment","food_item","other"]).optional(),payment_status:z.enum(["unpaid","reimbursed"]).optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const managedSupplierReceivingQuerySchema=z.object({branch_id:z.uuid().optional(),category:supplierReceivingCategorySchema.optional(),supplier_id:z.uuid().optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
@@ -4143,11 +4169,37 @@ export function createApp(
           organizationId: organizationId.data,
           requestId: requestId.data,
           status: body.data.status,
+          purchaseDetails: body.data.items ?? null,
         }));
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json(result);
       } catch (error) {
         next(error instanceof HttpError ? error : operationalPurchaseRequestError(error));
+      }
+    });
+  app.get("/api/v1/purchasing/organizations/:organizationId/purchase-logs", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const query = purchasingPurchaseLogQuerySchema.safeParse(request.query);
+        if (!organizationId.success || !query.success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        const hasPurchasingAccess = (context.purchasing_organizations ?? []).some((organization) => organization.id === organizationId.data);
+        if (context.must_change_password || !hasPurchasingAccess || !dependencies.operationalAdmin?.listPurchasingPurchaseLogs) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = purchasingPurchaseLogListResponseSchema.parse(await dependencies.operationalAdmin.listPurchasingPurchaseLogs({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          branchId: query.data.branch_id,
+          paymentStatus: query.data.payment_status,
+          dateFrom: query.data.date_from,
+          dateTo: query.data.date_to,
+          search: query.data.search,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : error instanceof OperationalAccessError ? new HttpError(403, "forbidden", "Access is denied.") : new HttpError(503, "service_unavailable", "Purchase Logs are temporarily unavailable."));
       }
     });
   app.get(

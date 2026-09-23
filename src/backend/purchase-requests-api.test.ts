@@ -16,6 +16,7 @@ const otherBranch = "27000000-0000-4000-8000-000000000002";
 const organization = "37000000-0000-4000-8000-000000000001";
 const otherOrganization = "37000000-0000-4000-8000-000000000002";
 const requestId = "47000000-0000-4000-8000-000000000001";
+const purchaseLogId = "67000000-0000-4000-8000-000000000001";
 
 const config: BackendConfig = { nodeEnv: "test", host: "127.0.0.1", port: 1, trustProxy: false, supabase: { url: "http://127.0.0.1", publishableKey: "test", secretKey: "test" }, dailyAuditGrantSecret: "test-placeholder-long-enough-for-tests" };
 let server: Server;
@@ -36,6 +37,31 @@ const purchaseRequest = {
   created_at: "2026-09-21T08:00:00.000Z",
   updated_at: "2026-09-21T08:00:00.000Z",
   items: [{ id: "57000000-0000-4000-8000-000000000001", purchase_request_id: requestId, item_name: "Gloves", quantity: "3", unit: "box", notes: null, sort_order: 1, created_at: "2026-09-21T08:00:00.000Z" }],
+};
+const purchaseLog = {
+  id: purchaseLogId,
+  branch_id: branch,
+  branch_name: "Branch A",
+  category: "kitchen",
+  item_name: "Oil",
+  quantity: "2",
+  amount: "115",
+  before_tax_amount: "100",
+  tax_amount: "15",
+  vendor_name: "Food Vendor",
+  purchase_date: "2026-09-22",
+  notes: null,
+  payment_status: "unpaid",
+  reimbursement_note: null,
+  reimbursed_at: null,
+  reimbursed_by: null,
+  invoice_original_name: null,
+  invoice_number: "INV-100",
+  created_by: supervisor,
+  created_by_name: "Supervisor",
+  created_at: "2026-09-22T08:00:00.000Z",
+  updated_at: "2026-09-22T08:00:00.000Z",
+  revision: 1,
 };
 
 function deps(options: { transitionError?: boolean } = {}): BackendDependencies {
@@ -85,7 +111,25 @@ function deps(options: { transitionError?: boolean } = {}): BackendDependencies 
         calls.push({ name: "status-purchasing", input });
         if (input.organizationId !== organization) throw new OperationalAccessError();
         if (options.transitionError) throw new OperationalInputError();
-        return { purchase_request: { ...purchaseRequest, status: input.status } };
+        return {
+          purchase_request: {
+            ...purchaseRequest,
+            status: input.status,
+            items: purchaseRequest.items.map((item) => ({
+              ...item,
+              vendor_name: input.purchaseDetails?.[0]?.vendor_name ?? null,
+              purchased_quantity: input.purchaseDetails?.[0]?.purchased_quantity ?? null,
+              actual_unit_cost: input.purchaseDetails?.[0]?.actual_unit_cost ?? null,
+              actual_total_cost: input.purchaseDetails?.[0]?.actual_total_cost ?? null,
+              purchasing_notes: input.purchaseDetails?.[0]?.purchasing_notes ?? null,
+            })),
+          },
+        };
+      },
+      async listPurchasingPurchaseLogs(input) {
+        calls.push({ name: "list-purchasing-purchase-logs", input });
+        if (input.organizationId !== organization) throw new OperationalAccessError();
+        return { purchase_logs: [purchaseLog] };
       },
       async createPurchaseLog(input) {
         calls.push({ name: "create-purchase-log", input });
@@ -163,9 +207,27 @@ describe("Purchase Request API", () => {
 
   it("allows only Phase 1B purchasing status transitions through the purchasing endpoint", async () => {
     assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "processing" }) })).status, 200);
-    assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased" }) })).status, 200);
+    const purchased = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased", items: [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", purchased_quantity: 3, actual_unit_cost: "10.00", actual_total_cost: "30.00", purchasing_notes: "Delivered" }] }) });
+    assert.equal(purchased.status, 200);
+    assert.deepEqual((calls.at(-1)?.input as { purchaseDetails?: unknown }).purchaseDetails, [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", purchased_quantity: 3, actual_unit_cost: "10.00", actual_total_cost: "30.00", purchasing_notes: "Delivered" }]);
     assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "received" }) })).status, 400);
     assert.equal(calls.some((call) => call.name === "create-purchase-log"), false);
+  });
+
+  it("requires purchase details before Purchasing marks a request purchased", async () => {
+    const response = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased" }) });
+    assert.equal(response.status, 400);
+    assert.equal(calls.some((call) => call.name === "status-purchasing"), false);
+  });
+
+  it("lists Purchase Logs read-only for active Purchasing organization membership only", async () => {
+    const response = await request(`/api/v1/purchasing/organizations/${organization}/purchase-logs?payment_status=unpaid&date_from=2026-09-01&date_to=2026-09-30&search=oil`, "purchasing");
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls.at(-1), { name: "list-purchasing-purchase-logs", input: { actorUserId: purchaser, organizationId: organization, branchId: undefined, paymentStatus: "unpaid", dateFrom: "2026-09-01", dateTo: "2026-09-30", search: "oil" } });
+    assert.equal((await request(`/api/v1/purchasing/organizations/${otherOrganization}/purchase-logs`, "purchasing")).status, 403);
+    assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-logs`, "manager")).status, 403);
+    assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-logs`, "supervisor")).status, 403);
+    assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-logs`, "inactive-purchasing")).status, 403);
   });
 
   it("returns a safe failure when the RPC rejects an invalid status jump", async () => {
@@ -173,7 +235,7 @@ describe("Purchase Request API", () => {
     server = createServer(createApp(config, deps({ transitionError: true })));
     await new Promise<void>((resolve, reject) => server.listen(0, "127.0.0.1", resolve).once("error", reject));
     origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    const response = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased" }) });
+    const response = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased", items: [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", actual_total_cost: "30.00" }] }) });
     assert.equal(response.status, 422);
   });
 });

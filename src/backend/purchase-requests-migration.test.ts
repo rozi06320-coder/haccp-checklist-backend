@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 const migrationPath = path.join(process.cwd(), "supabase/migrations/20260921130000_purchase_requests_phase1b.sql");
+const detailsMigrationPath = path.join(process.cwd(), "supabase/migrations/20260923100000_purchasing_purchase_request_details.sql");
 
 describe("Purchase Request migration contract", () => {
   it("creates a separate request and item domain with no Purchase Log or expense coupling", async () => {
@@ -32,5 +33,29 @@ describe("Purchase Request migration contract", () => {
     assert.match(sql, /v_request\.status = 'submitted' and next_status = 'processing'/);
     assert.match(sql, /v_request\.status = 'processing' and next_status = 'purchased'/);
     assert.doesNotMatch(sql, /next_status = 'received'/);
+  });
+
+  it("adds item-level purchasing details without coupling requests to Purchase Logs", async () => {
+    const sql = await readFile(detailsMigrationPath, "utf8");
+    assert.match(sql, /alter table public\.purchase_request_items/i);
+    for (const column of ["vendor_name", "purchased_quantity", "actual_unit_cost", "actual_total_cost", "purchasing_notes"]) {
+      assert.match(sql, new RegExp(`add column if not exists ${column}`, "i"));
+    }
+    assert.match(sql, /if next_status = 'purchased'/i);
+    assert.match(sql, /purchase details incomplete/i);
+    assert.match(sql, /purchase_request_items_actual_cost_breakdown_check/i);
+    assert.match(sql, /actual_total_cost = pg_catalog\.round\(purchased_quantity \* actual_unit_cost, 2\)/i);
+    assert.match(sql, /private\.has_active_purchasing_membership\(actor_user_id, target_organization_id\)/i);
+    assert.doesNotMatch(sql, /insert into public\.branch_purchase_logs|expense/i);
+  });
+
+  it("adds a dedicated read-only Purchasing Purchase Log list RPC", async () => {
+    const sql = await readFile(detailsMigrationPath, "utf8");
+    assert.match(sql, /create function public\.list_purchasing_purchase_logs/i);
+    assert.match(sql, /private\.has_active_purchasing_membership\(actor_user_id, target_organization_id\)/i);
+    assert.match(sql, /log\.organization_id = target_organization_id/i);
+    assert.match(sql, /log\.deleted_at is null/i);
+    assert.match(sql, /grant execute on function public\.list_purchasing_purchase_logs\(uuid, uuid, uuid, text, date, date, text\) to service_role/i);
+    assert.doesNotMatch(sql, /update public\.branch_purchase_logs|delete from public\.branch_purchase_logs/i);
   });
 });

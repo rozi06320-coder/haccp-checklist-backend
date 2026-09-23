@@ -1,5 +1,5 @@
 begin;
-select plan(40);
+select plan(50);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated', email, '{}', '{}', now(), now()
@@ -43,6 +43,11 @@ insert into public.purchasing_memberships(organization_id,user_id,active,created
 
 select has_table('public','purchase_requests','purchase request parent table exists');
 select has_table('public','purchase_request_items','purchase request item table exists');
+select has_column('public','purchase_request_items','vendor_name','items store Purchasing vendor');
+select has_column('public','purchase_request_items','purchased_quantity','items store actual purchased quantity');
+select has_column('public','purchase_request_items','actual_unit_cost','items store actual unit cost');
+select has_column('public','purchase_request_items','actual_total_cost','items store actual total cost');
+select has_column('public','purchase_request_items','purchasing_notes','items store Purchasing notes');
 select ok((select relrowsecurity from pg_catalog.pg_class where oid='public.purchase_requests'::regclass),'purchase_requests has RLS enabled');
 select ok((select relrowsecurity from pg_catalog.pg_class where oid='public.purchase_request_items'::regclass),'purchase_request_items has RLS enabled');
 
@@ -130,12 +135,46 @@ select lives_ok($$select public.set_purchasing_purchase_request_status(
  (select request_id from purchase_request_test_ids limit 1),
  'processing'
 )$$,'Purchasing can move submitted request to processing');
-select lives_ok($$select public.set_purchasing_purchase_request_status(
+select throws_ok($$select public.set_purchasing_purchase_request_status(
  '1e000000-0000-4000-8000-000000000003',
  '2e000000-0000-4000-8000-000000000001',
  (select request_id from purchase_request_test_ids limit 1),
  'purchased'
+)$$,'22023','purchase details required','Purchasing cannot mark purchased without item purchase details');
+select throws_ok($$select public.set_purchasing_purchase_request_status(
+ '1e000000-0000-4000-8000-000000000003',
+ '2e000000-0000-4000-8000-000000000001',
+ (select request_id from purchase_request_test_ids limit 1),
+ 'purchased',
+ (select jsonb_agg(jsonb_build_object(
+   'item_id', item.id,
+   'vendor_name', 'Office Vendor',
+   'purchased_quantity', item.quantity,
+   'actual_unit_cost', '10.00',
+   'actual_total_cost', '1.00'
+  ))
+  from public.purchase_request_items item
+  where item.purchase_request_id = (select request_id from purchase_request_test_ids limit 1))
+)$$,'22023','invalid purchase detail total','Purchasing cannot mark purchased with an inconsistent item cost total');
+select lives_ok($$select public.set_purchasing_purchase_request_status(
+ '1e000000-0000-4000-8000-000000000003',
+ '2e000000-0000-4000-8000-000000000001',
+ (select request_id from purchase_request_test_ids limit 1),
+ 'purchased',
+ (select jsonb_agg(jsonb_build_object(
+   'item_id', item.id,
+   'vendor_name', 'Office Vendor',
+   'purchased_quantity', item.quantity,
+   'actual_unit_cost', '10.00',
+   'actual_total_cost', (item.quantity * 10)::text,
+   'purchasing_notes', 'Purchased by Central Purchasing'
+  ))
+  from public.purchase_request_items item
+  where item.purchase_request_id = (select request_id from purchase_request_test_ids limit 1))
 )$$,'Purchasing can move processing request to purchased');
+select is((select count(*)::integer from public.purchase_request_items where vendor_name='Office Vendor'),2,'purchase details are written onto each item');
+select is((select sum(actual_total_cost) from public.purchase_request_items where vendor_name='Office Vendor'),50.00::numeric,'actual total cost is stored per item');
+select is((select count(*)::integer from public.purchase_request_items where purchasing_notes='Purchased by Central Purchasing'),2,'purchasing notes are stored per item');
 select throws_ok($$select public.set_purchasing_purchase_request_status(
  '1e000000-0000-4000-8000-000000000003',
  '2e000000-0000-4000-8000-000000000001',
