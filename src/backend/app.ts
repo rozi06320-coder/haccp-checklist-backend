@@ -349,21 +349,46 @@ const purchaseRequestBodySchema = z.object({
   notes: optionalStaffTextSchema(2000),
   items: z.array(purchaseRequestItemBodySchema).min(1).max(50),
 }).strict();
-const purchaseRequestStatusBodySchema = z.object({
-  status: z.enum(["processing", "purchased"]),
-  items: z.array(z.object({
+const purchaseRequestAttachmentUploadSchema = z.union([z.object({
+  id: z.uuid().optional(),
+  original_name: z.string().max(180).optional().nullable(),
+  mime_type: purchaseInvoiceMime,
+  content_base64: z.string().min(1),
+}).strict(), z.object({
+  id: z.uuid(),
+}).strict()]);
+const purchaseRequestDetailItemBodySchema = z.object({
     item_id: z.uuid(),
-    vendor_name: normalizedNameSchema,
+    vendor_name: optionalStaffTextSchema(120),
+    invoice_number: optionalStaffTextSchema(120),
     purchased_quantity: z.union([z.number(), z.string()]).transform(Number).pipe(z.number().positive()).optional(),
     actual_unit_cost: moneyAmountSchema.optional(),
-    actual_total_cost: moneyAmountSchema,
+    actual_total_cost: moneyAmountSchema.optional(),
+    before_tax_amount: moneyAmountSchema.optional(),
+    tax_amount: moneyAmountSchema.optional(),
+    total_amount: moneyAmountSchema.optional(),
     purchasing_notes: optionalStaffTextSchema(1000),
-  }).strict()).max(50).optional(),
+    attachments: z.array(purchaseRequestAttachmentUploadSchema).max(3).optional(),
+}).strict();
+const purchaseRequestStatusBodySchema = z.object({
+  status: z.enum(["processing", "purchased"]),
+  items: z.array(purchaseRequestDetailItemBodySchema).max(50).optional(),
 }).strict().superRefine((value, context) => {
   if (value.status === "purchased" && (!value.items || value.items.length === 0)) {
     context.addIssue({ code: "custom", path: ["items"], message: "Purchase details are required." });
   }
 });
+const purchaseRequestDetailSaveBodySchema = z.object({
+  items: z.array(purchaseRequestDetailItemBodySchema).min(1).max(50),
+}).strict();
+const purchaseRequestItemAttachmentResponseSchema = z.object({
+  id: z.uuid(),
+  original_filename: z.string().nullable(),
+  mime_type: z.string().nullable(),
+  size_bytes: z.number().nullable(),
+  position: z.number().int().positive(),
+  url: z.string().nullable().optional().transform((value) => value ?? null),
+}).strict();
 const purchaseRequestItemResponseSchema = z.object({
   id: z.uuid(),
   purchase_request_id: z.uuid(),
@@ -374,10 +399,15 @@ const purchaseRequestItemResponseSchema = z.object({
   sort_order: z.number().int().positive(),
   created_at: z.string(),
   vendor_name: z.string().nullable().optional().transform((value) => value ?? null),
+  invoice_number: z.string().nullable().optional().transform((value) => value ?? null),
   purchased_quantity: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
   actual_unit_cost: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
   actual_total_cost: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
+  before_tax_amount: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
+  tax_amount: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
+  total_amount: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
   purchasing_notes: z.string().nullable().optional().transform((value) => value ?? null),
+  attachments: z.array(purchaseRequestItemAttachmentResponseSchema).max(3).optional().default([]),
 }).strict();
 const purchaseRequestResponseRowSchema = z.object({
   id: z.uuid(),
@@ -2172,6 +2202,33 @@ function operationalPurchaseRequestError(error: unknown) {
   if (error instanceof OperationalConflictError) return new HttpError(409, "conflict", "The purchase request conflicts with current workflow state.");
   if (error instanceof OperationalAccessError) return new HttpError(403, "forbidden", "Access is denied.");
   return new HttpError(503, "service_unavailable", "Purchase Requests are temporarily unavailable.");
+}
+
+function purchaseRequestDetailsForOperation(items: z.infer<typeof purchaseRequestDetailItemBodySchema>[]) {
+  return items.map((item) => {
+    const { attachments: rawAttachments, ...detail } = item;
+    return {
+    ...detail,
+    ...(rawAttachments ? { attachments: rawAttachments.map((attachment) => {
+      if (!("content_base64" in attachment)) return { id: attachment.id };
+      let bytes: Buffer;
+      try {
+        bytes = Buffer.from(attachment.content_base64, "base64");
+      } catch {
+        throw new HttpError(400, "bad_request", "The request is invalid.");
+      }
+      if (bytes.length === 0 || bytes.length > MAX_PURCHASE_INVOICE_BYTES) {
+        throw new HttpError(413, "payload_too_large", "The attachment must be 5 MB or smaller.");
+      }
+      return {
+        id: attachment.id,
+        bytes,
+        mimeType: attachment.mime_type,
+        originalName: attachment.original_name?.trim() || "receipt",
+      };
+    }) } : {}),
+  };
+  });
 }
 
 function operationalSupplierReceivingError(error: unknown) {
@@ -4169,7 +4226,30 @@ export function createApp(
           organizationId: organizationId.data,
           requestId: requestId.data,
           status: body.data.status,
-          purchaseDetails: body.data.items ?? null,
+          purchaseDetails: body.data.items ? purchaseRequestDetailsForOperation(body.data.items) : null,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchaseRequestError(error));
+      }
+    });
+  app.patch("/api/v1/purchasing/organizations/:organizationId/purchase-requests/:requestId/items", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const requestId = z.uuid().safeParse(request.params.requestId);
+        const body = purchaseRequestDetailSaveBodySchema.safeParse(request.body);
+        if (!organizationId.success || !requestId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        const hasPurchasingAccess = (context.purchasing_organizations ?? []).some((organization) => organization.id === organizationId.data);
+        if (context.must_change_password || !hasPurchasingAccess || !dependencies.operationalAdmin?.savePurchasingPurchaseRequestDetails) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = purchaseRequestMutationResponseSchema.parse(await dependencies.operationalAdmin.savePurchasingPurchaseRequestDetails({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          requestId: requestId.data,
+          purchaseDetails: purchaseRequestDetailsForOperation(body.data.items),
         }));
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json(result);

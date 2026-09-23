@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 
 const migrationPath = path.join(process.cwd(), "supabase/migrations/20260921130000_purchase_requests_phase1b.sql");
 const detailsMigrationPath = path.join(process.cwd(), "supabase/migrations/20260923100000_purchasing_purchase_request_details.sql");
+const financialDocumentsMigrationPath = path.join(process.cwd(), "supabase/migrations/20260923120000_purchasing_purchase_request_financial_documents.sql");
 
 describe("Purchase Request migration contract", () => {
   it("creates a separate request and item domain with no Purchase Log or expense coupling", async () => {
@@ -57,5 +58,22 @@ describe("Purchase Request migration contract", () => {
     assert.match(sql, /log\.deleted_at is null/i);
     assert.match(sql, /grant execute on function public\.list_purchasing_purchase_logs\(uuid, uuid, uuid, text, date, date, text\) to service_role/i);
     assert.doesNotMatch(sql, /update public\.branch_purchase_logs|delete from public\.branch_purchase_logs/i);
+  });
+
+  it("adds Purchase Request financial breakdown, documents, and save-only details without Purchase Log coupling", async () => {
+    const sql = await readFile(financialDocumentsMigrationPath, "utf8");
+    for (const column of ["invoice_number", "before_tax_amount", "tax_amount", "total_amount"]) {
+      assert.match(sql, new RegExp(`add column if not exists ${column}`, "i"));
+    }
+    assert.match(sql, /insert into storage\.buckets\(id, name, public, file_size_limit, allowed_mime_types\)/i);
+    assert.match(sql, /'purchase-request-attachments'/i);
+    assert.match(sql, /create table if not exists public\.purchase_request_item_attachments/i);
+    assert.match(sql, /before_tax_amount \+ tax_amount/i);
+    assert.match(sql, /actual_total_cost = v_actual_total_cost/i);
+    assert.match(sql, /public\.save_purchasing_purchase_request_details/i);
+    assert.match(sql, /v_request\.status <> 'processing'/i);
+    assert.match(sql, /private\.has_active_purchasing_membership\(actor_user_id, target_organization_id\)/i);
+    assert.match(sql, /grant execute on function public\.save_purchasing_purchase_request_details\(uuid, uuid, uuid, jsonb\) to service_role/i);
+    assert.doesNotMatch(sql, /insert into public\.branch_purchase_logs|insert into public\.maintenance_purchase_logs|reimbursement|expense/i);
   });
 });

@@ -443,6 +443,19 @@ export function inspectMaintenancePurchaseReceipt(bytes:Buffer,declaredMime:stri
   if(!detected||detected.mime!==mime.data)throw new AdminOperationError();
   return detected;
 }
+type PurchaseRequestPurchaseDetailInput = {
+  item_id: string;
+  vendor_name?: string | null;
+  invoice_number?: string | null;
+  purchased_quantity?: string | number;
+  actual_unit_cost?: string | number;
+  actual_total_cost?: string | number;
+  before_tax_amount?: string | number;
+  tax_amount?: string | number;
+  total_amount?: string | number;
+  purchasing_notes?: string | null;
+  attachments?: Array<{ id?: string; bytes?: Buffer; mimeType?: z.infer<typeof purchaseInvoiceMime>; originalName?: string }>;
+};
 const SUPPLIER_RECEIVING_PHOTO_BUCKET = "branch-supplier-receiving-photos";
 const SUPPLIER_RECEIVING_PHOTO_SIGNED_URL_SECONDS = 5 * 60;
 export const MAX_SUPPLIER_RECEIVING_PHOTO_BYTES = 5 * 1024 * 1024;
@@ -667,14 +680,13 @@ export type OperationalAdmin = {
     organizationId: string;
     requestId: string;
     status: Extract<z.infer<typeof purchaseRequestStatus>, "processing" | "purchased">;
-    purchaseDetails?: Array<{
-      item_id: string;
-      vendor_name: string;
-      purchased_quantity?: string | number;
-      actual_unit_cost?: string | number;
-      actual_total_cost: string;
-      purchasing_notes?: string | null;
-    }> | null;
+    purchaseDetails?: PurchaseRequestPurchaseDetailInput[] | null;
+  }): Promise<unknown>;
+  savePurchasingPurchaseRequestDetails?(input: {
+    actorUserId: string;
+    organizationId: string;
+    requestId: string;
+    purchaseDetails: PurchaseRequestPurchaseDetailInput[];
   }): Promise<unknown>;
   listPurchasingPurchaseLogs?(input: {
     actorUserId: string;
@@ -699,10 +711,9 @@ export type OperationalAdmin = {
       tax_amount?: string | number;
       vendor_name?: string | null;
       purchase_date: string;
-      invoice_number?: string | null;
       notes?: string | null;
       payment_status?: z.infer<typeof purchaseLogPaymentStatus>;
-      reimbursement_note?: string | null;
+      invoice_number?: string | null;
     };
     invoice?: { bytes: Buffer; mimeType: z.infer<typeof purchaseInvoiceMime>; originalName: string } | null;
   }): Promise<unknown>;
@@ -862,6 +873,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   const purchaseInvoiceStorage = client.storage.from(PURCHASE_INVOICE_BUCKET);
   const supplierReceivingPhotoStorage = client.storage.from(SUPPLIER_RECEIVING_PHOTO_BUCKET);
   const maintenanceReceiptStorage = client.storage.from("maintenance-purchase-receipts");
+  const purchaseRequestAttachmentStorage = client.storage.from("purchase-request-attachments");
   const maintenanceIssuePhotoStorage = client.storage.from(MAINTENANCE_ISSUE_PHOTO_BUCKET);
   function safeMaintenancePurchaseDiagnosticCode(value: string | null | undefined) {
     if (!value) return null;
@@ -1052,7 +1064,127 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     }));
   }
   async function signMaintenanceReceipt(path:string|null){if(!path)return null;try{const result=await maintenanceReceiptStorage.createSignedUrl(path,PURCHASE_INVOICE_SIGNED_URL_SECONDS);return result.error||!result.data?.signedUrl?null:result.data.signedUrl;}catch{return null;}}
+  async function signPurchaseRequestAttachment(path:string|null){if(!path)return null;try{const result=await purchaseRequestAttachmentStorage.createSignedUrl(path,PURCHASE_INVOICE_SIGNED_URL_SECONDS);return result.error||!result.data?.signedUrl?null:result.data.signedUrl;}catch{return null;}}
   async function signMaintenanceIssuePhoto(path:string|null){if(!path)return null;try{const result=await maintenanceIssuePhotoStorage.createSignedUrl(path,MAINTENANCE_ISSUE_PHOTO_SIGNED_URL_SECONDS);return result.error||!result.data?.signedUrl?null:result.data.signedUrl;}catch{return null;}}
+  async function uploadPurchaseRequestAttachment(input:{organizationId:string;requestId:string;itemId:string;attachment:{id?:string;bytes:Buffer;mimeType:z.infer<typeof purchaseInvoiceMime>;originalName:string};position:number}){
+    const inspected=inspectMaintenancePurchaseReceipt(input.attachment.bytes,input.attachment.mimeType);
+    const originalName=safeOriginalFileName(input.attachment.originalName,`receipt-${input.position}.${inspected.extension}`);
+    const attachmentId=input.attachment.id??randomUUID();
+    const storageName=`${attachmentId}-${safeFileName(input.attachment.originalName,inspected.extension,`receipt-${input.position}`)}`;
+    const path=`purchasing/${input.organizationId}/requests/${input.requestId}/items/${input.itemId}/${storageName}`;
+    const upload=await purchaseRequestAttachmentStorage.upload(path,input.attachment.bytes,{contentType:inspected.mime,upsert:false,metadata:{byteSize:String(input.attachment.bytes.length),mimeType:inspected.mime,originalName}});
+    if(upload.error)throw new AdminOperationError();
+    return{id:attachmentId,storage_path:path,original_filename:originalName,mime_type:inspected.mime,size_bytes:input.attachment.bytes.length,position:input.position};
+  }
+  const purchaseRequestExistingAttachmentRow=z.object({
+    id:uuid,
+    purchase_request_item_attachments:z.array(z.object({
+      id:uuid,
+      storage_path:z.string().min(1),
+      original_filename:optionalStaffText,
+      mime_type:purchaseInvoiceMime.nullable(),
+      size_bytes:z.union([z.number(),z.string()]).nullable(),
+      position:z.number().int().min(1).max(3),
+    }).strict()).default([]),
+  }).strict();
+  async function listExistingPurchaseRequestAttachments(input:{requestId:string;itemIds:string[]}){
+    if(input.itemIds.length===0)return new Map<string,Array<{id:string;storage_path:string;original_filename:string|null;mime_type:z.infer<typeof purchaseInvoiceMime>|null;size_bytes:number|null;position:number}>>();
+    const result=await client
+      .from("purchase_request_items")
+      .select("id,purchase_request_item_attachments(id,storage_path,original_filename,mime_type,size_bytes,position)")
+      .eq("purchase_request_id",input.requestId)
+      .in("id",input.itemIds);
+    if(result.error||!Array.isArray(result.data))throw new AdminOperationError();
+    const rows=z.array(purchaseRequestExistingAttachmentRow).parse(result.data);
+    return new Map(rows.map((row)=>[row.id,row.purchase_request_item_attachments.map((attachment)=>({
+      id:attachment.id,
+      storage_path:attachment.storage_path,
+      original_filename:attachment.original_filename,
+      mime_type:attachment.mime_type,
+      size_bytes:attachment.size_bytes==null?null:Number(attachment.size_bytes),
+      position:attachment.position,
+    }))]));
+  }
+  async function cleanupPurchaseRequestAttachmentPaths(paths:string[]){
+    const unique=[...new Set(paths.filter(Boolean))];
+    if(unique.length===0)return;
+    try{
+      const result=await purchaseRequestAttachmentStorage.remove(unique);
+      if(result.error)console.warn("PURCHASE_REQUEST_ATTACHMENT_CLEANUP_FAILED",{count:unique.length});
+    }
+    catch{console.warn("PURCHASE_REQUEST_ATTACHMENT_CLEANUP_FAILED",{count:unique.length});}
+  }
+  async function preparePurchaseRequestDetails(input:{organizationId:string;requestId:string;details:PurchaseRequestPurchaseDetailInput[]}){
+    const uploaded:Array<{storage_path:string}>=[];
+    const detailsWithExplicitAttachments=input.details.filter((detail)=>detail.attachments!==undefined);
+    const existing=await listExistingPurchaseRequestAttachments({requestId:input.requestId,itemIds:[...new Set(detailsWithExplicitAttachments.map((detail)=>detail.item_id))]});
+    try{
+      const prepared=[];
+      const oldPathsToDelete:string[]=[];
+      for(const detail of input.details){
+        const attachments:Array<{id:string;storage_path:string;original_filename:string|null;mime_type:z.infer<typeof purchaseInvoiceMime>|null;size_bytes:number|null;position:number}>=[];
+        const oldAttachments=existing.get(detail.item_id)??[];
+        const oldById=new Map(oldAttachments.map((attachment)=>[attachment.id,attachment]));
+        const retainedOldIds=new Set<string>();
+        for(const [index,attachment] of (detail.attachments??[]).entries()){
+          if(attachment.bytes){
+            if(!attachment.mimeType)throw new AdminOperationError();
+            const uploadedAttachment=await uploadPurchaseRequestAttachment({organizationId:input.organizationId,requestId:input.requestId,itemId:detail.item_id,attachment:{id:attachment.id,bytes:attachment.bytes,mimeType:attachment.mimeType,originalName:attachment.originalName??"receipt"},position:index+1});
+            uploaded.push(uploadedAttachment);
+            attachments.push(uploadedAttachment);
+            continue;
+          }
+          if(!attachment.id)throw new AdminOperationError();
+          const retained=oldById.get(attachment.id);
+          if(!retained)throw new OperationalAccessError();
+          retainedOldIds.add(retained.id);
+          attachments.push({...retained,position:index+1});
+        }
+        if(detail.attachments!==undefined){
+          oldPathsToDelete.push(...oldAttachments.filter((attachment)=>!retainedOldIds.has(attachment.id)).map((attachment)=>attachment.storage_path));
+        }
+        const preparedDetail:Record<string,unknown>={
+          item_id:detail.item_id,
+          vendor_name:detail.vendor_name??null,
+          invoice_number:detail.invoice_number??null,
+          purchased_quantity:detail.purchased_quantity??null,
+          actual_unit_cost:detail.actual_unit_cost??null,
+          actual_total_cost:detail.total_amount??detail.actual_total_cost??null,
+          before_tax_amount:detail.before_tax_amount??null,
+          tax_amount:detail.tax_amount??null,
+          total_amount:detail.total_amount??detail.actual_total_cost??null,
+          purchasing_notes:detail.purchasing_notes??null,
+        };
+        if(detail.attachments)preparedDetail.attachments=attachments;
+        else if(detail.attachments!==undefined)preparedDetail.attachments=[];
+        prepared.push(preparedDetail);
+      }
+      return {details:prepared,uploadedPaths:uploaded.map((item)=>item.storage_path),oldPathsToDelete};
+    }catch(error){
+      if(uploaded.length)await purchaseRequestAttachmentStorage.remove(uploaded.map((item)=>item.storage_path)).catch(()=>undefined);
+      throw error;
+    }
+  }
+  async function signPurchaseRequestPayload(payload:unknown){
+    const record=payload&&typeof payload==="object"?payload as{purchase_request?:unknown;purchase_requests?:unknown}:null;
+    const requests=Array.isArray(record?.purchase_requests)?record.purchase_requests:record?.purchase_request?[record.purchase_request]:[];
+    for(const request of requests){
+      const requestRecord=request&&typeof request==="object"?request as{items?:unknown}:null;
+      if(!Array.isArray(requestRecord?.items))continue;
+      for(const item of requestRecord.items){
+        const itemRecord=item&&typeof item==="object"?item as{attachments?:unknown}:null;
+        if(!Array.isArray(itemRecord?.attachments))continue;
+        itemRecord.attachments=await Promise.all(itemRecord.attachments.map(async(attachment)=>{
+          const attachmentRecord=attachment&&typeof attachment==="object"?attachment as{storage_path?:unknown;size_bytes?:unknown;[key:string]:unknown}:null;
+          const storagePath=typeof attachmentRecord?.storage_path==="string"?attachmentRecord.storage_path:null;
+          const {storage_path: _storagePath, ...safeAttachment}=attachmentRecord??{};
+          void _storagePath;
+          return{...safeAttachment,size_bytes:attachmentRecord?.size_bytes==null?null:Number(attachmentRecord.size_bytes),url:await signPurchaseRequestAttachment(storagePath)};
+        }));
+      }
+    }
+    return payload;
+  }
   async function uploadMaintenanceIssuePhoto(issueId:string,type:"issue"|"repair",photo:{bytes:Buffer;mimeType:z.infer<typeof maintenanceIssuePhotoMime>;originalName:string}){
     const inspected=inspectMaintenanceIssuePhoto(photo.bytes,photo.mimeType);
     const originalName=safeOriginalFileName(photo.originalName,`${type}-photo.${inspected.extension}`);
@@ -1918,20 +2050,44 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       });
     },
     async listPurchasingPurchaseRequests(input) {
-      return await rpcObject("list_purchasing_purchase_requests", {
+      return await signPurchaseRequestPayload(await rpcObject("list_purchasing_purchase_requests", {
         actor_user_id: input.actorUserId,
         target_organization_id: input.organizationId,
         status_filter: input.status ?? null,
-      });
+      }));
     },
     async setPurchasingPurchaseRequestStatus(input) {
-      return await rpcObject("set_purchasing_purchase_request_status", {
-        actor_user_id: input.actorUserId,
-        target_organization_id: input.organizationId,
-        target_request_id: input.requestId,
-        next_status: input.status,
-        purchase_details: input.purchaseDetails ?? null,
-      });
+      const prepared=input.purchaseDetails?await preparePurchaseRequestDetails({organizationId:input.organizationId,requestId:input.requestId,details:input.purchaseDetails}):null;
+      try{
+        const result=await signPurchaseRequestPayload(await rpcObject("set_purchasing_purchase_request_status", {
+          actor_user_id: input.actorUserId,
+          target_organization_id: input.organizationId,
+          target_request_id: input.requestId,
+          next_status: input.status,
+          purchase_details: prepared?.details ?? null,
+        }));
+        if(prepared?.oldPathsToDelete.length)await cleanupPurchaseRequestAttachmentPaths(prepared.oldPathsToDelete);
+        return result;
+      }catch(error){
+        if(prepared?.uploadedPaths.length)await purchaseRequestAttachmentStorage.remove(prepared.uploadedPaths).catch(()=>undefined);
+        throw error;
+      }
+    },
+    async savePurchasingPurchaseRequestDetails(input) {
+      const prepared=await preparePurchaseRequestDetails({organizationId:input.organizationId,requestId:input.requestId,details:input.purchaseDetails});
+      try{
+        const result=await signPurchaseRequestPayload(await rpcObject("save_purchasing_purchase_request_details", {
+          actor_user_id: input.actorUserId,
+          target_organization_id: input.organizationId,
+          target_request_id: input.requestId,
+          purchase_details: prepared.details,
+        }));
+        if(prepared.oldPathsToDelete.length)await cleanupPurchaseRequestAttachmentPaths(prepared.oldPathsToDelete);
+        return result;
+      }catch(error){
+        if(prepared.uploadedPaths.length)await purchaseRequestAttachmentStorage.remove(prepared.uploadedPaths).catch(()=>undefined);
+        throw error;
+      }
     },
     async listPurchasingPurchaseLogs(input) {
       return { purchase_logs: await normalizeManagedPurchaseRows(await rpc("list_purchasing_purchase_logs", {
