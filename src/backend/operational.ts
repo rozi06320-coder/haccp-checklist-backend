@@ -457,6 +457,7 @@ type PurchaseRequestPurchaseDetailInput = {
   vendor_name?: string | null;
   invoice_number?: string | null;
   purchased_quantity?: string | number | null;
+  purchased_unit?: string | null;
   actual_unit_cost?: string | number | null;
   actual_total_cost?: string | number | null;
   before_tax_amount?: string | number | null;
@@ -1157,7 +1158,8 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
           vendor_name:detail.vendor_name??null,
           invoice_number:detail.invoice_number??null,
           purchased_quantity:detail.purchased_quantity??null,
-          actual_unit_cost:detail.actual_unit_cost??null,
+          purchased_unit:detail.purchased_unit??null,
+          actual_unit_cost:null,
           actual_total_cost:detail.total_amount??detail.actual_total_cost??null,
           before_tax_amount:detail.before_tax_amount??null,
           tax_amount:detail.tax_amount??null,

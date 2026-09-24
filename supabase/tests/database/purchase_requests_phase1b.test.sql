@@ -1,5 +1,5 @@
 begin;
-select plan(69);
+select plan(72);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated', email, '{}', '{}', now(), now()
@@ -45,6 +45,7 @@ select has_table('public','purchase_requests','purchase request parent table exi
 select has_table('public','purchase_request_items','purchase request item table exists');
 select has_column('public','purchase_request_items','vendor_name','items store Purchasing vendor');
 select has_column('public','purchase_request_items','purchased_quantity','items store actual purchased quantity');
+select has_column('public','purchase_request_items','purchased_unit','items store actual purchased unit');
 select has_column('public','purchase_request_items','actual_unit_cost','items store actual unit cost');
 select has_column('public','purchase_request_items','actual_total_cost','items store actual total cost');
 select has_column('public','purchase_request_items','invoice_number','items store Purchasing invoice number');
@@ -159,6 +160,7 @@ select lives_ok($$select public.save_purchasing_purchase_request_details(
    'vendor_name', 'Saved Vendor',
    'invoice_number', 'INV-SAVE',
    'purchased_quantity', item.quantity,
+   'purchased_unit', coalesce(item.unit,'unit'),
    'actual_unit_cost', '10.00',
    'before_tax_amount', (item.quantity * 10)::text,
    'tax_amount', '0.00',
@@ -189,14 +191,15 @@ select throws_ok($$select public.save_purchasing_purchase_request_details(
   order by item.sort_order
   limit 1)
 )$$,'22023','invalid purchase detail tax breakdown','before-tax plus tax must equal total');
-select throws_ok($$select public.save_purchasing_purchase_request_details(
+select lives_ok($$select public.save_purchasing_purchase_request_details(
  '1e000000-0000-4000-8000-000000000003',
  '2e000000-0000-4000-8000-000000000001',
  (select request_id from purchase_request_test_ids limit 1),
  (select jsonb_build_array(jsonb_build_object(
    'item_id', item.id,
-   'vendor_name', 'Broken Vendor',
+   'vendor_name', 'No Unit Cost Constraint Vendor',
    'purchased_quantity', '2',
+   'purchased_unit', 'box',
    'actual_unit_cost', '9.00',
    'before_tax_amount', '10.00',
    'tax_amount', '0.00',
@@ -206,8 +209,8 @@ select throws_ok($$select public.save_purchasing_purchase_request_details(
   where item.purchase_request_id = (select request_id from purchase_request_test_ids limit 1)
   order by item.sort_order
   limit 1)
-)$$,'22023','invalid purchase detail before tax','quantity times unit cost must equal before tax when both are supplied');
-select lives_ok($$select public.save_purchasing_purchase_request_details(
+)$$,'unit cost is ignored by the new purchased quantity model');
+select throws_ok($$select public.save_purchasing_purchase_request_details(
  '1e000000-0000-4000-8000-000000000003',
  '2e000000-0000-4000-8000-000000000001',
  (select request_id from purchase_request_test_ids limit 1),
@@ -223,15 +226,15 @@ select lives_ok($$select public.save_purchasing_purchase_request_details(
   where item.purchase_request_id = (select request_id from purchase_request_test_ids limit 1)
   order by item.sort_order
   limit 1)
-)$$,'quantity may be supplied without unit cost');
-select lives_ok($$select public.save_purchasing_purchase_request_details(
+)$$,'22023','invalid purchase detail quantity unit','quantity without purchased unit is rejected');
+select throws_ok($$select public.save_purchasing_purchase_request_details(
  '1e000000-0000-4000-8000-000000000003',
  '2e000000-0000-4000-8000-000000000001',
  (select request_id from purchase_request_test_ids limit 1),
  (select jsonb_build_array(jsonb_build_object(
    'item_id', item.id,
-   'vendor_name', 'Unit Cost Only Vendor',
-   'actual_unit_cost', '95.00',
+   'vendor_name', 'Unit Only Vendor',
+   'purchased_unit', 'kg',
    'before_tax_amount', '190.00',
    'tax_amount', '9.00',
    'total_amount', '199.00'
@@ -240,7 +243,23 @@ select lives_ok($$select public.save_purchasing_purchase_request_details(
   where item.purchase_request_id = (select request_id from purchase_request_test_ids limit 1)
   order by item.sort_order
   limit 1)
-)$$,'unit cost may be supplied without quantity');
+)$$,'22023','invalid purchase detail quantity unit','purchased unit without quantity is rejected');
+select lives_ok($$select public.save_purchasing_purchase_request_details(
+ '1e000000-0000-4000-8000-000000000003',
+ '2e000000-0000-4000-8000-000000000001',
+ (select request_id from purchase_request_test_ids limit 1),
+ (select jsonb_build_array(jsonb_build_object(
+   'item_id', item.id,
+   'vendor_name', 'Blank Quantity Unit Vendor',
+   'before_tax_amount', '190.00',
+   'tax_amount', '9.00',
+   'total_amount', '199.00'
+  ))
+  from public.purchase_request_items item
+  where item.purchase_request_id = (select request_id from purchase_request_test_ids limit 1)
+  order by item.sort_order
+  limit 1)
+)$$,'both purchased quantity and unit may be blank');
 select throws_ok($$select public.set_purchasing_purchase_request_status(
  '1e000000-0000-4000-8000-000000000003',
  '2e000000-0000-4000-8000-000000000001',
@@ -250,6 +269,7 @@ select throws_ok($$select public.set_purchasing_purchase_request_status(
    'item_id', item.id,
    'vendor_name', 'Office Vendor',
    'purchased_quantity', item.quantity,
+	   'purchased_unit', coalesce(item.unit,'unit'),
 	   'actual_unit_cost', '10.00',
 	   'before_tax_amount', (item.quantity * 10)::text,
 	   'tax_amount', '1.00',
@@ -268,6 +288,7 @@ select lives_ok($$select public.set_purchasing_purchase_request_status(
    'vendor_name', 'Office Vendor',
    'invoice_number', 'INV-PURCHASED',
    'purchased_quantity', item.quantity,
+   'purchased_unit', coalesce(item.unit,'unit'),
    'actual_unit_cost', '10.00',
    'before_tax_amount', (item.quantity * 10)::text,
    'tax_amount', '0.00',
@@ -278,6 +299,7 @@ select lives_ok($$select public.set_purchasing_purchase_request_status(
   where item.purchase_request_id = (select request_id from purchase_request_test_ids limit 1))
 )$$,'Purchasing can move processing request to purchased');
 select is((select count(*)::integer from public.purchase_request_items where vendor_name='Office Vendor'),2,'purchase details are written onto each item');
+select is((select count(*)::integer from public.purchase_request_items where vendor_name='Office Vendor' and purchased_unit is not null),2,'purchased units are stored per purchased item');
 select is((select sum(actual_total_cost) from public.purchase_request_items where vendor_name='Office Vendor'),50.00::numeric,'actual total cost is stored per item');
 select is((select sum(total_amount) from public.purchase_request_items where vendor_name='Office Vendor'),50.00::numeric,'total amount is the user-facing final total per item');
 select is((select count(*)::integer from public.purchase_request_items where purchasing_notes='Purchased by Central Purchasing'),2,'purchasing notes are stored per item');

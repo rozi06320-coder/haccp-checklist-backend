@@ -82,6 +82,10 @@ describe("Purchase Request migration contract", () => {
     const sql = await readFile(linkMigrationPath, "utf8");
     assert.doesNotMatch(sql, /payment_source|company_paid|reimburse_purchasing_purchase_request_item/i);
     assert.doesNotMatch(sql, /purchase_request_items[\s\S]*settlement_status/i);
+    assert.match(sql, /add column if not exists purchased_unit text/i);
+    assert.match(sql, /drop constraint if exists purchase_request_items_unit_cost_breakdown_check/i);
+    assert.doesNotMatch(sql, /purchase_request_items_purchased_quantity_unit_pair_check/i);
+    assert.doesNotMatch(sql, /purchased_quantity \* actual_unit_cost/i);
     assert.match(sql, /add column if not exists source_type text/i);
     assert.match(sql, /source_purchase_request_id uuid/i);
     assert.match(sql, /source_purchase_request_item_id uuid/i);

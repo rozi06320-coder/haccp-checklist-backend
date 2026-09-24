@@ -1,5 +1,5 @@
 begin;
-select plan(26);
+select plan(28);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated', email, '{}', '{}', now(), now()
@@ -42,6 +42,7 @@ insert into public.purchasing_memberships(organization_id,user_id,active,created
  ('92000000-0000-4000-8000-000000000002','91000000-0000-4000-8000-000000000005',true,'91000000-0000-4000-8000-000000000004','91000000-0000-4000-8000-000000000004');
 
 select hasnt_column('public','purchase_request_items','payment_source','purchase request items do not store payment source');
+select has_column('public','purchase_request_items','purchased_unit','purchase request items store purchased unit separately');
 select has_column('public','branch_purchase_logs','source_type','purchase logs store source type');
 select has_column('public','branch_purchase_logs','source_purchase_request_id','purchase logs link source request');
 select has_column('public','branch_purchase_logs','source_purchase_request_item_id','purchase logs link source item');
@@ -66,11 +67,12 @@ values
 select lives_ok($$select public.save_purchasing_purchase_request_details(
  '91000000-0000-4000-8000-000000000002','92000000-0000-4000-8000-000000000001','94000000-0000-4000-8000-000000000001',
  jsonb_build_array(
-  jsonb_build_object('item_id','95000000-0000-4000-8000-000000000001','vendor_name','First Vendor','invoice_number','INV-FIRST','purchased_quantity','2','actual_unit_cost','50.00','before_tax_amount','100.00','tax_amount','15.00','total_amount','115.00','purchasing_notes','first note'),
-  jsonb_build_object('item_id','95000000-0000-4000-8000-000000000002','vendor_name','Second Vendor','invoice_number','INV-SECOND','purchased_quantity','1','actual_unit_cost','20.00','before_tax_amount','20.00','tax_amount','3.00','total_amount','23.00','purchasing_notes','second note')
+  jsonb_build_object('item_id','95000000-0000-4000-8000-000000000001','vendor_name','First Vendor','invoice_number','INV-FIRST','purchased_quantity','2','purchased_unit','box','before_tax_amount','100.00','tax_amount','15.00','total_amount','115.00','purchasing_notes','first note'),
+  jsonb_build_object('item_id','95000000-0000-4000-8000-000000000002','vendor_name','Second Vendor','invoice_number','INV-SECOND','purchased_quantity','1','purchased_unit','pcs','before_tax_amount','20.00','tax_amount','3.00','total_amount','23.00','purchasing_notes','second note')
  )
 )$$,'saving purchasing details succeeds without payment source');
 select is((select status from public.purchase_requests where id='94000000-0000-4000-8000-000000000001'),'processing','save details does not submit purchase');
+select is((select purchased_unit from public.purchase_request_items where id='95000000-0000-4000-8000-000000000001'),'box','purchased unit is stored on the request item');
 
 select throws_ok($$select public.set_purchasing_purchase_request_status(
  '91000000-0000-4000-8000-000000000002','92000000-0000-4000-8000-000000000001','94000000-0000-4000-8000-000000000002','purchased',

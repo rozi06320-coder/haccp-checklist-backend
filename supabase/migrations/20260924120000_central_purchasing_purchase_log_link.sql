@@ -5,6 +5,15 @@ alter table public.branch_purchase_logs
   add column if not exists source_purchase_request_id uuid,
   add column if not exists source_purchase_request_item_id uuid;
 
+alter table public.purchase_request_items
+  add column if not exists purchased_unit text;
+
+alter table public.purchase_request_items
+  drop constraint if exists purchase_request_items_unit_cost_breakdown_check,
+  drop constraint if exists purchase_request_items_purchased_unit_check,
+  add constraint purchase_request_items_purchased_unit_check
+    check (purchased_unit is null or (pg_catalog.length(pg_catalog.btrim(purchased_unit)) between 1 and 40));
+
 alter table public.branch_purchase_logs
   drop constraint if exists branch_purchase_logs_category_check,
   add constraint branch_purchase_logs_category_check
@@ -68,6 +77,7 @@ as $function$
         'vendor_name', item.vendor_name,
         'invoice_number', item.invoice_number,
         'purchased_quantity', item.purchased_quantity,
+        'purchased_unit', item.purchased_unit,
         'actual_unit_cost', item.actual_unit_cost,
         'actual_total_cost', coalesce(item.total_amount, item.actual_total_cost),
         'before_tax_amount', item.before_tax_amount,
@@ -120,7 +130,7 @@ declare
   v_vendor text;
   v_invoice_number text;
   v_purchased_quantity numeric;
-  v_actual_unit_cost numeric;
+  v_purchased_unit text;
   v_actual_total_cost numeric;
   v_before_tax_amount numeric;
   v_tax_amount numeric;
@@ -160,7 +170,7 @@ begin
     v_invoice_number := nullif(pg_catalog.btrim(coalesce(v_detail->>'invoice_number', '')), '');
     v_notes := nullif(pg_catalog.btrim(coalesce(v_detail->>'purchasing_notes', '')), '');
     v_purchased_quantity := null;
-    v_actual_unit_cost := null;
+    v_purchased_unit := null;
     v_actual_total_cost := null;
     v_before_tax_amount := null;
     v_tax_amount := null;
@@ -213,13 +223,6 @@ begin
       raise exception 'invalid purchase detail tax breakdown' using errcode = '22023';
     end if;
 
-    if nullif(v_detail->>'actual_unit_cost', '') is not null then
-      if (v_detail->>'actual_unit_cost') !~ money_pattern then
-        raise exception 'invalid purchase detail unit cost' using errcode = '22023';
-      end if;
-      v_actual_unit_cost := (v_detail->>'actual_unit_cost')::numeric;
-    end if;
-
     if nullif(v_detail->>'purchased_quantity', '') is not null then
       begin
         v_purchased_quantity := (v_detail->>'purchased_quantity')::numeric;
@@ -231,17 +234,21 @@ begin
       end if;
     end if;
 
-    if v_purchased_quantity is not null
-      and v_actual_unit_cost is not null
-      and (v_before_tax_amount is null or v_before_tax_amount <> pg_catalog.round(v_purchased_quantity * v_actual_unit_cost, 2)) then
-      raise exception 'invalid purchase detail before tax' using errcode = '22023';
+    v_purchased_unit := nullif(pg_catalog.btrim(coalesce(v_detail->>'purchased_unit', '')), '');
+    if v_purchased_unit is not null and pg_catalog.length(v_purchased_unit) > 40 then
+      raise exception 'invalid purchase detail unit' using errcode = '22023';
+    end if;
+    if (v_purchased_quantity is null and v_purchased_unit is not null)
+      or (v_purchased_quantity is not null and v_purchased_unit is null) then
+      raise exception 'invalid purchase detail quantity unit' using errcode = '22023';
     end if;
 
     update public.purchase_request_items item
     set vendor_name = v_vendor,
         invoice_number = v_invoice_number,
         purchased_quantity = v_purchased_quantity,
-        actual_unit_cost = v_actual_unit_cost,
+        purchased_unit = v_purchased_unit,
+        actual_unit_cost = null,
         actual_total_cost = v_actual_total_cost,
         before_tax_amount = v_before_tax_amount,
         tax_amount = v_tax_amount,

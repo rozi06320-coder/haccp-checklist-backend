@@ -365,6 +365,7 @@ const purchaseRequestDetailItemBodySchema = z.object({
     vendor_name: optionalStaffTextSchema(120),
     invoice_number: optionalStaffTextSchema(120),
     purchased_quantity: z.union([z.number(), z.string()]).transform(Number).pipe(z.number().positive()).optional().nullable().transform((value) => value ?? null),
+    purchased_unit: optionalStaffTextSchema(40),
     actual_unit_cost: moneyAmountSchema.optional().nullable().transform((value) => value ?? null),
     actual_total_cost: moneyAmountSchema.optional().nullable().transform((value) => value ?? null),
     before_tax_amount: moneyAmountSchema.optional().nullable().transform((value) => value ?? null),
@@ -372,7 +373,11 @@ const purchaseRequestDetailItemBodySchema = z.object({
     total_amount: moneyAmountSchema.optional().nullable().transform((value) => value ?? null),
     purchasing_notes: optionalStaffTextSchema(1000),
     attachments: z.array(purchaseRequestAttachmentUploadSchema).max(3).optional(),
-}).strict();
+}).strict().superRefine((value, context) => {
+  if ((value.purchased_quantity == null) !== (value.purchased_unit == null)) {
+    context.addIssue({ code: "custom", path: ["purchased_unit"], message: "Purchased quantity and unit are required together." });
+  }
+});
 const purchaseRequestStatusBodySchema = z.object({
   status: z.enum(["processing", "purchased"]),
   items: z.array(purchaseRequestDetailItemBodySchema).max(50).optional(),
@@ -404,6 +409,7 @@ const purchaseRequestItemResponseSchema = z.object({
   vendor_name: z.string().nullable().optional().transform((value) => value ?? null),
   invoice_number: z.string().nullable().optional().transform((value) => value ?? null),
   purchased_quantity: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
+  purchased_unit: z.string().nullable().optional().transform((value) => value ?? null),
   actual_unit_cost: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
   actual_total_cost: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
   before_tax_amount: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
