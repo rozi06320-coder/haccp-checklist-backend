@@ -163,6 +163,7 @@ select lives_ok($$select public.save_purchasing_purchase_request_details(
    'before_tax_amount', (item.quantity * 10)::text,
    'tax_amount', '0.00',
    'total_amount', (item.quantity * 10)::text,
+   'payment_source', case when item.sort_order = 1 then 'company' else 'personal' end,
    'purchasing_notes', 'Saved while processing',
    'attachments', case when item.sort_order = 1 then jsonb_build_array(jsonb_build_object('id','8e000000-0000-4000-8000-000000000001','storage_path','purchasing/org/request/item/receipt.pdf','original_filename','receipt.pdf','mime_type','application/pdf','size_bytes',120,'position',1)) else '[]'::jsonb end
   ))
@@ -216,11 +217,12 @@ select throws_ok($$select public.set_purchasing_purchase_request_status(
    'item_id', item.id,
    'vendor_name', 'Office Vendor',
    'purchased_quantity', item.quantity,
-   'actual_unit_cost', '10.00',
-   'before_tax_amount', (item.quantity * 10)::text,
-   'tax_amount', '1.00',
-   'total_amount', '1.00'
-  ))
+	   'actual_unit_cost', '10.00',
+	   'before_tax_amount', (item.quantity * 10)::text,
+	   'tax_amount', '1.00',
+	   'total_amount', '1.00',
+	   'payment_source', 'company'
+	  ))
   from public.purchase_request_items item
   where item.purchase_request_id = (select request_id from purchase_request_test_ids limit 1))
 )$$,'22023','invalid purchase detail tax breakdown','Purchasing cannot mark purchased with an inconsistent tax breakdown');
@@ -238,6 +240,7 @@ select lives_ok($$select public.set_purchasing_purchase_request_status(
    'before_tax_amount', (item.quantity * 10)::text,
    'tax_amount', '0.00',
    'total_amount', (item.quantity * 10)::text,
+   'payment_source', case when item.sort_order = 1 then 'company' else 'personal' end,
    'purchasing_notes', 'Purchased by Central Purchasing'
   ))
   from public.purchase_request_items item
@@ -260,7 +263,7 @@ select throws_ok($$select public.set_purchasing_purchase_request_status(
  'received'
 )$$,'22023','invalid purchase request status transition','received is not available through Phase 1B status RPC');
 
-select is((select count(*)::integer from public.branch_purchase_logs),0,'marking purchased creates no branch Purchase Log row');
+select is((select count(*)::integer from public.branch_purchase_logs where source_type='central_purchasing'),2,'marking purchased creates one Branch Purchase Log row per request item');
 select is((select count(*)::integer from public.maintenance_purchase_logs),0,'marking purchased creates no maintenance purchase/expense row');
 
 select * from finish();
