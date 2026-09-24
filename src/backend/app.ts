@@ -272,7 +272,16 @@ const purchaseLogBodySchema = z.object({
 const purchaseLogPaymentStatusBodySchema = z.object({
   payment_status: z.enum(["unpaid", "reimbursed"]),
   reimbursement_note: optionalStaffTextSchema(500),
-}).strict();
+  reimbursement_paid_by_name: optionalStaffTextSchema(120),
+}).strict().superRefine((value, context) => {
+  if (value.payment_status === "reimbursed" && !value.reimbursement_paid_by_name) {
+    context.addIssue({
+      code: "custom",
+      path: ["reimbursement_paid_by_name"],
+      message: "Reimbursement paid by name is required.",
+    });
+  }
+});
 const purchaseLogEditBodySchema = z.object({
   category: purchaseLogCategorySchema,
   item_name: normalizedNameSchema,
@@ -324,6 +333,7 @@ const purchaseLogResponseRowSchema = z.object({
   notes: z.string().nullable(),
   payment_status: purchaseLogPaymentStatusSchema,
   reimbursement_note: z.string().nullable(),
+  reimbursement_paid_by_name: z.string().nullable().optional().transform((value) => value ?? null),
   reimbursed_at: z.string().nullable(),
   reimbursed_by: z.uuid().nullable(),
   invoice_original_name: z.string().nullable(),
@@ -6659,6 +6669,7 @@ export function createApp(
           purchaseLogId: purchaseLogId.data,
           paymentStatus: body.data.payment_status,
           reimbursementNote: body.data.reimbursement_note,
+          reimbursementPaidByName: body.data.reimbursement_paid_by_name,
         }));
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json(result);

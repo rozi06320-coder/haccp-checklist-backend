@@ -111,9 +111,9 @@ select throws_ok($$select public.soft_delete_branch_purchase_log(
 )$$,'55000','central purchasing purchase logs are source managed','generic delete of central log is denied');
 select lives_ok($$select public.update_branch_purchase_log_payment_status(
  '91000000-0000-4000-8000-000000000001','93000000-0000-4000-8000-000000000001',
- (select id from public.branch_purchase_logs where source_purchase_request_item_id='95000000-0000-4000-8000-000000000002'),'reimbursed','Paid normally'
+ (select id from public.branch_purchase_logs where source_purchase_request_item_id='95000000-0000-4000-8000-000000000002'),'reimbursed','Paid normally','Ahmed'
 )$$,'existing Purchase Log reimbursement behavior remains available');
-select ok((select payment_status='reimbursed' and reimbursement_note='Paid normally' from public.branch_purchase_logs where source_purchase_request_item_id='95000000-0000-4000-8000-000000000002'),'generic reimbursement state persists on linked log');
+select ok((select payment_status='reimbursed' and reimbursement_note='Paid normally' and reimbursement_paid_by_name='Ahmed' from public.branch_purchase_logs where source_purchase_request_item_id='95000000-0000-4000-8000-000000000002'),'generic reimbursement state persists on linked log');
 
 set local role service_role;
 select lives_ok($$select * from public.create_branch_purchase_log(

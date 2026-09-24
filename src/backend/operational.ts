@@ -303,6 +303,7 @@ const purchaseLogRow = z.object({
   notes: optionalStaffText,
   payment_status: purchaseLogPaymentStatus,
   reimbursement_note: optionalStaffText,
+  reimbursement_paid_by_name: optionalStaffText.optional().default(null),
   reimbursed_at: z.string().nullable(),
   reimbursed_by: uuid.nullable(),
   invoice_storage_path: optionalStaffText,
@@ -733,6 +734,7 @@ export type OperationalAdmin = {
     purchaseLogId: string;
     paymentStatus: "unpaid" | "reimbursed";
     reimbursementNote?: string | null;
+    reimbursementPaidByName?: string | null;
   }): Promise<unknown>;
   updatePurchaseLog?(input: {
     actorUserId: string;
@@ -2206,6 +2208,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         target_purchase_log_id: input.purchaseLogId,
         new_payment_status: input.paymentStatus,
         new_reimbursement_note: input.reimbursementNote ?? null,
+        new_reimbursement_paid_by_name: input.reimbursementPaidByName ?? null,
       }));
       return { purchase_log: rows[0] };
     },

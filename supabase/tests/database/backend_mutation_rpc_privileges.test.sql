@@ -78,7 +78,7 @@ insert into backend_only_mutation_rpc(signature) values
   ('public.submit_phase4a_opening(uuid, uuid, text, bigint, uuid, text, jsonb)'),
   ('public.submit_sales_tracking(uuid, uuid, bigint, uuid, text)'),
   ('public.submit_supervisor_daily_audit(uuid, uuid, date, bigint, text, uuid, text, uuid, jsonb, text)'),
-  ('public.update_branch_purchase_log_payment_status(uuid, uuid, uuid, text, text)'),
+  ('public.update_branch_purchase_log_payment_status(uuid, uuid, uuid, text, text, text)'),
   ('public.update_internal_admin_branch_logo(uuid, uuid, uuid, text)'),
   ('public.update_internal_admin_organization(uuid, uuid, text, text)'),
   ('public.update_internal_admin_organization_logo(uuid, uuid, text)'),

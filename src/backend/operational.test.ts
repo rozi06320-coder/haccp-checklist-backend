@@ -273,7 +273,7 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
       async updatePurchaseLogPaymentStatus(input) {
         calls.push({ method: "updatePurchasePayment", ...input });
         if (input.actorUserId !== id.supervisor || input.purchaseLogId !== id.purchaseLog) throw new Error("denied");
-        return { purchase_log: { id: input.purchaseLogId, organization_id: id.organization, branch_id: input.branchId, supervisor_team_id: id.shift, branch_name: "Branch", category: "kitchen", item_name: "Receipt Book", quantity: 1, amount: 20, vendor_name: "N/A", purchase_date: "2026-08-08", notes: null, payment_status: input.paymentStatus, reimbursement_note: input.reimbursementNote ?? null, reimbursed_at: input.paymentStatus === "reimbursed" ? "2026-08-09T00:00:00.000Z" : null, reimbursed_by: input.paymentStatus === "reimbursed" ? input.actorUserId : null, invoice_storage_path: null, invoice_original_name: null, invoice_number: "INV-2026-001", invoice_url: null, created_by: input.actorUserId, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", revision: 2 } };
+        return { purchase_log: { id: input.purchaseLogId, organization_id: id.organization, branch_id: input.branchId, supervisor_team_id: id.shift, branch_name: "Branch", category: "kitchen", item_name: "Receipt Book", quantity: 1, amount: 20, vendor_name: "N/A", purchase_date: "2026-08-08", notes: null, payment_status: input.paymentStatus, reimbursement_note: input.reimbursementNote ?? null, reimbursement_paid_by_name: input.paymentStatus === "reimbursed" ? input.reimbursementPaidByName ?? null : null, reimbursed_at: input.paymentStatus === "reimbursed" ? "2026-08-09T00:00:00.000Z" : null, reimbursed_by: input.paymentStatus === "reimbursed" ? input.actorUserId : null, invoice_storage_path: null, invoice_original_name: null, invoice_number: "INV-2026-001", invoice_url: null, created_by: input.actorUserId, created_at: "2026-08-09T00:00:00.000Z", updated_at: "2026-08-09T00:00:00.000Z", revision: 2 } };
       },
       async updatePurchaseLog(input) {
         calls.push({ method: "updatePurchaseLog", ...input });
@@ -2111,12 +2111,14 @@ describe("Phase 3A operational API", () => {
   it("updates Purchase Log reimbursement status", async () => {
     const updated = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs/${id.purchaseLog}/payment-status`, {
       method: "PATCH", headers: headers("supervisor"),
-      body: JSON.stringify({ payment_status: "reimbursed", reimbursement_note: "  Paid by manager  " }),
+      body: JSON.stringify({ payment_status: "reimbursed", reimbursement_note: "  Cash reimbursement from office  ", reimbursement_paid_by_name: "  Ahmed  " }),
     });
     assert.equal(updated.status, 200);
-    const body = await updated.json() as { purchase_log: { payment_status: string; reimbursement_note: string | null; invoice_number: string | null } };
+    const body = await updated.json() as { purchase_log: { payment_status: string; reimbursement_note: string | null; reimbursement_paid_by_name: string | null; reimbursed_by: string | null; invoice_number: string | null } };
     assert.equal(body.purchase_log.payment_status, "reimbursed");
-    assert.equal(body.purchase_log.reimbursement_note, "Paid by manager");
+    assert.equal(body.purchase_log.reimbursement_note, "Cash reimbursement from office");
+    assert.equal(body.purchase_log.reimbursement_paid_by_name, "Ahmed");
+    assert.equal(body.purchase_log.reimbursed_by, id.supervisor);
     assert.equal(body.purchase_log.invoice_number, "INV-2026-001");
     assert.deepEqual(calls.at(-1), {
       method: "updatePurchasePayment",
@@ -2124,8 +2126,16 @@ describe("Phase 3A operational API", () => {
       branchId: id.branch,
       purchaseLogId: id.purchaseLog,
       paymentStatus: "reimbursed",
-      reimbursementNote: "Paid by manager",
+      reimbursementNote: "Cash reimbursement from office",
+      reimbursementPaidByName: "Ahmed",
     });
+  });
+  it("requires a payer name when reimbursing a Purchase Log", async () => {
+    const updated = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs/${id.purchaseLog}/payment-status`, {
+      method: "PATCH", headers: headers("supervisor"),
+      body: JSON.stringify({ payment_status: "reimbursed", reimbursement_note: "  Cash  " }),
+    });
+    assert.equal(updated.status, 400);
   });
   it("edits and soft-deletes unpaid Purchase Log entries through supervisor-only routes", async () => {
     const edited = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/purchase-logs/${id.purchaseLog}`, {

@@ -1,5 +1,5 @@
 begin;
-select plan(88);
+select plan(91);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000',id,'authenticated','authenticated',id||'@example.invalid','{}','{}',now(),now()
@@ -59,6 +59,7 @@ select has_column('public','branch_purchase_logs','invoice_number','purchase log
 select has_column('public','branch_purchase_logs','payment_status','purchase logs store payment status');
 select has_column('public','branch_purchase_logs','before_tax_amount','purchase logs store before tax amount');
 select has_column('public','branch_purchase_logs','tax_amount','purchase logs store tax amount');
+select has_column('public','branch_purchase_logs','reimbursement_paid_by_name','purchase logs store human-readable reimbursement payer name');
 select has_column('public','branch_purchase_logs','revision','purchase logs carry optimistic concurrency revision');
 select has_column('public','branch_purchase_logs','deleted_at','purchase logs support soft delete timestamp');
 select has_column('public','branch_purchase_logs','delete_reason','purchase logs store soft delete reason');
@@ -71,8 +72,8 @@ select ok(not has_function_privilege('authenticated','public.list_branch_purchas
 select ok(not has_function_privilege('authenticated','public.create_branch_purchase_log(uuid,uuid,jsonb)','execute')
  and has_function_privilege('service_role','public.create_branch_purchase_log(uuid,uuid,jsonb)','execute'),
  'purchase log create RPC is service-role only');
-select ok(not has_function_privilege('authenticated','public.update_branch_purchase_log_payment_status(uuid,uuid,uuid,text,text)','execute')
- and has_function_privilege('service_role','public.update_branch_purchase_log_payment_status(uuid,uuid,uuid,text,text)','execute'),
+select ok(not has_function_privilege('authenticated','public.update_branch_purchase_log_payment_status(uuid,uuid,uuid,text,text,text)','execute')
+ and has_function_privilege('service_role','public.update_branch_purchase_log_payment_status(uuid,uuid,uuid,text,text,text)','execute'),
  'purchase log payment RPC is service-role only');
 select ok(not has_function_privilege('authenticated','public.update_branch_purchase_log(uuid,uuid,uuid,bigint,text,jsonb)','execute')
  and has_function_privilege('service_role','public.update_branch_purchase_log(uuid,uuid,uuid,bigint,text,jsonb)','execute'),
@@ -130,17 +131,34 @@ select id as purchase_log_id from public.branch_purchase_logs limit 1;
 grant select on purchase_log_test_ids to service_role;
 
 set local role service_role;
+select throws_ok($$select * from public.update_branch_purchase_log_payment_status(
+ '1f000000-0000-4000-8000-000000000001',
+ '3f000000-0000-4000-8000-000000000001',
+ (select purchase_log_id from purchase_log_test_ids limit 1),
+ 'reimbursed',
+ '  Paid from petty cash  ',
+ '   '
+)$$,'22023','reimbursement paid by name is required','blank reimbursement payer name is rejected');
+select throws_ok($$select * from public.update_branch_purchase_log_payment_status(
+ '1f000000-0000-4000-8000-000000000001',
+ '3f000000-0000-4000-8000-000000000001',
+ (select purchase_log_id from purchase_log_test_ids limit 1),
+ 'reimbursed',
+ '  Paid from petty cash  ',
+ repeat('A',121)
+)$$,'22023','invalid maintenance purchase payload','overlong reimbursement payer name is rejected');
 select lives_ok($$select * from public.update_branch_purchase_log_payment_status(
  '1f000000-0000-4000-8000-000000000001',
  '3f000000-0000-4000-8000-000000000001',
  (select purchase_log_id from purchase_log_test_ids limit 1),
  'reimbursed',
- '  Paid from petty cash  '
+ '  Paid from petty cash  ',
+ ' Ahmed '
 )$$,'supervisor marks purchase reimbursed');
 reset role;
 
-select ok((select payment_status='reimbursed' and reimbursement_note='Paid from petty cash' and reimbursed_at is not null and reimbursed_by='1f000000-0000-4000-8000-000000000001'
- from public.branch_purchase_logs limit 1),'reimbursement state is persisted');
+select ok((select payment_status='reimbursed' and reimbursement_note='Paid from petty cash' and reimbursement_paid_by_name='Ahmed' and reimbursed_at is not null and reimbursed_by='1f000000-0000-4000-8000-000000000001'
+ from public.branch_purchase_logs limit 1),'reimbursement state stores payer name and authenticated actor separately');
 select is((select invoice_number from public.branch_purchase_logs where id=(select purchase_log_id from purchase_log_test_ids limit 1)),'INV-2026-001','payment update preserves invoice number');
 select is((select reason_note from public.branch_purchase_log_events where event_type='payment_status_changed' and purchase_log_id=(select purchase_log_id from purchase_log_test_ids limit 1) order by created_at desc limit 1),null,'payment status audit event does not require reimbursement note as reason');
 
@@ -160,11 +178,12 @@ select lives_ok($$select * from public.update_branch_purchase_log_payment_status
  '3f000000-0000-4000-8000-000000000001',
  (select purchase_log_id from purchase_log_short_note_ids limit 1),
  'reimbursed',
- 'Paid'
+ 'Paid',
+ 'Mona'
 )$$,'payment update with short reimbursement note succeeds');
 reset role;
 select is((select reimbursement_note from public.branch_purchase_logs where id=(select purchase_log_id from purchase_log_short_note_ids limit 1)),'Paid','short reimbursement note remains on purchase row');
-select ok((select reason_note is null and new_values->>'reimbursement_note'='Paid' from public.branch_purchase_log_events where event_type='payment_status_changed' and purchase_log_id=(select purchase_log_id from purchase_log_short_note_ids limit 1) order by created_at desc limit 1),'payment audit snapshot preserves short reimbursement note while event reason note stays null');
+select ok((select reason_note is null and new_values->>'reimbursement_note'='Paid' and new_values->>'reimbursement_paid_by_name'='Mona' from public.branch_purchase_log_events where event_type='payment_status_changed' and purchase_log_id=(select purchase_log_id from purchase_log_short_note_ids limit 1) order by created_at desc limit 1),'payment audit snapshot preserves reimbursement note and payer name while event reason note stays null');
 
 select ok(not has_function_privilege('authenticated','public.list_managed_purchase_logs(uuid,uuid,uuid,text,text,date,date)','execute')
  and has_function_privilege('service_role','public.list_managed_purchase_logs(uuid,uuid,uuid,text,text,date,date)','execute'),
@@ -266,10 +285,11 @@ select lives_ok($$select * from public.update_branch_purchase_log_payment_status
  '3f000000-0000-4000-8000-000000000001',
  (select purchase_log_id from modern_purchase_log_ids limit 1),
  'reimbursed',
- 'Modern supervisor paid'
+ 'Modern supervisor paid',
+ 'Sara'
 )$$,'modern null-attribution purchase log can be reimbursed');
 reset role;
-select ok((select supervisor_team_id is null and payment_status='reimbursed' and reimbursed_by='1f000000-0000-4000-8000-000000000004' from public.branch_purchase_logs where id=(select purchase_log_id from modern_purchase_log_ids limit 1)),'modern reimbursement preserves null legacy team and records actor');
+select ok((select supervisor_team_id is null and payment_status='reimbursed' and reimbursement_paid_by_name='Sara' and reimbursed_by='1f000000-0000-4000-8000-000000000004' from public.branch_purchase_logs where id=(select purchase_log_id from modern_purchase_log_ids limit 1)),'modern reimbursement preserves null legacy team and records actor plus payer name');
 select lives_ok($$select * from public.create_branch_purchase_log(
  '1f000000-0000-4000-8000-000000000004','3f000000-0000-4000-8000-000000000001',
  jsonb_build_object('category','kitchen','item_name','Modern Editable Purchase','quantity','1','amount','14.00','purchase_date','2026-08-08'))$$,
