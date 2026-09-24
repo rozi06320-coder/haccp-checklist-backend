@@ -456,12 +456,12 @@ type PurchaseRequestPurchaseDetailInput = {
   item_id: string;
   vendor_name?: string | null;
   invoice_number?: string | null;
-  purchased_quantity?: string | number;
-  actual_unit_cost?: string | number;
-  actual_total_cost?: string | number;
-  before_tax_amount?: string | number;
-  tax_amount?: string | number;
-  total_amount?: string | number;
+  purchased_quantity?: string | number | null;
+  actual_unit_cost?: string | number | null;
+  actual_total_cost?: string | number | null;
+  before_tax_amount?: string | number | null;
+  tax_amount?: string | number | null;
+  total_amount?: string | number | null;
   purchasing_notes?: string | null;
   attachments?: Array<{ id?: string; bytes?: Buffer; mimeType?: z.infer<typeof purchaseInvoiceMime>; originalName?: string }>;
 };

@@ -1,5 +1,5 @@
 begin;
-select plan(67);
+select plan(69);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated', email, '{}', '{}', now(), now()
@@ -207,6 +207,40 @@ select throws_ok($$select public.save_purchasing_purchase_request_details(
   order by item.sort_order
   limit 1)
 )$$,'22023','invalid purchase detail before tax','quantity times unit cost must equal before tax when both are supplied');
+select lives_ok($$select public.save_purchasing_purchase_request_details(
+ '1e000000-0000-4000-8000-000000000003',
+ '2e000000-0000-4000-8000-000000000001',
+ (select request_id from purchase_request_test_ids limit 1),
+ (select jsonb_build_array(jsonb_build_object(
+   'item_id', item.id,
+   'vendor_name', 'Quantity Only Vendor',
+   'purchased_quantity', '2',
+   'before_tax_amount', '190.00',
+   'tax_amount', '9.00',
+   'total_amount', '199.00'
+  ))
+  from public.purchase_request_items item
+  where item.purchase_request_id = (select request_id from purchase_request_test_ids limit 1)
+  order by item.sort_order
+  limit 1)
+)$$,'quantity may be supplied without unit cost');
+select lives_ok($$select public.save_purchasing_purchase_request_details(
+ '1e000000-0000-4000-8000-000000000003',
+ '2e000000-0000-4000-8000-000000000001',
+ (select request_id from purchase_request_test_ids limit 1),
+ (select jsonb_build_array(jsonb_build_object(
+   'item_id', item.id,
+   'vendor_name', 'Unit Cost Only Vendor',
+   'actual_unit_cost', '95.00',
+   'before_tax_amount', '190.00',
+   'tax_amount', '9.00',
+   'total_amount', '199.00'
+  ))
+  from public.purchase_request_items item
+  where item.purchase_request_id = (select request_id from purchase_request_test_ids limit 1)
+  order by item.sort_order
+  limit 1)
+)$$,'unit cost may be supplied without quantity');
 select throws_ok($$select public.set_purchasing_purchase_request_status(
  '1e000000-0000-4000-8000-000000000003',
  '2e000000-0000-4000-8000-000000000001',
