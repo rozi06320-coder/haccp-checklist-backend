@@ -125,7 +125,6 @@ function deps(options: { transitionError?: boolean } = {}): BackendDependencies 
               before_tax_amount: input.purchaseDetails?.[0]?.before_tax_amount ?? null,
               tax_amount: input.purchaseDetails?.[0]?.tax_amount ?? null,
               total_amount: input.purchaseDetails?.[0]?.total_amount ?? input.purchaseDetails?.[0]?.actual_total_cost ?? null,
-              payment_source: input.purchaseDetails?.[0]?.payment_source ?? null,
               purchasing_notes: input.purchaseDetails?.[0]?.purchasing_notes ?? null,
               attachments: [],
             })),
@@ -149,7 +148,6 @@ function deps(options: { transitionError?: boolean } = {}): BackendDependencies 
               before_tax_amount: input.purchaseDetails?.[0]?.before_tax_amount ?? null,
               tax_amount: input.purchaseDetails?.[0]?.tax_amount ?? null,
               total_amount: input.purchaseDetails?.[0]?.total_amount ?? input.purchaseDetails?.[0]?.actual_total_cost ?? null,
-              payment_source: input.purchaseDetails?.[0]?.payment_source ?? null,
               purchasing_notes: input.purchaseDetails?.[0]?.purchasing_notes ?? null,
               attachments: [{ id: "77000000-0000-4000-8000-000000000001", original_filename: "receipt.pdf", mime_type: "application/pdf", size_bytes: 128, position: 1, url: "https://signed.example.invalid/receipt.pdf" }],
             })),
@@ -160,26 +158,6 @@ function deps(options: { transitionError?: boolean } = {}): BackendDependencies 
         calls.push({ name: "list-purchasing-purchase-logs", input });
         if (input.organizationId !== organization) throw new OperationalAccessError();
         return { purchase_logs: [purchaseLog] };
-      },
-      async reimbursePurchasingPurchaseRequestItem(input) {
-        calls.push({ name: "reimburse-purchasing-item", input });
-        if (input.organizationId !== organization) throw new OperationalAccessError();
-        return {
-          purchase_request: {
-            ...purchaseRequest,
-            status: "purchased",
-            items: purchaseRequest.items.map((item) => ({
-              ...item,
-              payment_source: "personal",
-              purchase_log_id: purchaseLogId,
-              purchase_log_payment_status: "reimbursed",
-              purchase_log_reimbursement_note: input.reimbursementNote ?? null,
-              purchase_log_reimbursed_at: "2026-09-22T09:00:00.000Z",
-              purchase_log_reimbursed_by: purchaser,
-              attachments: [],
-            })),
-          },
-        };
       },
       async createPurchaseLog(input) {
         calls.push({ name: "create-purchase-log", input });
@@ -257,9 +235,9 @@ describe("Purchase Request API", () => {
 
   it("allows only Phase 1B purchasing status transitions through the purchasing endpoint", async () => {
     assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "processing" }) })).status, 200);
-    const purchased = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased", items: [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", invoice_number: "INV-1", purchased_quantity: 3, actual_unit_cost: "10.00", before_tax_amount: "30.00", tax_amount: "4.50", total_amount: "34.50", payment_source: "company", purchasing_notes: "Delivered" }] }) });
+    const purchased = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased", items: [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", invoice_number: "INV-1", purchased_quantity: 3, actual_unit_cost: "10.00", before_tax_amount: "30.00", tax_amount: "4.50", total_amount: "34.50", purchasing_notes: "Delivered" }] }) });
     assert.equal(purchased.status, 200);
-    assert.deepEqual((calls.at(-1)?.input as { purchaseDetails?: unknown }).purchaseDetails, [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", invoice_number: "INV-1", purchased_quantity: 3, actual_unit_cost: "10.00", before_tax_amount: "30.00", tax_amount: "4.50", total_amount: "34.50", payment_source: "company", purchasing_notes: "Delivered" }]);
+    assert.deepEqual((calls.at(-1)?.input as { purchaseDetails?: unknown }).purchaseDetails, [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", invoice_number: "INV-1", purchased_quantity: 3, actual_unit_cost: "10.00", before_tax_amount: "30.00", tax_amount: "4.50", total_amount: "34.50", purchasing_notes: "Delivered" }]);
     assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "received" }) })).status, 400);
     assert.equal(calls.some((call) => call.name === "create-purchase-log"), false);
   });
@@ -274,14 +252,14 @@ describe("Purchase Request API", () => {
     const response = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/items`, "purchasing", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items: [{ item_id: purchaseRequest.items[0].id, vendor_name: "Food Vendor", invoice_number: "INV-9", purchased_quantity: 3, actual_unit_cost: "10.00", before_tax_amount: "30.00", tax_amount: "4.50", total_amount: "34.50", payment_source: "personal", purchasing_notes: "Saved", attachments: [{ original_name: "receipt.pdf", mime_type: "application/pdf", content_base64: Buffer.from("%PDF-1.4").toString("base64") }] }] }),
+      body: JSON.stringify({ items: [{ item_id: purchaseRequest.items[0].id, vendor_name: "Food Vendor", invoice_number: "INV-9", purchased_quantity: 3, actual_unit_cost: "10.00", before_tax_amount: "30.00", tax_amount: "4.50", total_amount: "34.50", purchasing_notes: "Saved", attachments: [{ original_name: "receipt.pdf", mime_type: "application/pdf", content_base64: Buffer.from("%PDF-1.4").toString("base64") }] }] }),
     });
     assert.equal(response.status, 200);
     const call = calls.at(-1);
     assert.equal(call?.name, "save-purchasing-details");
     const details = (call?.input as { purchaseDetails: Array<{ attachments?: Array<{ bytes: Buffer; mimeType: string; originalName: string }> }> }).purchaseDetails;
     assert.equal(details[0]?.attachments?.[0]?.mimeType, "application/pdf");
-    assert.deepEqual({ ...details[0], attachments: undefined }, { item_id: purchaseRequest.items[0].id, vendor_name: "Food Vendor", invoice_number: "INV-9", purchased_quantity: 3, actual_unit_cost: "10.00", before_tax_amount: "30.00", tax_amount: "4.50", total_amount: "34.50", payment_source: "personal", purchasing_notes: "Saved", attachments: undefined });
+    assert.deepEqual({ ...details[0], attachments: undefined }, { item_id: purchaseRequest.items[0].id, vendor_name: "Food Vendor", invoice_number: "INV-9", purchased_quantity: 3, actual_unit_cost: "10.00", before_tax_amount: "30.00", tax_amount: "4.50", total_amount: "34.50", purchasing_notes: "Saved", attachments: undefined });
     assert.equal(calls.some((entry) => entry.name === "create-purchase-log"), false);
   });
 
@@ -321,28 +299,12 @@ describe("Purchase Request API", () => {
     assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-logs`, "inactive-purchasing")).status, 403);
   });
 
-  it("reimburses personal central purchasing items through active Purchasing membership only", async () => {
-    const response = await request(`/api/v1/purchasing/organizations/${organization}/purchase-request-items/${purchaseRequest.items[0].id}/reimbursement`, "purchasing", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reimbursement_note: " Paid " }),
-    });
-    assert.equal(response.status, 200);
-    assert.deepEqual(calls.at(-1), {
-      name: "reimburse-purchasing-item",
-      input: { actorUserId: purchaser, organizationId: organization, itemId: purchaseRequest.items[0].id, reimbursementNote: "Paid" },
-    });
-    assert.equal((await request(`/api/v1/purchasing/organizations/${otherOrganization}/purchase-request-items/${purchaseRequest.items[0].id}/reimbursement`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })).status, 403);
-    assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-request-items/${purchaseRequest.items[0].id}/reimbursement`, "manager", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })).status, 403);
-    assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-request-items/${purchaseRequest.items[0].id}/reimbursement`, "inactive-purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })).status, 403);
-  });
-
   it("returns a safe failure when the RPC rejects an invalid status jump", async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     server = createServer(createApp(config, deps({ transitionError: true })));
     await new Promise<void>((resolve, reject) => server.listen(0, "127.0.0.1", resolve).once("error", reject));
     origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    const response = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased", items: [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", actual_total_cost: "30.00", payment_source: "company" }] }) });
+    const response = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased", items: [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", actual_total_cost: "30.00" }] }) });
     assert.equal(response.status, 422);
   });
 });

@@ -1,13 +1,5 @@
 begin;
 
-alter table public.purchase_request_items
-  add column if not exists payment_source text;
-
-alter table public.purchase_request_items
-  drop constraint if exists purchase_request_items_payment_source_check,
-  add constraint purchase_request_items_payment_source_check
-    check (payment_source is null or payment_source in ('company','personal'));
-
 alter table public.branch_purchase_logs
   add column if not exists source_type text,
   add column if not exists source_purchase_request_id uuid,
@@ -17,9 +9,6 @@ alter table public.branch_purchase_logs
   drop constraint if exists branch_purchase_logs_category_check,
   add constraint branch_purchase_logs_category_check
     check (category in ('stationery','kitchen','equipment','food_item','other')),
-  drop constraint if exists branch_purchase_logs_payment_status_check,
-  add constraint branch_purchase_logs_payment_status_check
-    check (payment_status in ('unpaid','reimbursed','company_paid')),
   drop constraint if exists branch_purchase_logs_source_type_check,
   add constraint branch_purchase_logs_source_type_check
     check (source_type is null or source_type in ('central_purchasing')),
@@ -85,12 +74,8 @@ as $function$
         'tax_amount', item.tax_amount,
         'total_amount', coalesce(item.total_amount, item.actual_total_cost),
         'purchasing_notes', item.purchasing_notes,
-        'payment_source', item.payment_source,
         'purchase_log_id', log.id,
         'purchase_log_payment_status', log.payment_status,
-        'purchase_log_reimbursement_note', log.reimbursement_note,
-        'purchase_log_reimbursed_at', log.reimbursed_at,
-        'purchase_log_reimbursed_by', log.reimbursed_by,
         'attachments', coalesce((
           select jsonb_agg(jsonb_build_object(
             'id', attachment.id,
@@ -134,7 +119,6 @@ declare
   v_item_id uuid;
   v_vendor text;
   v_invoice_number text;
-  v_payment_source text;
   v_purchased_quantity numeric;
   v_actual_unit_cost numeric;
   v_actual_total_cost numeric;
@@ -174,7 +158,6 @@ begin
 
     v_vendor := nullif(pg_catalog.btrim(coalesce(v_detail->>'vendor_name', '')), '');
     v_invoice_number := nullif(pg_catalog.btrim(coalesce(v_detail->>'invoice_number', '')), '');
-    v_payment_source := nullif(pg_catalog.btrim(coalesce(v_detail->>'payment_source', '')), '');
     v_notes := nullif(pg_catalog.btrim(coalesce(v_detail->>'purchasing_notes', '')), '');
     v_purchased_quantity := null;
     v_actual_unit_cost := null;
@@ -191,12 +174,6 @@ begin
     end if;
     if v_invoice_number is not null and pg_catalog.length(v_invoice_number) > 120 then
       raise exception 'invalid purchase detail invoice number' using errcode = '22023';
-    end if;
-    if v_payment_source is not null and v_payment_source not in ('company','personal') then
-      raise exception 'invalid purchase detail payment source' using errcode = '22023';
-    end if;
-    if require_complete and v_payment_source is null then
-      raise exception 'invalid purchase detail payment source' using errcode = '22023';
     end if;
     if v_notes is not null and pg_catalog.length(v_notes) > 1000 then
       raise exception 'invalid purchase detail notes' using errcode = '22023';
@@ -269,8 +246,7 @@ begin
         before_tax_amount = v_before_tax_amount,
         tax_amount = v_tax_amount,
         total_amount = v_total_amount,
-        purchasing_notes = v_notes,
-        payment_source = v_payment_source
+        purchasing_notes = v_notes
     where item.id = v_item_id
       and item.purchase_request_id = request_row.id;
 
@@ -474,9 +450,6 @@ begin
  for update;
  if not found or existing.deleted_at is not null then
   raise exception 'purchase log access denied' using errcode='42501';
- end if;
- if existing.source_type='central_purchasing' then
-  raise exception 'central purchasing purchase logs are source managed' using errcode='55000';
  end if;
  update public.branch_purchase_logs l
  set payment_status=clean_status,
@@ -698,7 +671,6 @@ begin
         and (
           item.vendor_name is null
           or coalesce(item.total_amount, item.actual_total_cost) is null
-          or item.payment_source is null
         )
     ) then
       raise exception 'purchase details incomplete' using errcode = '22023';
@@ -755,7 +727,7 @@ begin
         v_item.vendor_name,
         (statement_timestamp() at time zone 'Asia/Riyadh')::date,
         v_item.purchasing_notes,
-        case when v_item.payment_source='company' then 'company_paid' else 'unpaid' end,
+        'unpaid',
         null,
         null,
         null,
@@ -781,7 +753,7 @@ begin
         if v_log_before.source_purchase_request_id<>v_request.id
           or v_log_before.organization_id<>v_request.organization_id
           or v_log_before.branch_id<>v_request.branch_id
-          or v_log_before.payment_status not in ('unpaid','company_paid') then
+          or v_log_before.payment_status not in ('unpaid','reimbursed') then
           raise exception 'purchase log conflicts with current workflow state' using errcode='40001';
         end if;
 
@@ -795,17 +767,13 @@ begin
             vendor_name=v_item.vendor_name,
             purchase_date=(statement_timestamp() at time zone 'Asia/Riyadh')::date,
             notes=v_item.purchasing_notes,
-            payment_status=case when v_item.payment_source='company' then 'company_paid' else 'unpaid' end,
-            reimbursement_note=null,
-            reimbursed_at=null,
-            reimbursed_by=null,
             invoice_number=v_item.invoice_number,
             revision=log.revision+1
         where log.id=v_log_before.id
         returning * into v_log_after;
 
         insert into public.branch_purchase_log_events(purchase_log_id,organization_id,branch_id,event_type,actor_user_id,reason_code,reason_note,old_values,new_values)
-        values(v_log_after.id,v_log_after.organization_id,v_log_after.branch_id,'edited',actor_user_id,'central_purchasing_sync',null,private.branch_purchase_log_snapshot(v_log_before),private.branch_purchase_log_snapshot(v_log_after));
+        values(v_log_after.id,v_log_after.organization_id,v_log_after.branch_id,'edited',actor_user_id,'correction',null,private.branch_purchase_log_snapshot(v_log_before),private.branch_purchase_log_snapshot(v_log_after));
       end if;
     end loop;
   end if;
@@ -871,7 +839,7 @@ begin
       where managed_branch.id = branch_filter and managed_branch.organization_id = target_organization_id
     ))
     or category_filter is not null and category_filter not in ('stationery','kitchen','equipment','food_item','other')
-    or payment_status_filter is not null and payment_status_filter not in ('unpaid','reimbursed','company_paid')
+    or payment_status_filter is not null and payment_status_filter not in ('unpaid','reimbursed')
     or date_from_filter is not null and date_to_filter is not null and date_from_filter > date_to_filter then
     raise exception 'managed purchase log access denied' using errcode = '42501';
   end if;
@@ -950,7 +918,7 @@ begin
     raise exception 'purchasing purchase log access denied' using errcode = '42501';
   end if;
 
-  if payment_status_filter is not null and payment_status_filter not in ('unpaid','reimbursed','company_paid') then
+  if payment_status_filter is not null and payment_status_filter not in ('unpaid','reimbursed') then
     raise exception 'invalid purchase log payment status' using errcode = '22023';
   end if;
 
@@ -1016,86 +984,6 @@ begin
 end
 $function$;
 
-create or replace function public.reimburse_purchasing_purchase_request_item(
-  actor_user_id uuid,
-  target_organization_id uuid,
-  target_purchase_request_item_id uuid,
-  new_reimbursement_note text
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path = ''
-as $function$
-declare
-  v_item public.purchase_request_items;
-  v_request public.purchase_requests;
-  v_log_before public.branch_purchase_logs;
-  v_log_after public.branch_purchase_logs;
-  clean_note text:=private.clean_purchase_text(new_reimbursement_note,null,500);
-begin
-  if not private.has_active_purchasing_membership(actor_user_id, target_organization_id) then
-    raise exception 'purchasing access denied' using errcode = '42501';
-  end if;
-
-  select *
-  into v_item
-  from public.purchase_request_items item
-  where item.id=target_purchase_request_item_id
-  for update;
-
-  if v_item.id is null then
-    raise exception 'purchase request item not found' using errcode='42501';
-  end if;
-
-  select *
-  into v_request
-  from public.purchase_requests request
-  where request.id=v_item.purchase_request_id
-    and request.organization_id=target_organization_id
-  for update;
-
-  if v_request.id is null then
-    raise exception 'purchase request item not found' using errcode='42501';
-  end if;
-  if v_request.status<>'purchased' or v_item.payment_source<>'personal' then
-    raise exception 'purchase request item cannot be reimbursed' using errcode='22023';
-  end if;
-
-  select * into v_log_before
-  from public.branch_purchase_logs log
-  where log.source_type='central_purchasing'
-    and log.source_purchase_request_item_id=v_item.id
-    and log.organization_id=target_organization_id
-    and log.deleted_at is null
-  for update;
-
-  if not found then
-    raise exception 'purchase log access denied' using errcode='42501';
-  end if;
-  if v_log_before.payment_status='reimbursed' then
-    return jsonb_build_object('purchase_request', private.purchase_request_json(v_request));
-  end if;
-  if v_log_before.payment_status<>'unpaid' then
-    raise exception 'purchase log cannot be reimbursed' using errcode='22023';
-  end if;
-
-  update public.branch_purchase_logs log
-  set payment_status='reimbursed',
-      reimbursement_note=clean_note,
-      reimbursed_at=statement_timestamp(),
-      reimbursed_by=actor_user_id,
-      revision=log.revision+1
-  where log.id=v_log_before.id
-  returning * into v_log_after;
-
-  insert into public.branch_purchase_log_events(purchase_log_id,organization_id,branch_id,event_type,actor_user_id,reason_code,reason_note,old_values,new_values)
-  values(v_log_after.id,v_log_after.organization_id,v_log_after.branch_id,'payment_status_changed',actor_user_id,'payment_status_change',null,private.branch_purchase_log_snapshot(v_log_before),private.branch_purchase_log_snapshot(v_log_after));
-
-  return jsonb_build_object('purchase_request', private.purchase_request_json(v_request));
-end
-$function$;
-
 revoke all on function private.purchase_request_json(public.purchase_requests) from public, anon, authenticated;
 revoke all on function private.apply_purchasing_purchase_request_details(public.purchase_requests, jsonb, boolean) from public, anon, authenticated;
 revoke all on function public.list_branch_purchase_logs(uuid,uuid) from public, anon, authenticated;
@@ -1107,7 +995,6 @@ revoke all on function public.set_purchasing_purchase_request_status(uuid, uuid,
 revoke all on function public.set_purchasing_purchase_request_status(uuid, uuid, uuid, text) from public, anon, authenticated;
 revoke all on function public.list_managed_purchase_logs(uuid, uuid, uuid, text, text, date, date) from public, anon, authenticated;
 revoke all on function public.list_purchasing_purchase_logs(uuid, uuid, uuid, text, date, date, text) from public, anon, authenticated;
-revoke all on function public.reimburse_purchasing_purchase_request_item(uuid, uuid, uuid, text) from public, anon, authenticated;
 
 grant execute on function public.list_branch_purchase_logs(uuid,uuid) to service_role;
 grant execute on function public.create_branch_purchase_log(uuid,uuid,jsonb) to service_role;
@@ -1118,6 +1005,5 @@ grant execute on function public.set_purchasing_purchase_request_status(uuid, uu
 grant execute on function public.set_purchasing_purchase_request_status(uuid, uuid, uuid, text) to service_role;
 grant execute on function public.list_managed_purchase_logs(uuid, uuid, uuid, text, text, date, date) to service_role;
 grant execute on function public.list_purchasing_purchase_logs(uuid, uuid, uuid, text, date, date, text) to service_role;
-grant execute on function public.reimburse_purchasing_purchase_request_item(uuid, uuid, uuid, text) to service_role;
 
 commit;

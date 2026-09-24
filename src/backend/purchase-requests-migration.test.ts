@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 const migrationPath = path.join(process.cwd(), "supabase/migrations/20260921130000_purchase_requests_phase1b.sql");
 const detailsMigrationPath = path.join(process.cwd(), "supabase/migrations/20260923100000_purchasing_purchase_request_details.sql");
 const financialDocumentsMigrationPath = path.join(process.cwd(), "supabase/migrations/20260923120000_purchasing_purchase_request_financial_documents.sql");
-const settlementMigrationPath = path.join(process.cwd(), "supabase/migrations/20260924120000_central_purchasing_purchase_log_settlement.sql");
+const linkMigrationPath = path.join(process.cwd(), "supabase/migrations/20260924120000_central_purchasing_purchase_log_link.sql");
 
 describe("Purchase Request migration contract", () => {
   it("creates a separate request and item domain with no Purchase Log or expense coupling", async () => {
@@ -78,23 +78,18 @@ describe("Purchase Request migration contract", () => {
     assert.doesNotMatch(sql, /insert into public\.branch_purchase_logs|insert into public\.maintenance_purchase_logs|reimbursement|expense/i);
   });
 
-  it("settles purchased requests through linked Branch Purchase Logs without a second request settlement status", async () => {
-    const sql = await readFile(settlementMigrationPath, "utf8");
-    assert.match(sql, /add column if not exists payment_source text/i);
-    assert.match(sql, /payment_source is null or payment_source in \('company','personal'\)/i);
+  it("links purchased request items to Branch Purchase Logs without settlement/payment-source state", async () => {
+    const sql = await readFile(linkMigrationPath, "utf8");
+    assert.doesNotMatch(sql, /payment_source|company_paid|reimburse_purchasing_purchase_request_item/i);
     assert.doesNotMatch(sql, /purchase_request_items[\s\S]*settlement_status/i);
     assert.match(sql, /add column if not exists source_type text/i);
     assert.match(sql, /source_purchase_request_id uuid/i);
     assert.match(sql, /source_purchase_request_item_id uuid/i);
     assert.match(sql, /create unique index branch_purchase_logs_central_purchasing_item_key/i);
     assert.match(sql, /where source_type = 'central_purchasing'[\s\S]*source_purchase_request_item_id is not null/i);
-    assert.match(sql, /payment_status in \('unpaid','reimbursed','company_paid'\)/i);
-    assert.match(sql, /item\.payment_source is null[\s\S]*purchase details incomplete/i);
     assert.match(sql, /insert into public\.branch_purchase_logs/i);
-    assert.match(sql, /case when v_item\.payment_source='company' then 'company_paid' else 'unpaid' end/i);
+    assert.match(sql, /'unpaid'/i);
     assert.match(sql, /source_type='central_purchasing'/i);
-    assert.match(sql, /public\.reimburse_purchasing_purchase_request_item/i);
-    assert.match(sql, /grant execute on function public\.reimburse_purchasing_purchase_request_item\(uuid, uuid, uuid, text\) to service_role/i);
-    assert.doesNotMatch(sql, /alter table public\.purchase_request_items[\s\S]*payment_source text not null/i);
+    assert.match(sql, /existing\.source_type='central_purchasing'[\s\S]*central purchasing purchase logs are source managed/i);
   });
 });

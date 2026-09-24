@@ -26,7 +26,7 @@ const monthlyEvaluationStatus = z.enum(["draft", "completed"]);
 const dailyAuditItem = z.object({item_id:z.string(),item_number:z.number().int().min(1).max(13).optional(),answer:z.enum(["not_checked","compliant","non_compliant"]),remark:z.string()}).strict();
 const dailyAuditCurrent = z.object({submission_id:uuid.nullable().optional(),branch_id:uuid,business_date:z.iso.date(),state:z.enum(["empty","draft","submitted"]).nullable(),revision:z.number().int().nonnegative().default(0),auditor_display_name:z.string().nullable().optional(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),submitted_at:z.string().nullable().optional(),updated_at:z.string().nullable().optional(),items:z.array(dailyAuditItem).length(13)}).strict();
 const purchaseLogCategory = z.enum(["stationery", "kitchen", "equipment", "food_item", "other"]);
-const purchaseLogPaymentStatus = z.enum(["unpaid", "reimbursed", "company_paid"]);
+const purchaseLogPaymentStatus = z.enum(["unpaid", "reimbursed"]);
 const purchaseRequestCategory = z.enum(["stationary", "kitchen", "other"]);
 const purchaseRequestStatus = z.enum(["submitted", "processing", "purchased"]);
 const supplierReceivingCategory = z.enum(["raw", "frozen", "juice"]);
@@ -462,7 +462,6 @@ type PurchaseRequestPurchaseDetailInput = {
   before_tax_amount?: string | number;
   tax_amount?: string | number;
   total_amount?: string | number;
-  payment_source?: "company" | "personal" | null;
   purchasing_notes?: string | null;
   attachments?: Array<{ id?: string; bytes?: Buffer; mimeType?: z.infer<typeof purchaseInvoiceMime>; originalName?: string }>;
 };
@@ -706,12 +705,6 @@ export type OperationalAdmin = {
     dateFrom?: string;
     dateTo?: string;
     search?: string;
-  }): Promise<unknown>;
-  reimbursePurchasingPurchaseRequestItem?(input: {
-    actorUserId: string;
-    organizationId: string;
-    itemId: string;
-    reimbursementNote?: string | null;
   }): Promise<unknown>;
   createPurchaseLogReceiptReadUrl?(input: { actorUserId: string; purchaseLogId: string }): Promise<unknown>;
   createManagedPurchaseLogReceiptReadUrl?(input: { actorUserId: string; organizationId: string; purchaseLogId: string }): Promise<unknown>;
@@ -1169,7 +1162,6 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
           before_tax_amount:detail.before_tax_amount??null,
           tax_amount:detail.tax_amount??null,
           total_amount:detail.total_amount??detail.actual_total_cost??null,
-          payment_source:detail.payment_source??null,
           purchasing_notes:detail.purchasing_notes??null,
         };
         if(detail.attachments)preparedDetail.attachments=attachments;
@@ -2116,14 +2108,6 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         date_to_filter: input.dateTo ?? null,
         search_filter: input.search ?? null,
       })) };
-    },
-    async reimbursePurchasingPurchaseRequestItem(input) {
-      return await signPurchaseRequestPayload(await rpcObject("reimburse_purchasing_purchase_request_item", {
-        actor_user_id: input.actorUserId,
-        target_organization_id: input.organizationId,
-        target_purchase_request_item_id: input.itemId,
-        new_reimbursement_note: input.reimbursementNote ?? null,
-      }));
     },
     async createPurchaseLogReceiptReadUrl(input) {
       const result = await client.from("branch_purchase_logs")
