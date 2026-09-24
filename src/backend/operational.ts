@@ -26,7 +26,7 @@ const monthlyEvaluationStatus = z.enum(["draft", "completed"]);
 const dailyAuditItem = z.object({item_id:z.string(),item_number:z.number().int().min(1).max(13).optional(),answer:z.enum(["not_checked","compliant","non_compliant"]),remark:z.string()}).strict();
 const dailyAuditCurrent = z.object({submission_id:uuid.nullable().optional(),branch_id:uuid,business_date:z.iso.date(),state:z.enum(["empty","draft","submitted"]).nullable(),revision:z.number().int().nonnegative().default(0),auditor_display_name:z.string().nullable().optional(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),submitted_at:z.string().nullable().optional(),updated_at:z.string().nullable().optional(),items:z.array(dailyAuditItem).length(13)}).strict();
 const purchaseLogCategory = z.enum(["stationery", "kitchen", "equipment", "food_item", "other"]);
-const purchaseLogPaymentStatus = z.enum(["unpaid", "reimbursed"]);
+const purchaseLogPaymentStatus = z.enum(["unpaid", "reimbursed", "company_paid"]);
 const purchaseRequestCategory = z.enum(["stationary", "kitchen", "other"]);
 const purchaseRequestStatus = z.enum(["submitted", "processing", "purchased"]);
 const supplierReceivingCategory = z.enum(["raw", "frozen", "juice"]);
@@ -309,6 +309,9 @@ const purchaseLogRow = z.object({
   invoice_original_name: optionalStaffText,
   invoice_number: optionalStaffText,
   invoice_url: z.string().nullable().optional(),
+  source_type: z.enum(["central_purchasing"]).nullable().optional().default(null),
+  source_purchase_request_id: uuid.nullable().optional().default(null),
+  source_purchase_request_item_id: uuid.nullable().optional().default(null),
   created_by: uuid,
   created_by_name: optionalStaffText.optional(),
   created_at: z.string(),
@@ -341,9 +344,15 @@ const purchaseLogReceiptRow = z.object({
   branch_id: uuid,
   invoice_storage_path: optionalStaffText,
   invoice_original_name: optionalStaffText,
+  source_type: optionalStaffText.optional().transform((value) => value ?? null),
+  source_purchase_request_item_id: uuid.nullable().optional().transform((value) => value ?? null),
 }).strict();
 const managedPurchaseLogReceiptRow = purchaseLogReceiptRow.extend({
   organization_id: uuid,
+}).strict();
+const purchaseRequestAttachmentReadRow = z.object({
+  storage_path: z.string().min(1),
+  original_filename: optionalStaffText,
 }).strict();
 const supplierReceivingPhotoRow = z.object({
   branch_id: uuid,
@@ -453,6 +462,7 @@ type PurchaseRequestPurchaseDetailInput = {
   before_tax_amount?: string | number;
   tax_amount?: string | number;
   total_amount?: string | number;
+  payment_source?: "company" | "personal" | null;
   purchasing_notes?: string | null;
   attachments?: Array<{ id?: string; bytes?: Buffer; mimeType?: z.infer<typeof purchaseInvoiceMime>; originalName?: string }>;
 };
@@ -697,6 +707,12 @@ export type OperationalAdmin = {
     dateTo?: string;
     search?: string;
   }): Promise<unknown>;
+  reimbursePurchasingPurchaseRequestItem?(input: {
+    actorUserId: string;
+    organizationId: string;
+    itemId: string;
+    reimbursementNote?: string | null;
+  }): Promise<unknown>;
   createPurchaseLogReceiptReadUrl?(input: { actorUserId: string; purchaseLogId: string }): Promise<unknown>;
   createManagedPurchaseLogReceiptReadUrl?(input: { actorUserId: string; organizationId: string; purchaseLogId: string }): Promise<unknown>;
   createPurchaseLog(input: {
@@ -712,7 +728,7 @@ export type OperationalAdmin = {
       vendor_name?: string | null;
       purchase_date: string;
       notes?: string | null;
-      payment_status?: z.infer<typeof purchaseLogPaymentStatus>;
+      payment_status?: "unpaid" | "reimbursed";
       invoice_number?: string | null;
     };
     invoice?: { bytes: Buffer; mimeType: z.infer<typeof purchaseInvoiceMime>; originalName: string } | null;
@@ -721,7 +737,7 @@ export type OperationalAdmin = {
     actorUserId: string;
     branchId: string;
     purchaseLogId: string;
-    paymentStatus: z.infer<typeof purchaseLogPaymentStatus>;
+    paymentStatus: "unpaid" | "reimbursed";
     reimbursementNote?: string | null;
   }): Promise<unknown>;
   updatePurchaseLog?(input: {
@@ -1153,6 +1169,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
           before_tax_amount:detail.before_tax_amount??null,
           tax_amount:detail.tax_amount??null,
           total_amount:detail.total_amount??detail.actual_total_cost??null,
+          payment_source:detail.payment_source??null,
           purchasing_notes:detail.purchasing_notes??null,
         };
         if(detail.attachments)preparedDetail.attachments=attachments;
@@ -2100,28 +2117,66 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         search_filter: input.search ?? null,
       })) };
     },
+    async reimbursePurchasingPurchaseRequestItem(input) {
+      return await signPurchaseRequestPayload(await rpcObject("reimburse_purchasing_purchase_request_item", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_purchase_request_item_id: input.itemId,
+        new_reimbursement_note: input.reimbursementNote ?? null,
+      }));
+    },
     async createPurchaseLogReceiptReadUrl(input) {
       const result = await client.from("branch_purchase_logs")
-        .select("branch_id,invoice_storage_path,invoice_original_name")
+        .select("branch_id,invoice_storage_path,invoice_original_name,source_type,source_purchase_request_item_id")
         .eq("id", input.purchaseLogId)
         .maybeSingle();
       if (result.error) throw new AdminOperationError();
       const row = result.data ? purchaseLogReceiptRow.parse(result.data) : null;
-      if (!row?.invoice_storage_path) throw new OperationalAttachmentNotFoundError();
+      if (!row) throw new OperationalAttachmentNotFoundError();
       await assertSupervisorBranchAccess(input.actorUserId, row.branch_id);
+      if (!row.invoice_storage_path && row.source_type === "central_purchasing" && row.source_purchase_request_item_id) {
+        const attachment = await client.from("purchase_request_item_attachments")
+          .select("storage_path,original_filename")
+          .eq("purchase_request_item_id", row.source_purchase_request_item_id)
+          .order("position", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+        if (attachment.error) throw new AdminOperationError();
+        const sourceAttachment = attachment.data ? purchaseRequestAttachmentReadRow.parse(attachment.data) : null;
+        if (!sourceAttachment) throw new OperationalAttachmentNotFoundError();
+        const sourceSignedUrl = await signPurchaseRequestAttachment(sourceAttachment.storage_path);
+        if (!sourceSignedUrl) throw new AdminOperationError();
+        return { signed_url: sourceSignedUrl, expires_in: PURCHASE_INVOICE_SIGNED_URL_SECONDS, original_name: sourceAttachment.original_filename };
+      }
+      if (!row.invoice_storage_path) throw new OperationalAttachmentNotFoundError();
       const signedUrl = await signPurchaseInvoice(row.invoice_storage_path);
       if (!signedUrl) throw new AdminOperationError();
       return { signed_url: signedUrl, expires_in: PURCHASE_INVOICE_SIGNED_URL_SECONDS, original_name: row.invoice_original_name };
     },
     async createManagedPurchaseLogReceiptReadUrl(input) {
       const result = await client.from("branch_purchase_logs")
-        .select("organization_id,branch_id,invoice_storage_path,invoice_original_name")
+        .select("organization_id,branch_id,invoice_storage_path,invoice_original_name,source_type,source_purchase_request_item_id")
         .eq("id", input.purchaseLogId)
         .eq("organization_id", input.organizationId)
         .maybeSingle();
       if (result.error) throw new AdminOperationError();
       const row = result.data ? managedPurchaseLogReceiptRow.parse(result.data) : null;
-      if (!row?.invoice_storage_path) throw new OperationalAttachmentNotFoundError();
+      if (!row) throw new OperationalAttachmentNotFoundError();
+      if (!row.invoice_storage_path && row.source_type === "central_purchasing" && row.source_purchase_request_item_id) {
+        const attachment = await client.from("purchase_request_item_attachments")
+          .select("storage_path,original_filename")
+          .eq("purchase_request_item_id", row.source_purchase_request_item_id)
+          .order("position", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+        if (attachment.error) throw new AdminOperationError();
+        const sourceAttachment = attachment.data ? purchaseRequestAttachmentReadRow.parse(attachment.data) : null;
+        if (!sourceAttachment) throw new OperationalAttachmentNotFoundError();
+        const sourceSignedUrl = await signPurchaseRequestAttachment(sourceAttachment.storage_path);
+        if (!sourceSignedUrl) throw new AdminOperationError();
+        return { signed_url: sourceSignedUrl, expires_in: PURCHASE_INVOICE_SIGNED_URL_SECONDS, original_name: sourceAttachment.original_filename };
+      }
+      if (!row.invoice_storage_path) throw new OperationalAttachmentNotFoundError();
       const signedUrl = await signPurchaseInvoice(row.invoice_storage_path);
       if (!signedUrl) throw new AdminOperationError();
       return { signed_url: signedUrl, expires_in: PURCHASE_INVOICE_SIGNED_URL_SECONDS, original_name: row.invoice_original_name };

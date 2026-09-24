@@ -222,7 +222,7 @@ const monthlyEvaluationBodySchema = z.object({
   scores: z.array(monthlyEvaluationScoreBodySchema).min(1).max(100),
 }).strict();
 const purchaseLogCategorySchema = z.enum(["stationery", "kitchen", "equipment", "food_item", "other"]);
-const purchaseLogPaymentStatusSchema = z.enum(["unpaid", "reimbursed"]);
+const purchaseLogPaymentStatusSchema = z.enum(["unpaid", "reimbursed", "company_paid"]);
 const moneyAmountSchema = z.preprocess((value) => {
   if (typeof value === "number") return Number.isFinite(value) ? String(value) : value;
   if (typeof value === "string") return value.trim();
@@ -247,7 +247,7 @@ const purchaseLogBodySchema = z.object({
   purchase_date: dateOnlySchema,
   invoice_number: optionalStaffTextSchema(120),
   notes: optionalStaffTextSchema(2000),
-  payment_status: purchaseLogPaymentStatusSchema.default("unpaid"),
+  payment_status: z.enum(["unpaid", "reimbursed"]).default("unpaid"),
   reimbursement_note: optionalStaffTextSchema(500),
 }).strict().superRefine((value, context) => {
   const hasBreakdown = value.before_tax_amount !== undefined || value.tax_amount !== undefined;
@@ -270,7 +270,7 @@ const purchaseLogBodySchema = z.object({
   }
 });
 const purchaseLogPaymentStatusBodySchema = z.object({
-  payment_status: purchaseLogPaymentStatusSchema,
+  payment_status: z.enum(["unpaid", "reimbursed"]),
   reimbursement_note: optionalStaffTextSchema(500),
 }).strict();
 const purchaseLogEditBodySchema = z.object({
@@ -329,6 +329,9 @@ const purchaseLogResponseRowSchema = z.object({
   invoice_original_name: z.string().nullable(),
   invoice_number: z.string().nullable(),
   invoice_url: z.string().nullable().optional(),
+  source_type: z.enum(["central_purchasing"]).nullable().optional().transform((value) => value ?? null),
+  source_purchase_request_id: z.uuid().nullable().optional().transform((value) => value ?? null),
+  source_purchase_request_item_id: z.uuid().nullable().optional().transform((value) => value ?? null),
   created_by: z.uuid(),
   created_at: z.string(),
   updated_at: z.string(),
@@ -367,6 +370,7 @@ const purchaseRequestDetailItemBodySchema = z.object({
     before_tax_amount: moneyAmountSchema.optional(),
     tax_amount: moneyAmountSchema.optional(),
     total_amount: moneyAmountSchema.optional(),
+    payment_source: z.enum(["company", "personal"]).optional().nullable(),
     purchasing_notes: optionalStaffTextSchema(1000),
     attachments: z.array(purchaseRequestAttachmentUploadSchema).max(3).optional(),
 }).strict();
@@ -406,7 +410,13 @@ const purchaseRequestItemResponseSchema = z.object({
   before_tax_amount: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
   tax_amount: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
   total_amount: z.union([z.number(), z.string()]).nullable().optional().transform((value) => value ?? null),
+  payment_source: z.enum(["company", "personal"]).nullable().optional().transform((value) => value ?? null),
   purchasing_notes: z.string().nullable().optional().transform((value) => value ?? null),
+  purchase_log_id: z.uuid().nullable().optional().transform((value) => value ?? null),
+  purchase_log_payment_status: purchaseLogPaymentStatusSchema.nullable().optional().transform((value) => value ?? null),
+  purchase_log_reimbursement_note: z.string().nullable().optional().transform((value) => value ?? null),
+  purchase_log_reimbursed_at: z.string().nullable().optional().transform((value) => value ?? null),
+  purchase_log_reimbursed_by: z.uuid().nullable().optional().transform((value) => value ?? null),
   attachments: z.array(purchaseRequestItemAttachmentResponseSchema).max(3).optional().default([]),
 }).strict();
 const purchaseRequestResponseRowSchema = z.object({
@@ -426,6 +436,9 @@ const purchaseRequestResponseRowSchema = z.object({
 }).strict();
 const purchaseRequestListResponseSchema = z.object({ purchase_requests: z.array(purchaseRequestResponseRowSchema).max(500) }).strict();
 const purchaseRequestMutationResponseSchema = z.object({ purchase_request: purchaseRequestResponseRowSchema }).strict();
+const purchasingReimbursementBodySchema = z.object({
+  reimbursement_note: optionalStaffTextSchema(500),
+}).strict();
 const receiptReadUrlResponseSchema = z.object({
   signed_url: z.url(),
   expires_in: z.number().int().min(1).max(5 * 60),
@@ -817,13 +830,13 @@ const purchasingPurchaseRequestQuerySchema = z.object({
 }).strict();
 const purchasingPurchaseLogQuerySchema = z.object({
   branch_id: z.uuid().optional(),
-  payment_status: z.enum(["unpaid", "reimbursed"]).optional(),
+  payment_status: purchaseLogPaymentStatusSchema.optional(),
   date_from: dateOnlySchema.optional(),
   date_to: dateOnlySchema.optional(),
   search: z.string().trim().min(1).max(120).optional(),
 }).strict().refine((value) => !value.date_from || !value.date_to || value.date_from <= value.date_to);
 const supervisorSupplierReceivingQuerySchema=z.object({date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
-const managedPurchaseLogQuerySchema=z.object({branch_id:z.uuid().optional(),category:z.enum(["stationery","kitchen","equipment","food_item","other"]).optional(),payment_status:z.enum(["unpaid","reimbursed"]).optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
+const managedPurchaseLogQuerySchema=z.object({branch_id:z.uuid().optional(),category:z.enum(["stationery","kitchen","equipment","food_item","other"]).optional(),payment_status:purchaseLogPaymentStatusSchema.optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const managedSupplierReceivingQuerySchema=z.object({branch_id:z.uuid().optional(),category:supplierReceivingCategorySchema.optional(),supplier_id:z.uuid().optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const managedMaintenanceIssueQuerySchema=z.object({branch_id:z.uuid().optional(),status:maintenanceIssueStatusSchema.optional(),priority:maintenanceIssuePrioritySchema.optional(),category:maintenanceIssueCategorySchema.optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const managedMaintenancePurchaseQuerySchema=z.object({branch_id:z.uuid().optional(),issue_status:maintenanceIssueStatusSchema.optional(),payment_status:z.enum(["unpaid","reimbursed"]).optional(),vendor:z.string().trim().min(1).max(120).optional(),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional(),purchase_type:maintenancePurchaseTypeSchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
@@ -4250,6 +4263,29 @@ export function createApp(
           organizationId: organizationId.data,
           requestId: requestId.data,
           purchaseDetails: purchaseRequestDetailsForOperation(body.data.items),
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchaseRequestError(error));
+      }
+    });
+  app.patch("/api/v1/purchasing/organizations/:organizationId/purchase-request-items/:itemId/reimbursement", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const itemId = z.uuid().safeParse(request.params.itemId);
+        const body = purchasingReimbursementBodySchema.safeParse(request.body);
+        if (!organizationId.success || !itemId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        const hasPurchasingAccess = (context.purchasing_organizations ?? []).some((organization) => organization.id === organizationId.data);
+        if (context.must_change_password || !hasPurchasingAccess || !dependencies.operationalAdmin?.reimbursePurchasingPurchaseRequestItem) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = purchaseRequestMutationResponseSchema.parse(await dependencies.operationalAdmin.reimbursePurchasingPurchaseRequestItem({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          itemId: itemId.data,
+          reimbursementNote: body.data.reimbursement_note,
         }));
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json(result);
