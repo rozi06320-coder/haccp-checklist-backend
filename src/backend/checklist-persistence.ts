@@ -417,7 +417,7 @@ const managedSalesTrackingReports=z.object({
   sales_rows:z.array(z.object({
     report_id:z.uuid(),
     row_id:z.uuid(),
-    currency_code:z.enum(["SAR","AED"]),
+    currency_code:z.enum(["SAR","AED"]).default("SAR"),
     business_date:dateOnly,
     entry_date:dateOnly,
     entry_period:salesTrackingPeriod.nullable(),
@@ -444,7 +444,7 @@ const managedSalesTrackingReports=z.object({
   cash_rows:z.array(z.object({
     report_id:z.uuid(),
     row_id:z.uuid(),
-    currency_code:z.enum(["SAR","AED"]),
+    currency_code:z.enum(["SAR","AED"]).default("SAR"),
     business_date:dateOnly,
     entry_date:dateOnly,
     entry_period:salesTrackingPeriod.nullable(),

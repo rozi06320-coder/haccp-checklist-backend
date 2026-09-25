@@ -153,7 +153,7 @@ const persistence={
   calls.push({name:"managed-sales-tracking",input});
   if(input.actorUserId!==manager||input.organizationId!==org)throw new ChecklistAccessError();
   if(malformedManagedSalesTracking)return{sales_rows:[{bad:"shape"}],cash_rows:[]};
-  const base={report_id:"56000000-0000-4000-8000-000000000001",business_date:"2026-08-08",currency_code:"SAR",branch_id:branch,branch_name:"A",supervisor_user_id:supervisor,submitted_by:"S",supervisor_team_id:"46000000-0000-4000-8000-000000000001",supervisor_team_name:"S Team",submitted_at:"2026-08-08T12:00:00.000Z"};
+  const base={report_id:"56000000-0000-4000-8000-000000000001",business_date:"2026-08-08",...(useProviderAliasShape?{}:{currency_code:"SAR"}),branch_id:branch,branch_name:"A",supervisor_user_id:supervisor,submitted_by:"S",supervisor_team_id:"46000000-0000-4000-8000-000000000001",supervisor_team_name:"S Team",submitted_at:"2026-08-08T12:00:00.000Z"};
   if((input.dateFrom&&input.dateFrom>base.business_date)||(input.dateTo&&input.dateTo<base.business_date)||input.branchId&&input.branchId!==branch)return{sales_rows:[],cash_rows:[]};
   return {
     sales_rows:currentState==="submitted"?currentSalesRows.map((row,index)=>({
@@ -469,6 +469,8 @@ describe("Sales Tracking API integration",()=>{
   const response=await request(`/api/v1/management/organizations/${org}/sales-tracking`,"manager");
   assert.equal(response.status,200);
   const body=await response.json();
+  assert.equal(body.sales_rows[0].currency_code,"SAR");
+  assert.equal(body.cash_rows[0].currency_code,"SAR");
   assert.deepEqual(body.sales_rows[0].online_provider_breakdown.map((amount:Record<string,unknown>)=>[amount.provider_key,amount.provider_name,amount.amount]),[["jahez","Jahez","100.00"],["hungerstation","HungerStation","0"]]);
   assert.deepEqual(body.sales_rows[1].online_provider_breakdown.map((amount:Record<string,unknown>)=>[amount.provider_key,amount.provider_name,amount.amount]),[["ninja","Ninja","50.00"]]);
  });
