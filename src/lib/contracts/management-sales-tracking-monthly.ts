@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const decimal = z.string().regex(/^-?\d+(?:\.\d+)?$/);
+const decimal = z.preprocess((value) => typeof value === "number" ? String(value) : value, z.string().regex(/^-?\d+(?:\.\d+)?$/));
 const nonnegativeCount = z.number().int().nonnegative();
 
 const paymentBreakdownSchema = z.object({
@@ -14,9 +14,16 @@ const paymentBreakdownSchema = z.object({
 const onlineProviderBreakdownSchema = z.object({
   provider_id: z.uuid().nullable().optional(),
   provider_key: z.string().nullable().optional(),
-  provider_name: z.string().min(1),
+  default_provider_key: z.string().nullable().optional(),
+  provider_name: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
   amount: decimal,
-}).strict();
+}).strict().transform(({ default_provider_key, name, ...amount }) => ({
+  provider_id: amount.provider_id,
+  provider_key: amount.provider_key ?? default_provider_key ?? null,
+  provider_name: amount.provider_name ?? name ?? "Unknown",
+  amount: amount.amount,
+}));
 
 const monthlyMetricsSchema = z.object({
   currency_code: z.enum(["SAR", "AED"]).optional(),

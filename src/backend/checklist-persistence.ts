@@ -375,9 +375,16 @@ const salesTrackingOnlineOrderProviderMutation=z.object({
 const managedSalesTrackingOnlineProviderAmount=z.object({
   provider_id:z.uuid().nullable().optional(),
   provider_key:z.string().nullable().optional(),
-  provider_name:z.string().min(1).max(120),
+  default_provider_key:z.string().nullable().optional(),
+  provider_name:z.string().min(1).max(120).optional(),
+  name:z.string().min(1).max(120).optional(),
   amount:numericJson,
-}).strict();
+}).strict().transform(({default_provider_key,name,...amount})=>({
+  provider_id:amount.provider_id,
+  provider_key:amount.provider_key??default_provider_key??null,
+  provider_name:amount.provider_name??name??"Unknown",
+  amount:amount.amount,
+}));
 const inventoryItemsCurrent=z.object({
   report_id:z.uuid().nullable().optional(),
   business_date:dateOnly,

@@ -21,6 +21,7 @@ let submittedByUserId:string|null=null;
 let submittedByNameSnapshot:string|null=null;
 let malformedManagedSalesTracking=false;
 let malformedMonthlySummary=false;
+let useProviderAliasShape=false;
 const replay=new Map<string,string>();
 let providers:Array<Record<string,unknown>>=[];
 
@@ -34,8 +35,14 @@ function providerFor(id:unknown){
 }
 
 function managerProviderBreakdown(row:Record<string,unknown>){
-  return (Array.isArray(row.online_amounts)?row.online_amounts:[]).filter((amount)=>numeric((amount as Record<string,unknown>).amount)!==0).map((amount)=>{
+  return (Array.isArray(row.online_amounts)?row.online_amounts:[]).map((amount)=>{
     const provider=providerFor((amount as Record<string,unknown>).provider_id);
+    if(useProviderAliasShape)return {
+      provider_id:(amount as Record<string,unknown>).provider_id,
+      default_provider_key:provider?.default_provider_key??null,
+      name:provider?.name??"Unknown",
+      amount:(amount as Record<string,unknown>).amount,
+    };
     return {
       provider_id:(amount as Record<string,unknown>).provider_id,
       provider_key:provider?.default_provider_key??null,
@@ -172,7 +179,7 @@ const persistence={
     total_sales:empty?"0":"10498.00",total_cash_collected:empty?"0":"1000.00",total_variance:"0.00",
     balanced_sales_report_count:empty?0:2,variance_sales_report_count:0,
     payment_breakdown:{actual_cash:empty?"0":"324.00",actual_credit:empty?"0":"7190.00",online_delivery:empty?"0":"2984.00",pos_cash:empty?"0":"324.00",pos_credit:empty?"0":"7190.00"},
-    online_provider_breakdown:empty?[]:[{provider_id:"57000000-0000-4000-8000-000000000001",provider_key:"jahez",provider_name:"Jahez",amount:"1800.00"},{provider_id:"57000000-0000-4000-8000-000000000003",provider_key:"hungerstation",provider_name:"HungerStation",amount:"1184.00"}],
+    online_provider_breakdown:empty?[]:useProviderAliasShape?[{provider_id:"57000000-0000-4000-8000-000000000001",default_provider_key:"jahez",name:"Jahez",amount:1800},{provider_id:"57000000-0000-4000-8000-000000000003",default_provider_key:"hungerstation",name:"HungerStation",amount:"0"}]:[{provider_id:"57000000-0000-4000-8000-000000000001",provider_key:"jahez",provider_name:"Jahez",amount:"1800.00"},{provider_id:"57000000-0000-4000-8000-000000000003",provider_key:"hungerstation",provider_name:"HungerStation",amount:"1184.00"}],
     legacy_online_delivery:empty?"0":"0",
   };
   const {submitted_day_count,...totalMetrics}=metrics;
@@ -225,7 +232,7 @@ async function submitSavedDay(idempotencyKey:string,expectedRevision=2){
 describe("Sales Tracking API integration",()=>{
  before(async()=>{server=createServer(createApp(config,deps()));await new Promise<void>((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));origin=`http://127.0.0.1:${(server.address()as AddressInfo).port}`;});
  after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
- beforeEach(()=>{calls.length=0;currentSalesRows=[];currentCashRows=[];currentPeriods=[];currentRevision=0;currentState="draft";submittedAt=null;submittedByUserId=null;submittedByNameSnapshot=null;malformedManagedSalesTracking=false;malformedMonthlySummary=false;replay.clear();providers=[
+ beforeEach(()=>{calls.length=0;currentSalesRows=[];currentCashRows=[];currentPeriods=[];currentRevision=0;currentState="draft";submittedAt=null;submittedByUserId=null;submittedByNameSnapshot=null;malformedManagedSalesTracking=false;malformedMonthlySummary=false;useProviderAliasShape=false;replay.clear();providers=[
   {id:"57000000-0000-4000-8000-000000000001",organization_id:org,branch_id:branch,name:"Jahez",normalized_name:"jahez",default_provider_key:"jahez",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
   {id:"57000000-0000-4000-8000-000000000003",organization_id:org,branch_id:branch,name:"HungerStation",normalized_name:"hungerstation",default_provider_key:"hungerstation",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
   {id:"57000000-0000-4000-8000-000000000002",organization_id:org,branch_id:branch,name:"Ninja",normalized_name:"ninja",default_provider_key:"ninja",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
@@ -448,8 +455,22 @@ describe("Sales Tracking API integration",()=>{
   assert.deepEqual(body.sales_rows[1].online_provider_breakdown.map((amount:Record<string,unknown>)=>[amount.provider_name,amount.amount]),[["Jahez","250.00"],["Keeta","40.00"]]);
   assert.equal(body.sales_rows.reduce((sum:number,row:Record<string,unknown>)=>sum+numeric(row.online_delivery),0),415);
   assert.equal(body.sales_rows[0].actual_total,3882);
-  assert.equal(body.sales_rows[0].pos_total,3882);
-  assert.equal(body.sales_rows[0].variance,0);
+ assert.equal(body.sales_rows[0].pos_total,3882);
+ assert.equal(body.sales_rows[0].variance,0);
+ });
+ it("normalizes production provider aliases in Manager Sales Tracking rows",async()=>{
+  useProviderAliasShape=true;
+  const middle={...draftPayload,sales_rows:[{...draftPayload.sales_rows[0],online_delivery:"999.00",online_amounts:[{provider_id:"57000000-0000-4000-8000-000000000001",amount:"100.00"},{provider_id:"57000000-0000-4000-8000-000000000003",amount:"0"}]}]};
+  const closing={...closingPayload,sales_rows:[{...closingPayload.sales_rows[0],online_delivery:"999.00",online_amounts:[{provider_id:"57000000-0000-4000-8000-000000000002",amount:"50.00"}]}]};
+  const path=`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/draft`;
+  assert.equal((await request(path,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(middle)})).status,200);
+  assert.equal((await request(path,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(closing)})).status,200);
+  assert.equal((await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/submit`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":"66000000-0000-4000-8000-000000000019"},body:JSON.stringify({expected_revision:2})})).status,201);
+  const response=await request(`/api/v1/management/organizations/${org}/sales-tracking`,"manager");
+  assert.equal(response.status,200);
+  const body=await response.json();
+  assert.deepEqual(body.sales_rows[0].online_provider_breakdown.map((amount:Record<string,unknown>)=>[amount.provider_key,amount.provider_name,amount.amount]),[["jahez","Jahez","100.00"],["hungerstation","HungerStation","0"]]);
+  assert.deepEqual(body.sales_rows[1].online_provider_breakdown.map((amount:Record<string,unknown>)=>[amount.provider_key,amount.provider_name,amount.amount]),[["ninja","Ninja","50.00"]]);
  });
  it("filters Manager Sales Tracking by server-side date range and branch",async()=>{
   assert.equal((await submitSavedDay("66000000-0000-4000-8000-000000000017")).status,201);
@@ -498,6 +519,14 @@ describe("Sales Tracking API integration",()=>{
   assert.deepEqual(body.branches[0].online_provider_breakdown.map((amount:Record<string,unknown>)=>[amount.provider_name,amount.amount]),[["Jahez","1800.00"],["HungerStation","1184.00"]]);
   assert.deepEqual(calls.at(-1),{name:"managed-sales-tracking-monthly",input:{actorUserId:manager,organizationId:org,month:"2026-08",branchId:branch}});
   assert.doesNotMatch(JSON.stringify(body),/supervisor_user_id|remarks|notes|storage|filename/i);
+ });
+ it("normalizes production provider aliases in Manager monthly Sales Tracking summary",async()=>{
+  useProviderAliasShape=true;
+  const response=await request(`/api/v1/management/organizations/${org}/sales-tracking/monthly-summary?month=2026-08&branch_id=${branch}`,"manager");
+  assert.equal(response.status,200);
+  const body=await response.json();
+  assert.deepEqual(body.totals.online_provider_breakdown.map((amount:Record<string,unknown>)=>[amount.provider_key,amount.provider_name,amount.amount]),[["jahez","Jahez","1800"],["hungerstation","HungerStation","0"]]);
+  assert.deepEqual(body.branches[0].online_provider_breakdown.map((amount:Record<string,unknown>)=>[amount.provider_key,amount.provider_name,amount.amount]),[["jahez","Jahez","1800"],["hungerstation","HungerStation","0"]]);
  });
  it("returns zero monthly totals and branches for an empty month",async()=>{
   const response=await request(`/api/v1/management/organizations/${org}/sales-tracking/monthly-summary?month=2026-09`,"manager");
