@@ -51,6 +51,7 @@ insert into backend_only_mutation_rpc(signature) values
   ('public.reactivate_internal_admin_supervisor(uuid, uuid, uuid)'),
   ('public.reactivate_maintenance_user(uuid, uuid, uuid)'),
   ('public.reactivate_organization_manager(uuid, uuid, uuid)'),
+  ('public.reassign_internal_admin_operational_staff_team(uuid, uuid, uuid, uuid, uuid)'),
   ('public.register_maintenance_push_subscription(uuid, text, text, text, text)'),
   ('public.register_phase4a_evidence_upload(uuid, uuid, text, text, uuid, text, text, bigint, text)'),
   ('public.rename_supervisor_cold_storage_equipment(uuid, uuid, uuid, text)'),

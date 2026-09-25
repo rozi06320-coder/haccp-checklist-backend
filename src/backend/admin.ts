@@ -21,6 +21,16 @@ const internalAdminBranchTeamStaffSchema = z.object({
   operational_team_id: z.string().uuid().nullable().optional(),
   operational_roles: z.array(operationalRoleSchema).min(1).max(2),
 }).strict();
+const internalAdminStaffTeamReassignmentSchema = z.object({
+  staff_id: z.string().uuid(),
+  previous_assignment_id: z.string().uuid(),
+  new_assignment_id: z.string().uuid().nullable(),
+  previous_operational_team_id: z.string().uuid(),
+  destination_operational_team_id: z.string().uuid(),
+  move_status: z.enum(["applied", "scheduled"]),
+  scheduled_move_id: z.string().uuid().nullable(),
+  effective_business_date: z.string(),
+}).strict();
 
 export type ProvisionedUser = { id: string };
 export type CreateAuthUserInput = {
@@ -214,7 +224,18 @@ export type InternalAdminBranchTeamStaff = {
   country_code: string | null;
   employment_status: "active" | "inactive";
   assignment_id: string;
+  operational_team_id?: string | null;
   operational_roles: Array<"kitchen" | "dispatcher" | "production" | "front_of_house" | "cleaner" | "cashier">;
+};
+export type InternalAdminStaffTeamReassignment = {
+  staff_id: string;
+  previous_assignment_id: string;
+  new_assignment_id: string | null;
+  previous_operational_team_id: string;
+  destination_operational_team_id: string;
+  move_status: "applied" | "scheduled";
+  scheduled_move_id: string | null;
+  effective_business_date: string;
 };
 export type ManagedBranch = {
   id: string;
@@ -460,6 +481,13 @@ export type ManagementAdmin = {
     countryCode?: string | null;
     roles: Array<"kitchen" | "dispatcher" | "production" | "front_of_house" | "cleaner" | "cashier">;
   }): Promise<{ staff_id: string; assignment_id: string; duplicate_name_warning: boolean }>;
+  reassignBranchTeamStaffForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    staffId: string;
+    destinationOperationalTeamId: string;
+    expectedCurrentAssignmentId: string;
+  }): Promise<InternalAdminStaffTeamReassignment>;
   listUsers(input: {
     actorUserId: string;
     organizationId: string;
@@ -1236,6 +1264,23 @@ export function createManagementAdmin(
         assignment_id: z.string().uuid(),
         duplicate_name_warning: z.boolean(),
       }).strict()).length(1).safeParse(data);
+      if (!rows.success) throw new AdminOperationError();
+      return rows.data[0];
+    },
+    async reassignBranchTeamStaffForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("reassign_internal_admin_operational_staff_team", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_operational_staff_id: input.staffId,
+        destination_operational_team_id: input.destinationOperationalTeamId,
+        expected_current_assignment_id: input.expectedCurrentAssignmentId,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "40001" || error.code === "23505" || error.code === "23514" || error.code === "22023") throw new AdminConflictError();
+        throw new AdminOperationError();
+      }
+      const rows = z.array(internalAdminStaffTeamReassignmentSchema).length(1).safeParse(data);
       if (!rows.success) throw new AdminOperationError();
       return rows.data[0];
     },

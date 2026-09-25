@@ -34,6 +34,8 @@ function deps(options: {
   organizationLifecycleError?: Error;
   branchLifecycleError?: Error;
   supervisorProfileError?: Error;
+  reassignBranchTeamStaffError?: Error;
+  reassignBranchTeamStaffScheduled?: boolean;
   deleteError?: Error;
   contextError?: Error;
   calls?: Record<string, unknown>;
@@ -271,6 +273,20 @@ function deps(options: {
           duplicate_name_warning: false,
         };
       },
+      async reassignBranchTeamStaffForInternalAdmin(input) {
+        calls.reassignBranchTeamStaff = input;
+        if (options.reassignBranchTeamStaffError) throw options.reassignBranchTeamStaffError;
+        return {
+          staff_id: input.staffId,
+          previous_assignment_id: input.expectedCurrentAssignmentId,
+          new_assignment_id: options.reassignBranchTeamStaffScheduled ? null : "60000000-0000-4000-8000-000000000002",
+          previous_operational_team_id: "40000000-0000-4000-8000-000000000001",
+          destination_operational_team_id: input.destinationOperationalTeamId,
+          move_status: options.reassignBranchTeamStaffScheduled ? ("scheduled" as const) : ("applied" as const),
+          scheduled_move_id: options.reassignBranchTeamStaffScheduled ? "70000000-0000-4000-8000-000000000001" : null,
+          effective_business_date: "2026-09-27",
+        };
+      },
       async reactivateOrganizationManagerForInternalAdmin(input) { calls.reactivateOrganizationManager = input; },
       async grantExistingOrganizationManagerForInternalAdmin(input) {
         calls.grantExistingOrganizationManager = input;
@@ -379,6 +395,17 @@ async function postInternalAdminBranchTeamStaff(dependencies: BackendDependencie
   servers.push(server);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   return fetch(`${origin(server)}/api/v1/internal-admin/organizations/${organization}/branch-teams/${team}/staff`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function postInternalAdminOperationalStaffTeamReassignment(dependencies: BackendDependencies, body: unknown, organization = ids.orgA, staff = "50000000-0000-4000-8000-000000000001", token = "valid") {
+  const server = createServer(createApp(config, dependencies));
+  servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return fetch(`${origin(server)}/api/v1/internal-admin/organizations/${organization}/operational-staff/${staff}/reassign-team`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -866,6 +893,81 @@ describe("internal-admin supervisor provisioning", () => {
     const text = await response.text();
     assert.equal(response.status, 409);
     assert.match(text, /duplicate_employee_code/);
+    assert.doesNotMatch(text, /postgres|duplicate key|service_role|stack/i);
+  });
+
+  it("lets Internal Admin reassign Operational Staff to another same-branch Operational Team", async () => {
+    const calls: Record<string, unknown> = {};
+    const response = await postInternalAdminOperationalStaffTeamReassignment(deps({ calls }), {
+      destination_operational_team_id: "40000000-0000-4000-8000-000000000002",
+      expected_current_assignment_id: "60000000-0000-4000-8000-000000000001",
+    });
+    const text = await response.text();
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls.reassignBranchTeamStaff, {
+      actorUserId: ids.actor,
+      organizationId: ids.orgA,
+      staffId: "50000000-0000-4000-8000-000000000001",
+      destinationOperationalTeamId: "40000000-0000-4000-8000-000000000002",
+      expectedCurrentAssignmentId: "60000000-0000-4000-8000-000000000001",
+    });
+    assert.match(text, /"move_status":"applied"/);
+    assert.match(text, /"new_assignment_id":"60000000-0000-4000-8000-000000000002"/);
+    assert.doesNotMatch(text, /service_role|secret|stack/i);
+  });
+
+  it("returns scheduled Internal Admin Operational Staff reassignments without mutating response semantics", async () => {
+    const response = await postInternalAdminOperationalStaffTeamReassignment(deps({ reassignBranchTeamStaffScheduled: true }), {
+      destination_operational_team_id: "40000000-0000-4000-8000-000000000002",
+      expected_current_assignment_id: "60000000-0000-4000-8000-000000000001",
+    });
+    const body = await response.json() as Record<string, unknown>;
+    assert.equal(response.status, 200);
+    assert.equal(body.move_status, "scheduled");
+    assert.equal(body.new_assignment_id, null);
+    assert.equal(body.scheduled_move_id, "70000000-0000-4000-8000-000000000001");
+    assert.equal(body.effective_business_date, "2026-09-27");
+  });
+
+  it("denies and validates Internal Admin Operational Staff team reassignment safely", async () => {
+    assert.equal((await postInternalAdminOperationalStaffTeamReassignment(deps(), {
+      destination_operational_team_id: "40000000-0000-4000-8000-000000000002",
+      expected_current_assignment_id: "60000000-0000-4000-8000-000000000001",
+    }, ids.orgA, "50000000-0000-4000-8000-000000000001", "invalid")).status, 401);
+    assert.equal((await postInternalAdminOperationalStaffTeamReassignment(deps({ internalAdmin: false }), {
+      destination_operational_team_id: "40000000-0000-4000-8000-000000000002",
+      expected_current_assignment_id: "60000000-0000-4000-8000-000000000001",
+    })).status, 403);
+    assert.equal((await postInternalAdminOperationalStaffTeamReassignment(deps(), {
+      destination_operational_team_id: "bad",
+      expected_current_assignment_id: "60000000-0000-4000-8000-000000000001",
+    })).status, 400);
+    assert.equal((await postInternalAdminOperationalStaffTeamReassignment(deps(), {
+      expected_current_assignment_id: "60000000-0000-4000-8000-000000000001",
+    })).status, 400);
+    assert.equal((await postInternalAdminOperationalStaffTeamReassignment(deps(), {
+      destination_operational_team_id: "40000000-0000-4000-8000-000000000002",
+      expected_current_assignment_id: "60000000-0000-4000-8000-000000000001",
+      reason: "not supported in Phase 1",
+    })).status, 400);
+    assert.equal((await postInternalAdminOperationalStaffTeamReassignment(deps(), {
+      destination_operational_team_id: "40000000-0000-4000-8000-000000000002",
+      expected_current_assignment_id: "60000000-0000-4000-8000-000000000001",
+    }, "bad")).status, 400);
+    assert.equal((await postInternalAdminOperationalStaffTeamReassignment(deps(), {
+      destination_operational_team_id: "40000000-0000-4000-8000-000000000002",
+      expected_current_assignment_id: "60000000-0000-4000-8000-000000000001",
+    }, ids.orgA, "bad")).status, 400);
+  });
+
+  it("maps Internal Admin Operational Staff reassignment conflicts to sanitized responses", async () => {
+    const response = await postInternalAdminOperationalStaffTeamReassignment(deps({ reassignBranchTeamStaffError: new AdminConflictError() }), {
+      destination_operational_team_id: "40000000-0000-4000-8000-000000000002",
+      expected_current_assignment_id: "60000000-0000-4000-8000-000000000001",
+    });
+    const text = await response.text();
+    assert.equal(response.status, 409);
+    assert.match(text, /Unable to reassign Branch Team staff/);
     assert.doesNotMatch(text, /postgres|duplicate key|service_role|stack/i);
   });
 
