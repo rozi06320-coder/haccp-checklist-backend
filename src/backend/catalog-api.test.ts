@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { createApp } from "./app";
-import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, createChecklistPersistence } from "./checklist-persistence";
+import { CatalogMappedIngredientError, ChecklistAccessError, ChecklistConflictError, ChecklistInputError, createChecklistPersistence } from "./checklist-persistence";
 import type { BackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
 
@@ -27,8 +27,8 @@ let mode: "empty" | "recipe" | "standalone" | "conflict" | "invalid" | "access" 
 function catalog() {
   return {
     products: mode === "empty" ? [] : [
-      { id: productId, branch_id: branch, name: "Smoky Beef", inventory_behavior: "recipe", unit: null, standalone_inventory_item_id: null, is_active: true, created_at: "2026-09-09T10:00:00.000Z", updated_at: "2026-09-09T10:00:00.000Z" },
-      ...(mode === "standalone" ? [{ id: standaloneProductId, branch_id: branch, name: "Bottled Water", inventory_behavior: "standalone_stock", unit: "pcs", standalone_inventory_item_id: waterId, is_active: true, created_at: "2026-09-09T10:00:00.000Z", updated_at: "2026-09-09T10:00:00.000Z" }] : []),
+      { id: productId, branch_id: branch, name: "Smoky Beef", inventory_behavior: "recipe", unit: null, standalone_inventory_item_id: null, display_order: 1, is_active: true, created_at: "2026-09-09T10:00:00.000Z", updated_at: "2026-09-09T10:00:00.000Z" },
+      ...(mode === "standalone" ? [{ id: standaloneProductId, branch_id: branch, name: "Bottled Water", inventory_behavior: "standalone_stock", unit: "pcs", standalone_inventory_item_id: waterId, display_order: 2, is_active: true, created_at: "2026-09-09T10:00:00.000Z", updated_at: "2026-09-09T10:00:00.000Z" }] : []),
     ],
     inventory_items: mode === "empty" ? [] : [
       { id: breadId, branch_id: branch, name: "Bread", unit: "pcs", kind: "ingredient", is_active: true, created_at: "2026-09-09T10:00:00.000Z", updated_at: "2026-09-09T10:00:00.000Z" },
@@ -66,6 +66,21 @@ const persistence = {
   },
   async mergeBranchCatalogInventoryItem(input: unknown) {
     calls.push({ name: "merge-inventory", input });
+    if (mode === "conflict") throw new ChecklistConflictError();
+    if (mode === "invalid") throw new ChecklistInputError();
+    if (mode === "access") throw new ChecklistAccessError();
+    return catalog();
+  },
+  async archiveBranchCatalogInventoryItem(input: unknown) {
+    calls.push({ name: "archive-inventory", input });
+    if (mode === "conflict") throw new CatalogMappedIngredientError([{ id: productId, name: "Smoky Beef" }]);
+    if (mode === "invalid") throw new ChecklistInputError();
+    if (mode === "access") throw new ChecklistAccessError();
+    mode = "empty";
+    return catalog();
+  },
+  async reorderBranchCatalogProducts(input: unknown) {
+    calls.push({ name: "reorder-products", input });
     if (mode === "conflict") throw new ChecklistConflictError();
     if (mode === "invalid") throw new ChecklistInputError();
     if (mode === "access") throw new ChecklistAccessError();
@@ -209,6 +224,32 @@ describe("Branch product and inventory catalog API", () => {
     response = await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items`, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "Bread", unit: "kg" }) });
     assert.equal(response.status, 409);
     assert.equal((await response.json()).error.message, "Catalog data conflicts with an existing product or inventory item.");
+  });
+
+  it("archives unmapped ingredients and returns mapped-product conflicts safely", async () => {
+    mode = "recipe";
+    let response = await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items/${breadId}/archive`, "supervisor", { method: "PATCH" });
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls.at(-1), { name: "archive-inventory", input: { actorUserId: supervisor, branchId: branch, inventoryItemId: breadId } });
+
+    mode = "conflict";
+    response = await request(`/api/v1/supervisor/branches/${branch}/catalog/inventory-items/${breadId}/archive`, "supervisor", { method: "PATCH" });
+    assert.equal(response.status, 409);
+    const body = await response.json();
+    assert.equal(body.error.code, "ingredient_in_use");
+    assert.equal(body.error.message, "This ingredient is still used by active products.");
+    assert.deepEqual(body.error.products, [{ id: productId, name: "Smoky Beef" }]);
+  });
+
+  it("reorders products by submitting the complete active product id list", async () => {
+    mode = "standalone";
+    const response = await request(`/api/v1/supervisor/branches/${branch}/catalog/products/order`, "supervisor", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_ids: [standaloneProductId, productId] }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls.at(-1), { name: "reorder-products", input: { actorUserId: supervisor, branchId: branch, productIds: [standaloneProductId, productId] } });
   });
 
   it("saves one recipe atomically and rejects duplicate or invalid mapping payloads", async () => {

@@ -17,7 +17,7 @@ import {
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
 import { branchLocalDate, canonicalizeMaintenancePurchasePayload, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime, SupervisorPromotionConflictDiagnosticError, type MaintenanceIssuesStageTiming, type MaintenanceIssuesTimingDiagnostics } from "./operational";
-import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ChecklistNotFoundError, ManagementOverviewUnavailableError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
+import { CatalogMappedIngredientError, ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ChecklistNotFoundError, ManagementOverviewUnavailableError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
 import { MaintenancePushAccessError, MaintenancePushConflictError, MaintenancePushInputError, MaintenancePushUnavailableError } from "./maintenance-push";
@@ -1350,8 +1350,9 @@ const catalogInventoryItemBodySchema=z.object({name:normalizedNameSchema,unit:ca
 const catalogUpdateInventoryItemBodySchema=z.object({name:normalizedNameSchema,unit:catalogUnitSchema,is_active:z.boolean().optional()}).strict();
 const catalogRecipeBodySchema=z.object({recipe_rows:z.array(catalogRecipeRowBodySchema).max(200)}).strict();
 const catalogMergeInventoryItemBodySchema=z.object({target_inventory_item_id:z.uuid()}).strict();
+const catalogProductOrderBodySchema=z.object({product_ids:z.array(z.uuid()).max(1000)}).strict();
 const branchCatalogSchema=z.object({
-  products:z.array(z.object({id:z.uuid(),branch_id:z.uuid(),name:z.string(),inventory_behavior:catalogProductBehaviorSchema,unit:catalogUnitSchema.nullable(),standalone_inventory_item_id:z.uuid().nullable(),is_active:z.boolean(),created_at:z.string(),updated_at:z.string()}).strict()).max(1000),
+  products:z.array(z.object({id:z.uuid(),branch_id:z.uuid(),name:z.string(),inventory_behavior:catalogProductBehaviorSchema,unit:catalogUnitSchema.nullable(),standalone_inventory_item_id:z.uuid().nullable(),display_order:z.number().int().positive().nullable().optional(),is_active:z.boolean(),created_at:z.string(),updated_at:z.string()}).strict()).max(1000),
   inventory_items:z.array(z.object({id:z.uuid(),branch_id:z.uuid(),name:z.string(),unit:catalogUnitSchema,kind:z.enum(["ingredient","standalone_stock"]),is_active:z.boolean(),created_at:z.string(),updated_at:z.string()}).strict()).max(2000),
   product_usage_mappings:z.array(z.object({id:z.uuid(),product_id:z.uuid(),inventory_item_id:z.uuid(),quantity:z.union([z.number(),z.string()]),created_at:z.string(),updated_at:z.string()}).strict()).max(5000),
 }).strict();
@@ -1378,6 +1379,7 @@ const productSalesQuantityResponseSchema=z.union([z.number(),z.string()]).transf
 const productSalesSaleItemResponseSchema=z.object({
   id:z.uuid(),
   product_id:z.uuid(),
+  product_display_order:z.number().int().positive().nullable().optional(),
   product_name_snapshot:z.string(),
   inventory_behavior_snapshot:z.enum(["recipe","standalone_stock","non_stock"]),
   product_unit_snapshot:z.string().nullable(),
@@ -7373,6 +7375,31 @@ export function createApp(
     const auth=requireAuthContext(request),context=await loadActiveUser(request);
     if(context.must_change_password||!hasTargetBranchManagerAccess(context,branch.data)||!dependencies.checklistPersistence?.mergeBranchCatalogInventoryItem)throw new HttpError(403,"forbidden","Access is denied.");
     const catalog=branchCatalogSchema.parse(await dependencies.checklistPersistence.mergeBranchCatalogInventoryItem({actorUserId:auth.userId,branchId:branch.data,duplicateInventoryItemId:duplicateId.data,targetInventoryItemId:body.data.target_inventory_item_id}));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json(catalog);
+  }catch(error){next(error instanceof HttpError?error:catalogError(error));}});
+
+  app.patch("/api/v1/supervisor/branches/:branchId/catalog/inventory-items/:inventoryItemId/archive",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),inventoryItemId=branchIdSchema.safeParse(request.params.inventoryItemId);
+    if(!branch.success||!inventoryItemId.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||!hasTargetBranchManagerAccess(context,branch.data)||!dependencies.checklistPersistence?.archiveBranchCatalogInventoryItem)throw new HttpError(403,"forbidden","Access is denied.");
+    const catalog=branchCatalogSchema.parse(await dependencies.checklistPersistence.archiveBranchCatalogInventoryItem({actorUserId:auth.userId,branchId:branch.data,inventoryItemId:inventoryItemId.data}));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json(catalog);
+  }catch(error){
+    if(error instanceof CatalogMappedIngredientError){
+      response.setHeader("Cache-Control","private, no-store");
+      response.status(409).json({error:{code:"ingredient_in_use",message:"This ingredient is still used by active products.",requestId:request.id,products:error.products}});
+      return;
+    }
+    next(error instanceof HttpError?error:catalogError(error));
+  }});
+
+  app.put("/api/v1/supervisor/branches/:branchId/catalog/products/order",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),body=catalogProductOrderBodySchema.safeParse(request.body);
+    if(!branch.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||!hasTargetBranchManagerAccess(context,branch.data)||!dependencies.checklistPersistence?.reorderBranchCatalogProducts)throw new HttpError(403,"forbidden","Access is denied.");
+    const catalog=branchCatalogSchema.parse(await dependencies.checklistPersistence.reorderBranchCatalogProducts({actorUserId:auth.userId,branchId:branch.data,productIds:body.data.product_ids}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json(catalog);
   }catch(error){next(error instanceof HttpError?error:catalogError(error));}});
 

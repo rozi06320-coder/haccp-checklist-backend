@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 
 const migrationPath = new URL("../../supabase/migrations/20260909100000_product_inventory_recipe_catalogs.sql", import.meta.url);
 const identityMigrationPath = new URL("../../supabase/migrations/20260913120000_product_usage_mapping_inventory_identity.sql", import.meta.url);
+const orderArchiveMigrationPath = new URL("../../supabase/migrations/20260926150000_daily_usage_catalog_order_archive.sql", import.meta.url);
 
 describe("Product / Inventory / Recipe catalog persistence SQL boundary", () => {
   it("creates only branch-scoped catalog tables with RLS and no sales/waste/movement persistence", async () => {
@@ -134,5 +135,52 @@ describe("Product / Inventory / Recipe catalog persistence SQL boundary", () => 
     // Guaranteed: does NOT alter frozen snapshot business data or delete snapshots
     assert.doesNotMatch(setNullMigration, /delete\s+from/i);
     assert.doesNotMatch(setNullMigration, /update\s+public/i);
+  });
+
+  it("archives ingredients softly and reorders products atomically in 20260926150000", async () => {
+    const migration = await readFile(orderArchiveMigrationPath, "utf8");
+
+    assert.match(migration, /alter table public\.branch_product_catalog_products[\s\S]*add column if not exists display_order integer/);
+    assert.match(migration, /row_number\(\) over \([\s\S]*partition by product\.branch_id[\s\S]*lower\(product\.name\), product\.id/);
+    assert.match(migration, /from public\.branch_product_catalog_products product\s+where product\.is_active/);
+    assert.match(migration, /where ranked\.id = product\.id[\s\S]*and product\.display_order is null/);
+    assert.match(migration, /create or replace function private\.lock_branch_catalog\(target_organization_id uuid, target_branch_id uuid\)/);
+    assert.match(migration, /pg_advisory_xact_lock\([\s\S]*target_organization_id::text \|\| ':' \|\| target_branch_id::text \|\| ':branch_catalog'/);
+    assert.match(migration, /create or replace function public\.archive_branch_catalog_inventory_item\(/);
+    assert.match(migration, /perform private\.lock_branch_catalog\(target_branch\.organization_id, target_branch\.id\);[\s\S]*select item\.\* into target_item/);
+    assert.match(migration, /for update/);
+    assert.match(migration, /target_item\.kind <> 'ingredient'/);
+    assert.match(migration, /join public\.branch_product_catalog_products product[\s\S]*and product\.is_active/);
+    assert.match(migration, /raise exception 'ingredient is used by active products'[\s\S]*detail = blocking_products::text/);
+    assert.match(migration, /set is_active = false/);
+    assert.doesNotMatch(migration, /delete from public\.branch_inventory_catalog_items/i);
+    assert.doesNotMatch(migration, /update public\.branch_product_sales_usage_snapshots/i);
+    assert.doesNotMatch(migration, /update public\.branch_daily_inventory_entries/i);
+    assert.doesNotMatch(migration, /update public\.branch_daily_waste_entries/i);
+
+    assert.match(migration, /create or replace function public\.reorder_branch_catalog_products\(/);
+    assert.match(migration, /perform private\.lock_branch_catalog\(target_branch\.organization_id, target_branch\.id\);/);
+    assert.doesNotMatch(migration, /create temp table branch_product_order_stage/);
+    assert.match(migration, /from unnest\(ordered_product_ids\) with ordinality as submitted\(product_id, ordinality\)/);
+    assert.match(migration, /if submitted_count <> distinct_submitted_count then[\s\S]*duplicate product id in order/);
+    assert.match(migration, /if submitted_count <> active_count then[\s\S]*product order must include every active product/);
+    assert.match(migration, /where product\.id is null[\s\S]*product order contains unavailable product/);
+    assert.match(migration, /set display_order = stage\.display_order/);
+    assert.match(migration, /order by product\.display_order asc nulls last/);
+    assert.match(migration, /'product_display_order', u\.product_display_order/);
+
+    assert.match(migration, /create or replace function public\.save_branch_product_usage_mappings\(actor_user_id uuid, target_branch_id uuid, target_product_id uuid, recipe_rows jsonb\)/);
+    assert.match(migration, /perform private\.lock_branch_catalog\(target_branch\.organization_id, target_branch\.id\);[\s\S]*select product\.\* into target_product[\s\S]*for update/);
+    assert.match(migration, /target_product\.id is null or not target_product\.is_active or target_product\.inventory_behavior <> 'recipe'/);
+    assert.match(migration, /join branch_catalog_recipe_stage stage on stage\.inventory_item_id = item\.id[\s\S]*item\.is_active[\s\S]*item\.kind = 'ingredient'[\s\S]*order by item\.id[\s\S]*for update/);
+    assert.match(migration, /raise exception 'inventory item unavailable' using errcode = '22023'/);
+
+    assert.match(migration, /revoke all on function private\.lock_branch_catalog\(uuid, uuid\) from public, anon, authenticated/);
+    assert.match(migration, /revoke all on function public\.save_branch_product_usage_mappings\(uuid, uuid, uuid, jsonb\) from public, anon, authenticated/);
+    assert.match(migration, /grant execute on function public\.save_branch_product_usage_mappings\(uuid, uuid, uuid, jsonb\) to service_role/);
+    assert.match(migration, /revoke all on function public\.archive_branch_catalog_inventory_item\(uuid, uuid, uuid\) from public, anon, authenticated/);
+    assert.match(migration, /grant execute on function public\.archive_branch_catalog_inventory_item\(uuid, uuid, uuid\) to service_role/);
+    assert.match(migration, /revoke all on function public\.reorder_branch_catalog_products\(uuid, uuid, uuid\[\]\) from public, anon, authenticated/);
+    assert.match(migration, /grant execute on function public\.reorder_branch_catalog_products\(uuid, uuid, uuid\[\]\) to service_role/);
   });
 });

@@ -14,6 +14,12 @@ export class ChecklistInputError extends Error {}
 export class ChecklistAccessError extends Error {}
 export class ChecklistNotFoundError extends Error {}
 export class ManagementOverviewUnavailableError extends Error {}
+export class CatalogMappedIngredientError extends Error {
+  constructor(readonly products: Array<{ id: string; name: string }>) {
+    super("Catalog ingredient is still mapped to active products.");
+    this.name = "CatalogMappedIngredientError";
+  }
+}
 
 export type ColdStorageDraftEventSource = "temperature_blur" | "remarks_blur" | "equipment_fallback";
 export type ColdStorageDraftDiagnosticContext = {
@@ -180,6 +186,8 @@ export type ChecklistPersistence = {
   createBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;payload:BranchCatalogInventoryItemInput}):Promise<unknown>;
   updateBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;inventoryItemId:string;payload:BranchCatalogInventoryItemInput}):Promise<unknown>;
   mergeBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;duplicateInventoryItemId:string;targetInventoryItemId:string}):Promise<unknown>;
+  archiveBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;inventoryItemId:string}):Promise<unknown>;
+  reorderBranchCatalogProducts?(input:{actorUserId:string;branchId:string;productIds:string[]}):Promise<unknown>;
   saveBranchProductUsageMappings?(input:{actorUserId:string;branchId:string;productId:string;recipeRows:BranchCatalogRecipeInput;requestId?:string|null}):Promise<unknown>;
   getBranchProductSales?(actorUserId:string,branchId:string,businessDate:string):Promise<unknown>;
   saveBranchProductSales?(input:SaveBranchProductSalesInput):Promise<unknown>;
@@ -582,6 +590,27 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   if(result.error)throwProductSalesRpcError(result.error.code);
   return result.data;
  }
+ async function catalogRpc(name:string,args:Record<string,unknown>){
+  const result=await client.rpc(name,args);
+  if(result.error){
+   if(name==="archive_branch_catalog_inventory_item"&&result.error.code==="23505"){
+    let products:Array<{id:string;name:string}>=[];
+    try{
+     const parsed=JSON.parse(result.error.details??"[]");
+     if(Array.isArray(parsed)){
+      products=parsed
+       .filter((item):item is {id:string;name:string}=>typeof item?.id==="string"&&typeof item?.name==="string")
+       .map((item)=>({id:item.id,name:item.name}));
+     }
+    }catch{
+     products=[];
+    }
+    throw new CatalogMappedIngredientError(products);
+   }
+   throwChecklistRpcError(result.error.code);
+  }
+  return result.data;
+ }
  async function dailyWasteRpc(name:string,args:Record<string,unknown>){
   const result=await client.rpc(name,args);
   if(result.error)throwDailyWasteRpcError(result.error.code);
@@ -657,6 +686,8 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   createBranchCatalogInventoryItem:(input)=>rpc("create_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,payload:input.payload}),
   updateBranchCatalogInventoryItem:(input)=>rpc("update_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_inventory_item_id:input.inventoryItemId,payload:input.payload}),
   mergeBranchCatalogInventoryItem:(input)=>rpc("merge_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,duplicate_inventory_item_id:input.duplicateInventoryItemId,target_inventory_item_id:input.targetInventoryItemId}),
+  archiveBranchCatalogInventoryItem:(input)=>catalogRpc("archive_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_inventory_item_id:input.inventoryItemId}),
+  reorderBranchCatalogProducts:(input)=>catalogRpc("reorder_branch_catalog_products",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,ordered_product_ids:input.productIds}),
   saveBranchProductUsageMappings:async(input)=>{
    let result;
    try{
