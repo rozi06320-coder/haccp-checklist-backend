@@ -766,9 +766,9 @@ const createInternalAdminBranchTeamStaffBodySchema = z.object({
     context.addIssue({ code: "custom", path: ["secondary_role"], message: "Roles must be unique." });
   }
 });
-const reassignInternalAdminOperationalStaffTeamBodySchema = z.object({
-  destination_operational_team_id: z.uuid(),
-  expected_current_assignment_id: z.uuid(),
+const changeInternalAdminOperationalTeamPrimarySupervisorBodySchema = z.object({
+  destination_supervisor_user_id: z.uuid(),
+  expected_current_primary_assignment_id: z.uuid(),
 }).strict();
 const createInternalAdminBranchTeamBodySchema = z.object({
   team_name: internalAdminOperationalTeamNameSchema.optional(),
@@ -4625,34 +4625,53 @@ export function createApp(
     },
   );
   app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/operational-teams/:teamId/change-primary-supervisor",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const teamId = organizationIdSchema.safeParse(request.params.teamId);
+        const body = changeInternalAdminOperationalTeamPrimarySupervisorBodySchema.safeParse(request.body);
+        if (!organizationId.success || !teamId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.changeOperationalTeamPrimarySupervisorForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Operational Team supervisor change is unavailable.");
+        }
+        const change = await dependencies.managementAdmin.changeOperationalTeamPrimarySupervisorForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          teamId: teamId.data,
+          destinationSupervisorUserId: body.data.destination_supervisor_user_id,
+          expectedCurrentPrimaryAssignmentId: body.data.expected_current_primary_assignment_id,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(change);
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Unable to change Operational Team supervisor."));
+        else next(new HttpError(503, "service_unavailable", "Operational Team supervisor change is unavailable."));
+      }
+    },
+  );
+  app.post(
     "/api/v1/internal-admin/organizations/:organizationId/operational-staff/:staffId/reassign-team",
     protectedRateLimit, authenticate, async (request, response, next) => {
       try {
         const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
         const staffId = staffIdSchema.safeParse(request.params.staffId);
-        const body = reassignInternalAdminOperationalStaffTeamBodySchema.safeParse(request.body);
-        if (!organizationId.success || !staffId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+        if (!organizationId.success || !staffId.success || !emptyQuerySchema.safeParse(request.query).success) {
           throw new HttpError(400, "bad_request", "The request is invalid.");
         }
-        const auth = requireAuthContext(request);
         await requireInternalAdmin(request);
-        if (!dependencies.managementAdmin.reassignBranchTeamStaffForInternalAdmin) {
-          throw new HttpError(503, "service_unavailable", "Branch Team staff reassignment is unavailable.");
-        }
-        const reassignment = await dependencies.managementAdmin.reassignBranchTeamStaffForInternalAdmin({
-          actorUserId: auth.userId,
-          organizationId: organizationId.data,
-          staffId: staffId.data,
-          destinationOperationalTeamId: body.data.destination_operational_team_id,
-          expectedCurrentAssignmentId: body.data.expected_current_assignment_id,
-        });
         response.setHeader("Cache-Control", "private, no-store");
-        response.status(200).json(reassignment);
+        response.status(410).json({ error: "gone", message: "This staff reassignment endpoint has been retired." });
       } catch (error) {
         if (error instanceof HttpError) next(error);
         else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
-        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Unable to reassign Branch Team staff."));
-        else next(new HttpError(503, "service_unavailable", "Branch Team staff reassignment is unavailable."));
+        else next(new HttpError(410, "gone", "This staff reassignment endpoint has been retired."));
       }
     },
   );

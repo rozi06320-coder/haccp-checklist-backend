@@ -1,5 +1,5 @@
 begin;
-select plan(12);
+select plan(13);
 
 create temp table backend_only_mutation_rpc(signature text primary key) on commit drop;
 insert into backend_only_mutation_rpc(signature) values
@@ -14,6 +14,7 @@ insert into backend_only_mutation_rpc(signature) values
   ('public.create_internal_admin_branch_team_staff(uuid, uuid, uuid, text, text, text, text, text[])'),
   ('public.create_internal_admin_daily_audit_access_user(uuid, uuid, text, bytea, bytea, smallint, integer, integer, integer)'),
   ('public.create_internal_admin_operational_team(uuid, uuid, uuid, text, text, uuid, uuid, jsonb)'),
+  ('public.change_internal_admin_operational_team_primary_supervisor(uuid, uuid, uuid, uuid, uuid)'),
   ('public.create_internal_admin_organization(uuid, text)'),
   ('public.create_internal_admin_organization(uuid, text, text)'),
   ('public.create_maintenance_access_user(uuid, uuid, text, bytea, bytea, smallint, integer, integer, integer)'),
@@ -51,7 +52,6 @@ insert into backend_only_mutation_rpc(signature) values
   ('public.reactivate_internal_admin_supervisor(uuid, uuid, uuid)'),
   ('public.reactivate_maintenance_user(uuid, uuid, uuid)'),
   ('public.reactivate_organization_manager(uuid, uuid, uuid)'),
-  ('public.reassign_internal_admin_operational_staff_team(uuid, uuid, uuid, uuid, uuid)'),
   ('public.register_maintenance_push_subscription(uuid, text, text, text, text)'),
   ('public.register_phase4a_evidence_upload(uuid, uuid, text, text, uuid, text, text, bigint, text)'),
   ('public.rename_supervisor_cold_storage_equipment(uuid, uuid, uuid, text)'),
@@ -104,6 +104,7 @@ select is(has_function_privilege('authenticated', 'public.save_sales_tracking_dr
 select is(has_function_privilege('authenticated', 'public.submit_supervisor_daily_audit(uuid,uuid,date,bigint,text,uuid,text,uuid,jsonb,text)', 'execute'), false, 'authenticated cannot execute Daily Audit submit RPC');
 select is(has_function_privilege('authenticated', 'public.update_internal_admin_organization(uuid,uuid,text,text)', 'execute'), false, 'authenticated cannot execute Internal Admin organization update RPC');
 select is(has_function_privilege('authenticated', 'public.update_operational_team_staff(uuid,uuid,uuid,text,text,text[],text,text,text,text,date,text,text)', 'execute'), false, 'authenticated cannot execute operational staff update RPC');
+select is(has_function_privilege('service_role', 'public.reassign_internal_admin_operational_staff_team(uuid,uuid,uuid,uuid,uuid)', 'execute'), false, 'retired staff-level Internal Admin reassignment RPC is not service-role callable');
 
 select is((
   select count(*)::integer
