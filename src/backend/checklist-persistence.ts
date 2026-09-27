@@ -179,6 +179,7 @@ export type ChecklistPersistence = {
   listSupervisorNotifications?(actorUserId:string):Promise<unknown>;
   markSupervisorNotificationRead?(actorUserId:string,notificationId:string):Promise<unknown>;
   getInventoryItemsCurrentState?(actorUserId:string,branchId:string,inventoryMonth?:string|null):Promise<unknown>;
+  updateInventoryBeefProductionLabel?(input:{actorUserId:string;branchId:string;label:string}):Promise<unknown>;
   saveInventoryItemsDraft?(input:{actorUserId:string;branchId:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
   submitInventoryItems?(input:{actorUserId:string;branchId:string;idempotencyKey:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
   listBranchCatalog?(actorUserId:string,branchId:string):Promise<unknown>;
@@ -400,6 +401,7 @@ const inventoryItemsCurrent=z.object({
   state:z.enum(["draft","submitted"]),
   updated_at:z.string().nullable().optional(),
   submitted_at:z.string().nullable().optional(),
+  beef_production_label:z.string().nullable().optional().default(null),
   beef_rows:z.array(z.object({
     id:z.uuid().optional(),
     production_date:dateOnly,
@@ -674,6 +676,9 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   async getInventoryItemsCurrentState(actorUserId,branchId,inventoryMonth){
    const args=inventoryMonth?{actor_user_id:actorUserId,target_branch_id:branchId,target_inventory_month:inventoryMonth}:{actor_user_id:actorUserId,target_branch_id:branchId};
    return inventoryItemsCurrent.parse(await rpc("get_inventory_items_current_state",args));
+  },
+  async updateInventoryBeefProductionLabel(input){
+   return z.object({beef_production_label:z.string().min(1).max(120)}).strict().parse(await rpc("update_inventory_beef_production_label",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,requested_label:input.label}));
   },
   async saveInventoryItemsDraft(input){
    return inventoryItemsCurrent.parse(await rpc("save_inventory_items_draft",inventoryItemsDraftRpcArgs(input.actorUserId,input.branchId,input.payload)));
