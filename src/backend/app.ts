@@ -1347,8 +1347,10 @@ const inventoryItemsBodySchema=z.object({
   beef_rows:z.array(inventoryBeefRowInputSchema).max(62),
   item_usage:inventoryItemUsageInputSchema,
 }).strict();
-const inventoryBeefProductionLabelBodySchema=z.object({
-  label:z.string().max(120).transform((value)=>value.trim().replace(/\s+/gu," ")).pipe(z.string().min(1).max(120)),
+const inventoryBeefProductionFieldLabelsBodySchema=z.object({
+  russian_label:z.string().max(120).nullable().optional(),
+  australian_label:z.string().max(120).nullable().optional(),
+  hunch_sauce_label:z.string().max(120).nullable().optional(),
 }).strict();
 const inventoryItemsQuerySchema=z.object({
   inventory_month:dateOnlySchema.refine(value=>value.endsWith("-01"),"Month must be first day of the month.").optional(),
@@ -1924,7 +1926,11 @@ const inventoryItemsCurrentSchema=z.object({
   state:z.enum(["draft","submitted"]),
   updated_at:z.string().nullable().optional(),
   submitted_at:z.string().nullable().optional(),
-  beef_production_label:z.string().nullable().optional().default(null),
+  beef_production_labels:z.object({
+    russian_label:z.string().nullable().optional().default(null),
+    australian_label:z.string().nullable().optional().default(null),
+    hunch_sauce_label:z.string().nullable().optional().default(null),
+  }).strict().optional().default({russian_label:null,australian_label:null,hunch_sauce_label:null}),
   beef_rows:z.array(z.object({
     id:z.uuid().optional(),
     production_date:dateOnlySchema,
@@ -7430,12 +7436,13 @@ export function createApp(
     response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
-  app.patch("/api/v1/supervisor/branches/:branchId/inventory-items/beef-production-label",protectedRateLimit,authenticate,async(request,response,next)=>{try{
-    const branch=branchIdSchema.safeParse(request.params.branchId),body=inventoryBeefProductionLabelBodySchema.safeParse(request.body);
+  app.patch("/api/v1/supervisor/branches/:branchId/inventory-items/beef-production-labels",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),body=inventoryBeefProductionFieldLabelsBodySchema.safeParse(request.body);
     if(!branch.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request);
-    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.updateInventoryBeefProductionLabel)throw new HttpError(403,"forbidden","Access is denied.");
-    const result=z.object({beef_production_label:z.string().min(1).max(120)}).strict().parse(await dependencies.checklistPersistence.updateInventoryBeefProductionLabel({actorUserId:auth.userId,branchId:branch.data,label:body.data.label}));
+    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.updateInventoryBeefProductionFieldLabels)throw new HttpError(403,"forbidden","Access is denied.");
+    const normalizeLabel=(value:string|null|undefined)=>{const trimmed=(value??"").trim().replace(/\s+/gu," ");return trimmed===""?null:trimmed;};
+    const result=z.object({beef_production_labels:z.object({russian_label:z.string().nullable(),australian_label:z.string().nullable(),hunch_sauce_label:z.string().nullable()}).strict()}).strict().parse(await dependencies.checklistPersistence.updateInventoryBeefProductionFieldLabels({actorUserId:auth.userId,branchId:branch.data,labels:{russian_label:normalizeLabel(body.data.russian_label),australian_label:normalizeLabel(body.data.australian_label),hunch_sauce_label:normalizeLabel(body.data.hunch_sauce_label)}}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 

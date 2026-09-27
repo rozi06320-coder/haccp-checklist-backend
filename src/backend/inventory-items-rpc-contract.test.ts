@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { describe, it } from "node:test";
 import {
   checklistRequestHash,
@@ -34,5 +36,15 @@ describe("Inventory Items PostgREST RPC argument contract",()=>{
    beef_rows:payload.beef_rows,
    item_usage:payload.item_usage,
   });
+ });
+
+ it("keeps the Beef Production label migration scoped to field labels only",async()=>{
+  const migration=await readFile(path.resolve("supabase/migrations/20260927140000_inventory_beef_production_label.sql"),"utf8");
+  assert.match(migration,/beef_russian_label/);
+  assert.match(migration,/beef_australian_label/);
+  assert.match(migration,/beef_hunch_sauce_label/);
+  assert.match(migration,/update_inventory_beef_production_field_labels/);
+  assert.doesNotMatch(migration,/\bbeef_production_label\b/);
+  assert.doesNotMatch(migration,/\bupdate_inventory_beef_production_label\b/);
  });
 });

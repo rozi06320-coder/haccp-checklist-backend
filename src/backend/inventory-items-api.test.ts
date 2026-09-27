@@ -16,12 +16,14 @@ const org = "37000000-0000-4000-8000-000000000001";
 const calls: Array<{ name: string; input: unknown }> = [];
 let mode: "ok" | "access" | "input" = "ok";
 
+type BeefLabels = { russian_label: string | null; australian_label: string | null; hunch_sauce_label: string | null };
+
 const persistence = {
-  async updateInventoryBeefProductionLabel(input: { actorUserId: string; branchId: string; label: string }) {
-    calls.push({ name: "updateInventoryBeefProductionLabel", input });
+  async updateInventoryBeefProductionFieldLabels(input: { actorUserId: string; branchId: string; labels: BeefLabels }) {
+    calls.push({ name: "updateInventoryBeefProductionFieldLabels", input });
     if (mode === "access" || input.branchId !== branch) throw new ChecklistAccessError();
     if (mode === "input") throw new ChecklistInputError();
-    return { beef_production_label: input.label };
+    return { beef_production_labels: input.labels };
   },
   async getOverview() { throw new Error("unused"); },
   async getCurrentState() { throw new Error("unused"); },
@@ -78,7 +80,7 @@ async function request(path: string, token?: string, init: RequestInit = {}) {
   return fetch(origin + path, { ...init, headers: { ...(token ? { Authorization: `Bearer ${token}` } : { "x-no-auth": "1" }), ...(init.headers ?? {}) } });
 }
 
-describe("Inventory Items Beef Production label API", () => {
+describe("Inventory Items Beef Production field labels API", () => {
   before(async () => {
     server = createServer(createApp(config, deps()));
     await new Promise<void>((resolve, reject) => server.listen(0, "127.0.0.1", resolve).once("error", reject));
@@ -87,35 +89,42 @@ describe("Inventory Items Beef Production label API", () => {
   after(() => new Promise<void>((resolve) => server.close(() => resolve())));
   beforeEach(() => { calls.length = 0; mode = "ok"; });
 
-  it("renames only the branch Beef Production label through supervisor persistence", async () => {
-    const response = await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production-label`, "supervisor", {
+  it("renames only the branch Beef Production field labels through supervisor persistence", async () => {
+    const response = await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production-labels`, "supervisor", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ label: "  Hunch   Sauce Production  " }),
+      body: JSON.stringify({ russian_label: "  Russian   Beef  ", australian_label: "Aussie Beef", hunch_sauce_label: "  " }),
     });
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { beef_production_label: "Hunch Sauce Production" });
+    assert.deepEqual(await response.json(), { beef_production_labels: { russian_label: "Russian Beef", australian_label: "Aussie Beef", hunch_sauce_label: null } });
     assert.deepEqual(calls, [{
-      name: "updateInventoryBeefProductionLabel",
-      input: { actorUserId: supervisor, branchId: branch, label: "Hunch Sauce Production" },
+      name: "updateInventoryBeefProductionFieldLabels",
+      input: { actorUserId: supervisor, branchId: branch, labels: { russian_label: "Russian Beef", australian_label: "Aussie Beef", hunch_sauce_label: null } },
     }]);
   });
 
-  it("rejects empty and overlong labels before persistence", async () => {
-    for (const label of ["   ", "x".repeat(121)]) {
-      const response = await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production-label`, "supervisor", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ label }),
-      });
-      assert.equal(response.status, 400);
-    }
+  it("rejects overlong labels before persistence while allowing blank clear-to-default values", async () => {
+    const blank = await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production-labels`, "supervisor", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ russian_label: " ", australian_label: "", hunch_sauce_label: null }),
+    });
+    assert.equal(blank.status, 200);
+    assert.deepEqual((await blank.json()).beef_production_labels, { russian_label: null, australian_label: null, hunch_sauce_label: null });
+    calls.length = 0;
+    const response = await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production-labels`, "supervisor", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ russian_label: "x".repeat(121), australian_label: null, hunch_sauce_label: null }),
+    });
+    assert.equal(response.status, 400);
     assert.deepEqual(calls, []);
   });
 
   it("denies non-supervisor and wrong-branch callers without broadening access", async () => {
-    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production-label`, undefined, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: "New Label" }) })).status, 401);
-    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production-label`, "manager", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: "New Label" }) })).status, 403);
-    assert.equal((await request(`/api/v1/supervisor/branches/${otherBranch}/inventory-items/beef-production-label`, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ label: "New Label" }) })).status, 403);
+    const body = JSON.stringify({ russian_label: "Russian", australian_label: "Australian", hunch_sauce_label: "Sauce" });
+    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production-labels`, undefined, { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status, 401);
+    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production-labels`, "manager", { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status, 403);
+    assert.equal((await request(`/api/v1/supervisor/branches/${otherBranch}/inventory-items/beef-production-labels`, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status, 403);
   });
 });

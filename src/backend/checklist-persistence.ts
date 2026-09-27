@@ -179,7 +179,7 @@ export type ChecklistPersistence = {
   listSupervisorNotifications?(actorUserId:string):Promise<unknown>;
   markSupervisorNotificationRead?(actorUserId:string,notificationId:string):Promise<unknown>;
   getInventoryItemsCurrentState?(actorUserId:string,branchId:string,inventoryMonth?:string|null):Promise<unknown>;
-  updateInventoryBeefProductionLabel?(input:{actorUserId:string;branchId:string;label:string}):Promise<unknown>;
+  updateInventoryBeefProductionFieldLabels?(input:{actorUserId:string;branchId:string;labels:{russian_label:string|null;australian_label:string|null;hunch_sauce_label:string|null}}):Promise<unknown>;
   saveInventoryItemsDraft?(input:{actorUserId:string;branchId:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
   submitInventoryItems?(input:{actorUserId:string;branchId:string;idempotencyKey:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
   listBranchCatalog?(actorUserId:string,branchId:string):Promise<unknown>;
@@ -401,7 +401,11 @@ const inventoryItemsCurrent=z.object({
   state:z.enum(["draft","submitted"]),
   updated_at:z.string().nullable().optional(),
   submitted_at:z.string().nullable().optional(),
-  beef_production_label:z.string().nullable().optional().default(null),
+  beef_production_labels:z.object({
+    russian_label:z.string().nullable().optional().default(null),
+    australian_label:z.string().nullable().optional().default(null),
+    hunch_sauce_label:z.string().nullable().optional().default(null),
+  }).strict().optional().default({russian_label:null,australian_label:null,hunch_sauce_label:null}),
   beef_rows:z.array(z.object({
     id:z.uuid().optional(),
     production_date:dateOnly,
@@ -677,8 +681,8 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
    const args=inventoryMonth?{actor_user_id:actorUserId,target_branch_id:branchId,target_inventory_month:inventoryMonth}:{actor_user_id:actorUserId,target_branch_id:branchId};
    return inventoryItemsCurrent.parse(await rpc("get_inventory_items_current_state",args));
   },
-  async updateInventoryBeefProductionLabel(input){
-   return z.object({beef_production_label:z.string().min(1).max(120)}).strict().parse(await rpc("update_inventory_beef_production_label",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,requested_label:input.label}));
+  async updateInventoryBeefProductionFieldLabels(input){
+   return z.object({beef_production_labels:z.object({russian_label:z.string().nullable(),australian_label:z.string().nullable(),hunch_sauce_label:z.string().nullable()}).strict()}).strict().parse(await rpc("update_inventory_beef_production_field_labels",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,russian_label:input.labels.russian_label,australian_label:input.labels.australian_label,hunch_sauce_label:input.labels.hunch_sauce_label}));
   },
   async saveInventoryItemsDraft(input){
    return inventoryItemsCurrent.parse(await rpc("save_inventory_items_draft",inventoryItemsDraftRpcArgs(input.actorUserId,input.branchId,input.payload)));
