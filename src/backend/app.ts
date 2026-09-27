@@ -16,7 +16,7 @@ import {
   type BackendDependencies,
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
-import { branchLocalDate, canonicalizeMaintenancePurchasePayload, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime, SupervisorPromotionConflictDiagnosticError, type MaintenanceIssuesStageTiming, type MaintenanceIssuesTimingDiagnostics } from "./operational";
+import { branchLocalDate, canonicalizeMaintenancePurchasePayload, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_PURCHASE_REQUEST_PRODUCT_PHOTO_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, purchaseRequestProductPhotoMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime, SupervisorPromotionConflictDiagnosticError, type MaintenanceIssuesStageTiming, type MaintenanceIssuesTimingDiagnostics } from "./operational";
 import { CatalogMappedIngredientError, ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ChecklistNotFoundError, ManagementOverviewUnavailableError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
@@ -407,6 +407,16 @@ const purchaseRequestItemAttachmentResponseSchema = z.object({
   position: z.number().int().positive(),
   url: z.string().nullable().optional().transform((value) => value ?? null),
 }).strict();
+const purchaseRequestProductPhotoResponseSchema = z.object({
+  original_filename: z.string().nullable(),
+  mime_type: purchaseRequestProductPhotoMime,
+  size_bytes: z.union([z.number(), z.string()]).transform(Number),
+  uploaded_at: z.string().nullable().optional().transform((value) => value ?? null),
+  url: z.string().nullable().optional().transform((value) => value ?? null),
+}).strict();
+const purchaseRequestProductPhotoMutationResponseSchema = z.object({
+  product_photo: purchaseRequestProductPhotoResponseSchema.nullable(),
+}).strict();
 const purchaseRequestItemResponseSchema = z.object({
   id: z.uuid(),
   purchase_request_id: z.uuid(),
@@ -428,6 +438,7 @@ const purchaseRequestItemResponseSchema = z.object({
   purchasing_notes: z.string().nullable().optional().transform((value) => value ?? null),
   purchase_log_id: z.uuid().nullable().optional().transform((value) => value ?? null),
   purchase_log_payment_status: purchaseLogPaymentStatusSchema.nullable().optional().transform((value) => value ?? null),
+  product_photo: purchaseRequestProductPhotoResponseSchema.nullable().optional().transform((value) => value ?? null),
   attachments: z.array(purchaseRequestItemAttachmentResponseSchema).max(3).optional().default([]),
 }).strict();
 const purchaseRequestResponseRowSchema = z.object({
@@ -2256,6 +2267,58 @@ function purchaseRequestDetailsForOperation(items: z.infer<typeof purchaseReques
     }) } : {}),
   };
   });
+}
+
+const purchaseRequestProductPhotoRawBody = express.raw({
+  type: (request) => String(request.headers["content-type"] ?? "").toLowerCase().startsWith("multipart/form-data"),
+  limit: MAX_PURCHASE_REQUEST_PRODUCT_PHOTO_BYTES + 64 * 1024,
+});
+
+function parseMultipartProductPhoto(request: Request) {
+  const contentType = String(request.header("content-type") ?? "");
+  const boundaryMatch = /boundary=(?:"([^"]+)"|([^;]+))/iu.exec(contentType);
+  if (!boundaryMatch) throw new HttpError(400, "bad_request", "The request is invalid.");
+  const boundaryValue = (boundaryMatch[1] ?? boundaryMatch[2] ?? "").trim();
+  if (!boundaryValue) throw new HttpError(400, "bad_request", "The request is invalid.");
+  if (!Buffer.isBuffer(request.body)) throw new HttpError(400, "bad_request", "The request is invalid.");
+  const body = request.body as Buffer;
+  const boundary = Buffer.from(`--${boundaryValue}`, "utf8");
+  let cursor = 0;
+  let file: { bytes: Buffer; mimeType: z.infer<typeof purchaseRequestProductPhotoMime>; originalName: string } | null = null;
+  while (cursor < body.length) {
+    const boundaryStart = body.indexOf(boundary, cursor);
+    if (boundaryStart < 0) break;
+    const afterBoundary = boundaryStart + boundary.length;
+    if (body.subarray(afterBoundary, afterBoundary + 2).toString("ascii") === "--") break;
+    let partStart = afterBoundary;
+    if (body.subarray(partStart, partStart + 2).toString("ascii") === "\r\n") partStart += 2;
+    const headerEnd = body.indexOf(Buffer.from("\r\n\r\n", "ascii"), partStart);
+    if (headerEnd < 0) break;
+    const headers = body.subarray(partStart, headerEnd).toString("latin1");
+    const contentStart = headerEnd + 4;
+    const nextBoundary = body.indexOf(boundary, contentStart);
+    if (nextBoundary < 0) break;
+    let contentEnd = nextBoundary;
+    if (contentEnd >= 2 && body.subarray(contentEnd - 2, contentEnd).toString("ascii") === "\r\n") contentEnd -= 2;
+    const disposition = /content-disposition:\s*form-data;[^\r\n]*/iu.exec(headers)?.[0] ?? "";
+    const filenameMatch = /filename="([^"]*)"/iu.exec(disposition);
+    if (filenameMatch) {
+      if (file) throw new HttpError(400, "bad_request", "Only one product photo is allowed.");
+      const mimeTypeRaw = /content-type:\s*([^\r\n]+)/iu.exec(headers)?.[1]?.trim().toLowerCase() ?? "";
+      const mimeType = purchaseRequestProductPhotoMime.safeParse(mimeTypeRaw);
+      if (!mimeType.success) throw new HttpError(415, "unprocessable_entity", "Unsupported image type.");
+      const bytes = Buffer.from(body.subarray(contentStart, contentEnd));
+      if (bytes.length === 0 || bytes.length > MAX_PURCHASE_REQUEST_PRODUCT_PHOTO_BYTES) throw new HttpError(413, "payload_too_large", "Image must be 5 MB or smaller.");
+      file = {
+        bytes,
+        mimeType: mimeType.data,
+        originalName: decodeUploadFilename(filenameMatch[1]) ?? (filenameMatch[1]?.trim() || "product-photo"),
+      };
+    }
+    cursor = nextBoundary + boundary.length;
+  }
+  if (!file) throw new HttpError(400, "bad_request", "A product photo is required.");
+  return file;
 }
 
 function operationalSupplierReceivingError(error: unknown) {
@@ -6580,6 +6643,54 @@ export function createApp(
         }));
         response.setHeader("Cache-Control", "private, no-store");
         response.status(201).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchaseRequestError(error));
+      }
+    });
+
+  app.post("/api/v1/supervisor/branches/:branchId/purchase-requests/:requestId/items/:itemId/product-photo", protectedRateLimit, authenticate, purchaseRequestProductPhotoRawBody,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const requestId = z.uuid().safeParse(request.params.requestId);
+        const itemId = z.uuid().safeParse(request.params.itemId);
+        if (!branchId.success || !requestId.success || !itemId.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin?.uploadSupervisorPurchaseRequestProductPhoto) throw new HttpError(403, "forbidden", "Access is denied.");
+        const photo = parseMultipartProductPhoto(request);
+        const result = purchaseRequestProductPhotoMutationResponseSchema.parse(await dependencies.operationalAdmin.uploadSupervisorPurchaseRequestProductPhoto({
+          actorUserId: auth.userId,
+          branchId: branchId.data,
+          requestId: requestId.data,
+          itemId: itemId.data,
+          photo,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchaseRequestError(error));
+      }
+    });
+
+  app.delete("/api/v1/supervisor/branches/:branchId/purchase-requests/:requestId/items/:itemId/product-photo", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const requestId = z.uuid().safeParse(request.params.requestId);
+        const itemId = z.uuid().safeParse(request.params.itemId);
+        if (!branchId.success || !requestId.success || !itemId.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin?.removeSupervisorPurchaseRequestProductPhoto) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = purchaseRequestProductPhotoMutationResponseSchema.parse(await dependencies.operationalAdmin.removeSupervisorPurchaseRequestProductPhoto({
+          actorUserId: auth.userId,
+          branchId: branchId.data,
+          requestId: requestId.data,
+          itemId: itemId.data,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
       } catch (error) {
         next(error instanceof HttpError ? error : operationalPurchaseRequestError(error));
       }

@@ -102,6 +102,16 @@ function deps(options: { transitionError?: boolean } = {}): BackendDependencies 
         if (input.branchId !== branch) throw new OperationalAccessError();
         return { purchase_request: { ...purchaseRequest, category: input.category, notes: input.notes, items: input.items.map((item, index) => ({ id: `57000000-0000-4000-8000-00000000000${index + 1}`, purchase_request_id: requestId, item_name: item.name, quantity: String(item.quantity), unit: item.unit ?? null, notes: item.notes ?? null, sort_order: index + 1, created_at: "2026-09-21T08:00:00.000Z" })) } };
       },
+      async uploadSupervisorPurchaseRequestProductPhoto(input) {
+        calls.push({ name: "upload-product-photo", input: { ...input, photo: { ...input.photo, bytes: input.photo.bytes.toString("hex") } } });
+        if (input.branchId !== branch || input.requestId !== requestId || input.itemId !== purchaseRequest.items[0].id) throw new OperationalAccessError();
+        return { product_photo: { original_filename: input.photo.originalName, mime_type: input.photo.mimeType, size_bytes: input.photo.bytes.length, uploaded_at: "2026-09-21T09:00:00.000Z", url: "https://example.test/product-photo.jpg" } };
+      },
+      async removeSupervisorPurchaseRequestProductPhoto(input) {
+        calls.push({ name: "remove-product-photo", input });
+        if (input.branchId !== branch || input.requestId !== requestId || input.itemId !== purchaseRequest.items[0].id) throw new OperationalAccessError();
+        return { product_photo: null };
+      },
       async listPurchasingPurchaseRequests(input) {
         calls.push({ name: "list-purchasing", input });
         if (input.organizationId !== organization) throw new OperationalAccessError();
@@ -173,6 +183,18 @@ async function request(path: string, token: string, init: RequestInit = {}) {
   return fetch(origin + path, { ...init, headers: { Authorization: `Bearer ${token}`, ...(init.headers ?? {}) } });
 }
 
+function multipartPhotoBody(file: { name: string; type: string; bytes: Buffer }) {
+  const boundary = "----product-photo-test-boundary";
+  return {
+    contentType: `multipart/form-data; boundary=${boundary}`,
+    body: Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="${file.name}"\r\nContent-Type: ${file.type}\r\n\r\n`, "utf8"),
+      file.bytes,
+      Buffer.from(`\r\n--${boundary}--\r\n`, "utf8"),
+    ]),
+  };
+}
+
 describe("Purchase Request API", () => {
   before(async () => {
     server = createServer(createApp(config, deps()));
@@ -213,6 +235,39 @@ describe("Purchase Request API", () => {
     });
     assert.equal(response.status, 403);
     assert.equal(calls[0]?.name, "create-supervisor");
+  });
+
+  it("lets a Supervisor upload one product photo for a saved request item", async () => {
+    const multipart = multipartPhotoBody({ name: "gloves.jpg", type: "image/jpeg", bytes: Buffer.from([0xff, 0xd8, 0xff, 0x00, 0xff, 0xd9]) });
+    const response = await request(`/api/v1/supervisor/branches/${branch}/purchase-requests/${requestId}/items/${purchaseRequest.items[0].id}/product-photo`, "supervisor", {
+      method: "POST",
+      headers: { "Content-Type": multipart.contentType },
+      body: multipart.body,
+    });
+    assert.equal(response.status, 200);
+    assert.equal(calls[0]?.name, "upload-product-photo");
+    assert.equal((calls[0]?.input as { photo: { mimeType: string; originalName: string } }).photo.mimeType, "image/jpeg");
+    const body = await response.json() as { product_photo: { original_filename: string; url: string } };
+    assert.equal(body.product_photo.original_filename, "gloves.jpg");
+    assert.equal(body.product_photo.url, "https://example.test/product-photo.jpg");
+  });
+
+  it("rejects unsupported product photo MIME before mutation", async () => {
+    const multipart = multipartPhotoBody({ name: "receipt.pdf", type: "application/pdf", bytes: Buffer.from("%PDF-1.4\n") });
+    const response = await request(`/api/v1/supervisor/branches/${branch}/purchase-requests/${requestId}/items/${purchaseRequest.items[0].id}/product-photo`, "supervisor", {
+      method: "POST",
+      headers: { "Content-Type": multipart.contentType },
+      body: multipart.body,
+    });
+    assert.equal(response.status, 415);
+    assert.equal(calls.length, 0);
+  });
+
+  it("lets a Supervisor remove a product photo", async () => {
+    const response = await request(`/api/v1/supervisor/branches/${branch}/purchase-requests/${requestId}/items/${purchaseRequest.items[0].id}/product-photo`, "supervisor", { method: "DELETE" });
+    assert.equal(response.status, 200);
+    assert.equal(calls[0]?.name, "remove-product-photo");
+    assert.deepEqual(await response.json(), { product_photo: null });
   });
 
   it("rejects zero items, invalid category, and invalid quantity before persistence", async () => {

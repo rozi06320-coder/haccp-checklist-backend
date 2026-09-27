@@ -1186,6 +1186,49 @@ describe("Purchase Request attachment lifecycle",()=>{
     assert.throws(()=>inspectMaintenancePurchaseReceipt(Buffer.alloc(MAX_PURCHASE_INVOICE_BYTES+1,1),"application/pdf"));
   });
 
+  it("uploads product photos through the dedicated bucket and returns only signed metadata",async()=>{
+    const calls:Array<{method:string;url:string;body:Record<string,unknown>}>=[],removed:Array<Record<string,unknown>>=[];
+    const oldPath=`${id.organization}/${id.branch}/purchase-requests/${requestId}/items/${itemId}/old.jpg`;
+    const rpc=createServer(async(request,response)=>{
+      const body=await readJsonBody(request);
+      calls.push({method:request.method??"",url:request.url??"",body});
+      response.setHeader("content-type","application/json");
+      if(request.method==="POST"&&request.url==="/rest/v1/rpc/authorize_supervisor_purchase_request_item_product_photo"){
+        response.end(JSON.stringify([{organization_id:id.organization,branch_id:id.branch,request_id:requestId,item_id:itemId}]));
+        return;
+      }
+      if(request.method==="POST"&&request.url?.startsWith("/storage/v1/object/purchase-request-product-photos/")){
+        response.end(JSON.stringify({Key:"uploaded"}));
+        return;
+      }
+      if(request.method==="POST"&&request.url==="/rest/v1/rpc/set_supervisor_purchase_request_item_product_photo"){
+        const metadata=body.photo_metadata as Record<string,unknown>;
+        assert.match(String(metadata.storage_path),new RegExp(`^${id.organization}/${id.branch}/purchase-requests/${requestId}/items/${itemId}/`));
+        response.end(JSON.stringify({product_photo:{...metadata,uploaded_at:"2026-09-21T09:00:00.000Z"},old_storage_path:oldPath}));
+        return;
+      }
+      if(request.method==="POST"&&request.url?.startsWith("/storage/v1/object/sign/purchase-request-product-photos/")){
+        response.end(JSON.stringify({signedURL:"/signed-product-photo"}));
+        return;
+      }
+      if(request.method==="DELETE"&&request.url==="/storage/v1/object/purchase-request-product-photos"){
+        removed.push(body);
+        response.end(JSON.stringify([]));
+        return;
+      }
+      response.statusCode=404;
+      response.end(JSON.stringify({message:"unexpected"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      const result=await admin.uploadSupervisorPurchaseRequestProductPhoto?.({actorUserId:id.supervisor,branchId:id.branch,requestId,itemId,photo:{bytes:jpegBytes,mimeType:"image/jpeg",originalName:"gloves.jpg"}}) as {product_photo:{url:string|null;storage_path?:string}};
+      assert.equal(result.product_photo.url,`http://127.0.0.1:${(rpc.address()as AddressInfo).port}/storage/v1/signed-product-photo`);
+      assert.equal(result.product_photo.storage_path,undefined);
+      assert.deepEqual(removed,[{prefixes:[oldPath]}]);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
   it("replaces attachments after DB save and deletes only removed old storage objects",async()=>{
     const calls:Array<{method:string;url:string;body:Record<string,unknown>}>=[],removed:Array<Record<string,unknown>>=[];
     const rpc=createServer(async(request,response)=>{

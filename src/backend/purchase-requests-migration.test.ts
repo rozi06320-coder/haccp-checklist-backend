@@ -7,6 +7,7 @@ const migrationPath = path.join(process.cwd(), "supabase/migrations/202609211300
 const detailsMigrationPath = path.join(process.cwd(), "supabase/migrations/20260923100000_purchasing_purchase_request_details.sql");
 const financialDocumentsMigrationPath = path.join(process.cwd(), "supabase/migrations/20260923120000_purchasing_purchase_request_financial_documents.sql");
 const linkMigrationPath = path.join(process.cwd(), "supabase/migrations/20260924120000_central_purchasing_purchase_log_link.sql");
+const productPhotosMigrationPath = path.join(process.cwd(), "supabase/migrations/20260927130000_purchase_request_product_photos.sql");
 
 describe("Purchase Request migration contract", () => {
   it("creates a separate request and item domain with no Purchase Log or expense coupling", async () => {
@@ -95,5 +96,23 @@ describe("Purchase Request migration contract", () => {
     assert.match(sql, /'unpaid'/i);
     assert.match(sql, /source_type='central_purchasing'/i);
     assert.match(sql, /existing\.source_type='central_purchasing'[\s\S]*central purchasing purchase logs are source managed/i);
+  });
+
+  it("adds optional item product photos separately from buyer receipt attachments", async () => {
+    const sql = await readFile(productPhotosMigrationPath, "utf8");
+    assert.match(sql, /'purchase-request-product-photos'/i);
+    assert.match(sql, /'purchase-request-product-photos'[\s\S]*false[\s\S]*5242880/i);
+    for (const column of ["product_photo_storage_path", "product_photo_original_name", "product_photo_mime_type", "product_photo_size_bytes", "product_photo_uploaded_at", "product_photo_uploaded_by"]) {
+      assert.match(sql, new RegExp(`add column if not exists ${column}`, "i"));
+    }
+    assert.match(sql, /product_photo_mime_type in \('image\/jpeg','image\/png','image\/webp'\)/i);
+    assert.match(sql, /product_photo_size_bytes > 0 and product_photo_size_bytes <= 5242880/i);
+    assert.match(sql, /'product_photo', private\.purchase_request_item_product_photo_json\(item\)/i);
+    assert.match(sql, /public\.set_supervisor_purchase_request_item_product_photo\(uuid, uuid, uuid, uuid, jsonb\)/i);
+    assert.match(sql, /public\.clear_supervisor_purchase_request_item_product_photo\(uuid, uuid, uuid, uuid\)/i);
+    assert.match(sql, /revoke all on function public\.set_supervisor_purchase_request_item_product_photo\(uuid, uuid, uuid, uuid, jsonb\) from public, anon, authenticated/i);
+    assert.match(sql, /grant execute on function public\.set_supervisor_purchase_request_item_product_photo\(uuid, uuid, uuid, uuid, jsonb\) to service_role/i);
+    assert.doesNotMatch(sql, /alter table public\.purchase_request_item_attachments/i);
+    assert.doesNotMatch(sql, /application\/pdf/i);
   });
 });

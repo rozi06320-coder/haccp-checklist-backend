@@ -437,6 +437,10 @@ const managedMaintenanceIssueRow = maintenanceIssueRow.extend({
 const PURCHASE_INVOICE_BUCKET = "branch-purchase-invoices";
 const PURCHASE_INVOICE_SIGNED_URL_SECONDS = 5 * 60;
 export const MAX_PURCHASE_INVOICE_BYTES = 5 * 1024 * 1024;
+const PURCHASE_REQUEST_PRODUCT_PHOTO_BUCKET = "purchase-request-product-photos";
+const PURCHASE_REQUEST_PRODUCT_PHOTO_SIGNED_URL_SECONDS = 5 * 60;
+export const MAX_PURCHASE_REQUEST_PRODUCT_PHOTO_BYTES = 5 * 1024 * 1024;
+export const purchaseRequestProductPhotoMime = z.enum(["image/jpeg", "image/png", "image/webp"]);
 export const MAX_MAINTENANCE_PURCHASE_PHOTOS = 3;
 export const purchaseInvoiceMime = z.enum(["image/jpeg", "image/png", "image/webp", "application/pdf"]);
 export const maintenancePurchaseReceiptMime = purchaseInvoiceMime;
@@ -450,6 +454,18 @@ export function inspectMaintenancePurchaseReceipt(bytes:Buffer,declaredMime:stri
   const webp=bytes.length>=20&&bytes.subarray(0,4).toString("ascii")==="RIFF"&&bytes.subarray(8,12).toString("ascii")==="WEBP"&&bytes.readUInt32LE(4)===bytes.length-8;
   const pdf=bytes.length>=5&&bytes.subarray(0,5).toString("ascii")==="%PDF-";
   const detected=jpeg?{mime:"image/jpeg" as const,extension:"jpg" as const}:png?{mime:"image/png" as const,extension:"png" as const}:webp?{mime:"image/webp" as const,extension:"webp" as const}:pdf?{mime:"application/pdf" as const,extension:"pdf" as const}:null;
+  if(!detected||detected.mime!==mime.data)throw new AdminOperationError();
+  return detected;
+}
+export function inspectPurchaseRequestProductPhoto(bytes:Buffer,declaredMime:string){
+  if(bytes.length===0||bytes.length>MAX_PURCHASE_REQUEST_PRODUCT_PHOTO_BYTES)throw new AdminOperationError();
+  const mime=purchaseRequestProductPhotoMime.safeParse(declaredMime.toLowerCase());
+  if(!mime.success)throw new AdminOperationError();
+  const jpeg=bytes.length>=4&&bytes[0]===0xff&&bytes[1]===0xd8&&bytes[2]===0xff&&bytes.at(-2)===0xff&&bytes.at(-1)===0xd9;
+  const pngSignature=Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]);
+  const png=bytes.length>=33&&bytes.subarray(0,8).equals(pngSignature)&&bytes.subarray(12,16).toString("ascii")==="IHDR"&&bytes.subarray(bytes.length-8,bytes.length-4).toString("ascii")==="IEND";
+  const webp=bytes.length>=20&&bytes.subarray(0,4).toString("ascii")==="RIFF"&&bytes.subarray(8,12).toString("ascii")==="WEBP"&&bytes.readUInt32LE(4)===bytes.length-8;
+  const detected=jpeg?{mime:"image/jpeg" as const,extension:"jpg" as const}:png?{mime:"image/png" as const,extension:"png" as const}:webp?{mime:"image/webp" as const,extension:"webp" as const}:null;
   if(!detected||detected.mime!==mime.data)throw new AdminOperationError();
   return detected;
 }
@@ -681,6 +697,19 @@ export type OperationalAdmin = {
     notes?: string | null;
     items: Array<{ name: string; quantity: string | number; unit?: string | null; notes?: string | null }>;
   }): Promise<unknown>;
+  uploadSupervisorPurchaseRequestProductPhoto?(input: {
+    actorUserId: string;
+    branchId: string;
+    requestId: string;
+    itemId: string;
+    photo: { bytes: Buffer; mimeType: z.infer<typeof purchaseRequestProductPhotoMime>; originalName: string };
+  }): Promise<unknown>;
+  removeSupervisorPurchaseRequestProductPhoto?(input: {
+    actorUserId: string;
+    branchId: string;
+    requestId: string;
+    itemId: string;
+  }): Promise<unknown>;
   listPurchasingPurchaseRequests?(input: {
     actorUserId: string;
     organizationId: string;
@@ -886,6 +915,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   const supplierReceivingPhotoStorage = client.storage.from(SUPPLIER_RECEIVING_PHOTO_BUCKET);
   const maintenanceReceiptStorage = client.storage.from("maintenance-purchase-receipts");
   const purchaseRequestAttachmentStorage = client.storage.from("purchase-request-attachments");
+  const purchaseRequestProductPhotoStorage = client.storage.from(PURCHASE_REQUEST_PRODUCT_PHOTO_BUCKET);
   const maintenanceIssuePhotoStorage = client.storage.from(MAINTENANCE_ISSUE_PHOTO_BUCKET);
   function safeMaintenancePurchaseDiagnosticCode(value: string | null | undefined) {
     if (!value) return null;
@@ -1077,7 +1107,24 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   }
   async function signMaintenanceReceipt(path:string|null){if(!path)return null;try{const result=await maintenanceReceiptStorage.createSignedUrl(path,PURCHASE_INVOICE_SIGNED_URL_SECONDS);return result.error||!result.data?.signedUrl?null:result.data.signedUrl;}catch{return null;}}
   async function signPurchaseRequestAttachment(path:string|null){if(!path)return null;try{const result=await purchaseRequestAttachmentStorage.createSignedUrl(path,PURCHASE_INVOICE_SIGNED_URL_SECONDS);return result.error||!result.data?.signedUrl?null:result.data.signedUrl;}catch{return null;}}
+  async function signPurchaseRequestProductPhoto(path:string|null){if(!path)return null;try{const result=await purchaseRequestProductPhotoStorage.createSignedUrl(path,PURCHASE_REQUEST_PRODUCT_PHOTO_SIGNED_URL_SECONDS);return result.error||!result.data?.signedUrl?null:result.data.signedUrl;}catch{return null;}}
   async function signMaintenanceIssuePhoto(path:string|null){if(!path)return null;try{const result=await maintenanceIssuePhotoStorage.createSignedUrl(path,MAINTENANCE_ISSUE_PHOTO_SIGNED_URL_SECONDS);return result.error||!result.data?.signedUrl?null:result.data.signedUrl;}catch{return null;}}
+  async function uploadPurchaseRequestProductPhotoObject(input:{organizationId:string;branchId:string;requestId:string;itemId:string;photo:{bytes:Buffer;mimeType:z.infer<typeof purchaseRequestProductPhotoMime>;originalName:string}}){
+    const inspected=inspectPurchaseRequestProductPhoto(input.photo.bytes,input.photo.mimeType);
+    const originalName=safeOriginalFileName(input.photo.originalName,`product-photo.${inspected.extension}`);
+    const path=`${input.organizationId}/${input.branchId}/purchase-requests/${input.requestId}/items/${input.itemId}/${randomUUID()}.${inspected.extension}`;
+    const upload=await purchaseRequestProductPhotoStorage.upload(path,input.photo.bytes,{contentType:inspected.mime,upsert:false,metadata:{byteSize:String(input.photo.bytes.length),mimeType:inspected.mime,originalName}});
+    if(upload.error)throw new AdminOperationError();
+    return{storage_path:path,original_filename:originalName,mime_type:inspected.mime,size_bytes:input.photo.bytes.length};
+  }
+  async function cleanupPurchaseRequestProductPhotoPaths(paths:string[]){
+    const unique=[...new Set(paths.filter(Boolean))];
+    if(unique.length===0)return;
+    try{
+      const result=await purchaseRequestProductPhotoStorage.remove(unique);
+      if(result.error)console.warn("PURCHASE_REQUEST_PRODUCT_PHOTO_CLEANUP_FAILED",{count:unique.length});
+    }catch{console.warn("PURCHASE_REQUEST_PRODUCT_PHOTO_CLEANUP_FAILED",{count:unique.length});}
+  }
   async function uploadPurchaseRequestAttachment(input:{organizationId:string;requestId:string;itemId:string;attachment:{id?:string;bytes:Buffer;mimeType:z.infer<typeof purchaseInvoiceMime>;originalName:string};position:number}){
     const inspected=inspectMaintenancePurchaseReceipt(input.attachment.bytes,input.attachment.mimeType);
     const originalName=safeOriginalFileName(input.attachment.originalName,`receipt-${input.position}.${inspected.extension}`);
@@ -1178,6 +1225,28 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       throw error;
     }
   }
+  const purchaseRequestProductPhotoAuthRow=z.object({organization_id:uuid,branch_id:uuid,request_id:uuid,item_id:uuid}).strict();
+  const purchaseRequestProductPhotoRpcRow=z.object({
+    storage_path:z.string().min(1),
+    original_filename:optionalStaffText,
+    mime_type:purchaseRequestProductPhotoMime,
+    size_bytes:z.union([z.number(),z.string()]),
+    uploaded_at:z.string().nullable(),
+  }).strict();
+  const purchaseRequestProductPhotoMutationRow=z.object({
+    product_photo:purchaseRequestProductPhotoRpcRow.nullable(),
+    old_storage_path:z.string().nullable().optional().default(null),
+  }).strict();
+  async function safePurchaseRequestProductPhotoResponse(productPhoto:z.infer<typeof purchaseRequestProductPhotoRpcRow>|null){
+    if(!productPhoto)return null;
+    return{
+      original_filename:productPhoto.original_filename,
+      mime_type:productPhoto.mime_type,
+      size_bytes:Number(productPhoto.size_bytes),
+      uploaded_at:productPhoto.uploaded_at,
+      url:await signPurchaseRequestProductPhoto(productPhoto.storage_path),
+    };
+  }
   async function signPurchaseRequestPayload(payload:unknown){
     const record=payload&&typeof payload==="object"?payload as{purchase_request?:unknown;purchase_requests?:unknown}:null;
     const requests=Array.isArray(record?.purchase_requests)?record.purchase_requests:record?.purchase_request?[record.purchase_request]:[];
@@ -1185,15 +1254,23 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       const requestRecord=request&&typeof request==="object"?request as{items?:unknown}:null;
       if(!Array.isArray(requestRecord?.items))continue;
       for(const item of requestRecord.items){
-        const itemRecord=item&&typeof item==="object"?item as{attachments?:unknown}:null;
-        if(!Array.isArray(itemRecord?.attachments))continue;
-        itemRecord.attachments=await Promise.all(itemRecord.attachments.map(async(attachment)=>{
-          const attachmentRecord=attachment&&typeof attachment==="object"?attachment as{storage_path?:unknown;size_bytes?:unknown;[key:string]:unknown}:null;
-          const storagePath=typeof attachmentRecord?.storage_path==="string"?attachmentRecord.storage_path:null;
-          const {storage_path: _storagePath, ...safeAttachment}=attachmentRecord??{};
-          void _storagePath;
-          return{...safeAttachment,size_bytes:attachmentRecord?.size_bytes==null?null:Number(attachmentRecord.size_bytes),url:await signPurchaseRequestAttachment(storagePath)};
-        }));
+        const itemRecord=item&&typeof item==="object"?item as{attachments?:unknown;product_photo?:unknown}:null;
+        if(!itemRecord)continue;
+        if(itemRecord.product_photo&&typeof itemRecord.product_photo==="object"){
+          const photo=purchaseRequestProductPhotoRpcRow.safeParse(itemRecord.product_photo);
+          itemRecord.product_photo=photo.success?await safePurchaseRequestProductPhotoResponse(photo.data):null;
+        }else if(itemRecord.product_photo!==undefined){
+          itemRecord.product_photo=null;
+        }
+        if(Array.isArray(itemRecord.attachments)){
+          itemRecord.attachments=await Promise.all(itemRecord.attachments.map(async(attachment)=>{
+            const attachmentRecord=attachment&&typeof attachment==="object"?attachment as{storage_path?:unknown;size_bytes?:unknown;[key:string]:unknown}:null;
+            const storagePath=typeof attachmentRecord?.storage_path==="string"?attachmentRecord.storage_path:null;
+            const {storage_path: _storagePath, ...safeAttachment}=attachmentRecord??{};
+            void _storagePath;
+            return{...safeAttachment,size_bytes:attachmentRecord?.size_bytes==null?null:Number(attachmentRecord.size_bytes),url:await signPurchaseRequestAttachment(storagePath)};
+          }));
+        }
       }
     }
     return payload;
@@ -2048,19 +2125,59 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       return { purchase_logs: rows };
     },
     async listSupervisorPurchaseRequests(actorUserId, branchId) {
-      return await rpcObject("list_supervisor_purchase_requests", {
+      return await signPurchaseRequestPayload(await rpcObject("list_supervisor_purchase_requests", {
         actor_user_id: actorUserId,
         target_branch_id: branchId,
-      });
+      }));
     },
     async createSupervisorPurchaseRequest(input) {
-      return await rpcObject("create_supervisor_purchase_request", {
+      return await signPurchaseRequestPayload(await rpcObject("create_supervisor_purchase_request", {
         actor_user_id: input.actorUserId,
         target_branch_id: input.branchId,
         request_category: input.category,
         request_notes: input.notes ?? null,
         request_items: input.items,
+      }));
+    },
+    async uploadSupervisorPurchaseRequestProductPhoto(input) {
+      const scopeRows=z.array(purchaseRequestProductPhotoAuthRow).length(1).parse(await rpc("authorize_supervisor_purchase_request_item_product_photo",{
+        actor_user_id:input.actorUserId,
+        target_branch_id:input.branchId,
+        target_request_id:input.requestId,
+        target_item_id:input.itemId,
+      }));
+      const scope=scopeRows[0]!;
+      const uploaded=await uploadPurchaseRequestProductPhotoObject({
+        organizationId:scope.organization_id,
+        branchId:scope.branch_id,
+        requestId:scope.request_id,
+        itemId:scope.item_id,
+        photo:input.photo,
       });
+      try{
+        const result=purchaseRequestProductPhotoMutationRow.parse(await rpcObject("set_supervisor_purchase_request_item_product_photo",{
+          actor_user_id:input.actorUserId,
+          target_branch_id:input.branchId,
+          target_request_id:input.requestId,
+          target_item_id:input.itemId,
+          photo_metadata:uploaded,
+        }));
+        if(result.old_storage_path)await cleanupPurchaseRequestProductPhotoPaths([result.old_storage_path]);
+        return{product_photo:await safePurchaseRequestProductPhotoResponse(result.product_photo)};
+      }catch(error){
+        await cleanupPurchaseRequestProductPhotoPaths([uploaded.storage_path]);
+        throw error;
+      }
+    },
+    async removeSupervisorPurchaseRequestProductPhoto(input) {
+      const result=purchaseRequestProductPhotoMutationRow.parse(await rpcObject("clear_supervisor_purchase_request_item_product_photo",{
+        actor_user_id:input.actorUserId,
+        target_branch_id:input.branchId,
+        target_request_id:input.requestId,
+        target_item_id:input.itemId,
+      }));
+      if(result.old_storage_path)await cleanupPurchaseRequestProductPhotoPaths([result.old_storage_path]);
+      return{product_photo:await safePurchaseRequestProductPhotoResponse(result.product_photo)};
     },
     async listPurchasingPurchaseRequests(input) {
       return await signPurchaseRequestPayload(await rpcObject("list_purchasing_purchase_requests", {
