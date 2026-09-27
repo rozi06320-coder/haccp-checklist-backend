@@ -1318,6 +1318,7 @@ const inventoryDecimalInputSchema=z.union([
   z.number().finite().nonnegative(),
   z.string().trim().max(40).regex(/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/),
 ]).transform(value=>typeof value==="number"?String(value):value);
+const inventoryLabelSnapshotInputSchema=z.string().trim().max(120).optional().nullable().transform((value)=>value?.trim()||null);
 const inventoryBeefRowInputSchema=z.object({
   production_date:dateOnlySchema,
   russian_kg:inventoryDecimalInputSchema,
@@ -1326,6 +1327,9 @@ const inventoryBeefRowInputSchema=z.object({
   ready_patty:inventoryDecimalInputSchema,
   hunch_sauce_kg:inventoryDecimalInputSchema,
   wastage_grams:inventoryDecimalInputSchema,
+  russian_label_snapshot:inventoryLabelSnapshotInputSchema,
+  australian_label_snapshot:inventoryLabelSnapshotInputSchema,
+  hunch_sauce_label_snapshot:inventoryLabelSnapshotInputSchema,
 }).strict();
 const inventoryUsageValueSchema=z.record(z.string().regex(/^(?:[1-9]|[12][0-9]|3[01])$/),inventoryDecimalInputSchema);
 const inventoryItemUsageInputSchema=z.object({
@@ -1941,6 +1945,9 @@ const inventoryItemsCurrentSchema=z.object({
     ready_patty:z.union([z.number(),z.string()]),
     hunch_sauce_kg:z.union([z.number(),z.string()]),
     wastage_grams:z.union([z.number(),z.string()]),
+    russian_label_snapshot:z.string().nullable().optional().default(null),
+    australian_label_snapshot:z.string().nullable().optional().default(null),
+    hunch_sauce_label_snapshot:z.string().nullable().optional().default(null),
   }).strict()).max(62),
   item_usage:z.object({
     usage_month:dateOnlySchema,

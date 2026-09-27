@@ -283,6 +283,9 @@ export type InventoryItemsDraftPayload = {
     ready_patty:string|number;
     hunch_sauce_kg:string|number;
     wastage_grams:string|number;
+    russian_label_snapshot?:string|null;
+    australian_label_snapshot?:string|null;
+    hunch_sauce_label_snapshot?:string|null;
   }>;
   item_usage:{
     usage_month:string;
@@ -416,6 +419,9 @@ const inventoryItemsCurrent=z.object({
     ready_patty:numericJson,
     hunch_sauce_kg:numericJson,
     wastage_grams:numericJson,
+    russian_label_snapshot:z.string().nullable().optional().default(null),
+    australian_label_snapshot:z.string().nullable().optional().default(null),
+    hunch_sauce_label_snapshot:z.string().nullable().optional().default(null),
   }).strict()).max(62),
   item_usage:z.object({
     usage_month:dateOnly,

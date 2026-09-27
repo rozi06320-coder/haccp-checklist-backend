@@ -1,5 +1,5 @@
 begin;
-select plan(70);
+select plan(78);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated',
@@ -44,6 +44,9 @@ insert into public.branch_supervisor_teams(id,organization_id,branch_id,supervis
 select has_table('public','inventory_items_reports','inventory report table exists');
 select has_table('public','inventory_items_submission_idempotency','inventory idempotency table exists');
 select has_table('public','inventory_beef_production_rows','beef production row table exists');
+select has_column('public','inventory_beef_production_rows','russian_label_snapshot','beef Russian label snapshot exists');
+select has_column('public','inventory_beef_production_rows','australian_label_snapshot','beef Australian label snapshot exists');
+select has_column('public','inventory_beef_production_rows','hunch_sauce_label_snapshot','beef Hunch Sauce label snapshot exists');
 select has_table('public','inventory_item_usage_items','item usage item table exists');
 select has_table('public','inventory_item_usage_day_values','item usage day value table exists');
 select ok((select relrowsecurity from pg_class where oid = 'public.inventory_items_reports'::regclass),'inventory reports RLS enabled');
@@ -94,6 +97,7 @@ select is((select count(*) from public.inventory_items_reports where supervisor_
 select is((select business_date from public.inventory_items_reports where supervisor_user_id='1d000000-0000-4000-8000-000000000001'),private.phase4a_business_date('Asia/Riyadh'),'business date is server-calculated');
 select is((select count(*) from public.inventory_beef_production_rows row join public.inventory_items_reports report on report.id=row.report_id where report.supervisor_user_id='1d000000-0000-4000-8000-000000000001'),1::bigint,'draft persists beef rows');
 select is((select russian_kg::text || '|' || (russian_kg+australian_kg+fat_kg)::text from public.inventory_beef_production_rows row join public.inventory_items_reports report on report.id=row.report_id where report.supervisor_user_id='1d000000-0000-4000-8000-000000000001'),'10.5|16.0','beef numeric values and total persist');
+select is((select russian_label_snapshot || '|' || australian_label_snapshot || '|' || hunch_sauce_label_snapshot from public.inventory_beef_production_rows row join public.inventory_items_reports report on report.id=row.report_id where report.supervisor_user_id='1d000000-0000-4000-8000-000000000001'),'Russian kg|Australian kg|Hunch sauce kg','new beef row snapshots default labels at first save');
 select is((select count(*) from public.inventory_item_usage_items item join public.inventory_items_reports report on report.id=item.report_id where report.supervisor_user_id='1d000000-0000-4000-8000-000000000001'),1::bigint,'draft persists item usage item row');
 select is((select count(*) from public.inventory_item_usage_day_values value join public.inventory_item_usage_items item on item.id=value.item_id join public.inventory_items_reports report on report.id=item.report_id where report.supervisor_user_id='1d000000-0000-4000-8000-000000000001'),2::bigint,'draft persists item usage day values');
 select is(public.get_inventory_items_current_state('1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001')->'beef_rows'->0->>'total_kg','16.0','current state restores computed beef total');
@@ -110,6 +114,15 @@ select throws_ok(format($$
     '{"usage_month":"%s-01","items":[]}'::jsonb
   )
 $$, private.phase4a_business_date('Asia/Riyadh'), to_char(private.phase4a_business_date('Asia/Riyadh'), 'YYYY-MM')), '23505', null, 'branch peer cannot change first supervisor beef day');
+select lives_ok($$
+  select public.update_inventory_beef_production_field_labels(
+    '1d000000-0000-4000-8000-000000000001',
+    '3d000000-0000-4000-8000-000000000001',
+    'Beef A',
+    'Beef B',
+    'Sauce X'
+  )
+$$, 'supervisor renames beef field labels');
 select lives_ok(format($$
   select public.save_inventory_items_draft(
     '1d000000-0000-4000-8000-000000000004',
@@ -127,9 +140,16 @@ select is(public.get_inventory_items_current_state('1d000000-0000-4000-8000-0000
 select is((select count(*) from public.inventory_items_reports where organization_id='2d000000-0000-4000-8000-000000000001' and branch_id='3d000000-0000-4000-8000-000000000001' and inventory_month=date_trunc('month',private.phase4a_business_date('Asia/Riyadh'))::date),1::bigint,'only one branch/month inventory report exists');
 select is((select supervisor_user_id from public.inventory_items_reports where branch_id='3d000000-0000-4000-8000-000000000001' and inventory_month=date_trunc('month',private.phase4a_business_date('Asia/Riyadh'))::date),'1d000000-0000-4000-8000-000000000001'::uuid,'branch peer does not rewrite original report creator');
 select is((select created_by from public.inventory_beef_production_rows where russian_kg=7),'1d000000-0000-4000-8000-000000000004'::uuid,'appended beef day records branch peer creator');
+select is((select russian_label_snapshot || '|' || australian_label_snapshot || '|' || hunch_sauce_label_snapshot from public.inventory_beef_production_rows where russian_kg=10.5),'Russian kg|Australian kg|Hunch sauce kg','existing beef row keeps original label snapshots after branch rename');
+select is((select russian_label_snapshot || '|' || australian_label_snapshot || '|' || hunch_sauce_label_snapshot from public.inventory_beef_production_rows where russian_kg=7),'Beef A|Beef B|Sauce X','new beef row snapshots renamed labels after branch rename');
 select is((select created_by from public.inventory_item_usage_day_values where day_number=10),'1d000000-0000-4000-8000-000000000004'::uuid,'appended item usage day records branch peer creator');
 select is((select created_by from public.inventory_beef_production_rows where russian_kg=10.5),'1d000000-0000-4000-8000-000000000001'::uuid,'branch peer identical retry preserves original beef creator');
 select is((select created_by from public.inventory_item_usage_day_values where day_number=8),'1d000000-0000-4000-8000-000000000001'::uuid,'branch peer identical retry preserves original item usage creator');
+select is((
+  select row_json->>'russian_label_snapshot'
+  from jsonb_array_elements(public.get_inventory_items_current_state('1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001')->'beef_rows') row_json
+  where row_json->>'russian_kg' = '7'
+), 'Beef A', 'current state returns per-row label snapshots');
 
 select lives_ok(format($$
   select public.save_inventory_items_draft(
