@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import path from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { createApp } from "./app";
 import type { BackendConfig } from "./config";
@@ -239,6 +241,28 @@ describe("Sales Tracking API integration",()=>{
   {id:"57000000-0000-4000-8000-000000000004",organization_id:org,branch_id:branch,name:"The Chef",normalized_name:"the chef",default_provider_key:"the_chef",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
   {id:"57000000-0000-4000-8000-000000000005",organization_id:org,branch_id:branch,name:"Try Order",normalized_name:"try order",default_provider_key:"try_order",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
  ];});
+
+ it("keeps the Sales Tracking PT409 migration limited to the stale-revision SQLSTATE",async()=>{
+  const [migration,persistence]=await Promise.all([
+   readFile(path.resolve("supabase/migrations/20260928120000_sales_tracking_conflict_nonretryable.sql"),"utf8"),
+   readFile(path.resolve("src/backend/checklist-persistence.ts"),"utf8"),
+  ]);
+  assert.match(migration,/save_sales_tracking_draft\(\s*actor_user_id uuid,\s*target_branch_id uuid,\s*target_business_date date,\s*expected_revision bigint,\s*entry_period text,\s*sales_rows jsonb,\s*cash_rows jsonb/s);
+  assert.match(migration,/returns jsonb\s+language plpgsql\s+security definer\s+set search_path to ''/);
+  assert.match(migration,/raise sqlstate 'PT409' using message='sales tracking changed'/);
+  assert.doesNotMatch(migration,/40001/);
+  assert.match(migration,/v_business_date:=target_business_date/);
+  assert.match(migration,/pg_advisory_xact_lock\(pg_catalog\.hashtextextended\(c\.organization_id::text\|\|':'\|\|c\.branch_id::text\|\|':'\|\|v_business_date::text\|\|':sales_tracking',0\)\)/);
+  assert.match(migration,/where x\.organization_id=c\.organization_id and x\.branch_id=c\.branch_id and x\.business_date=v_business_date for update/);
+  assert.match(migration,/branch_revision=branch_revision\+1/);
+  assert.match(migration,/insert into public\.sales_tracking_reports\(organization_id,branch_id,supervisor_user_id,supervisor_team_id,business_date,state,branch_name_snapshot,supervisor_name_snapshot,supervisor_team_name_snapshot,branch_revision,updated_by_user_id\)/);
+  assert.match(migration,/insert into public\.sales_tracking_period_entries\(report_id,entry_period,entered_by_user_id,entered_by_name_snapshot\)/);
+  assert.match(migration,/insert into public\.sales_tracking_sales_rows\(report_id,period_entry_id,entry_date,actual_cash,actual_credit,pos_cash,pos_credit,online_delivery,remarks\)/);
+  assert.match(migration,/insert into public\.sales_tracking_cash_rows\(report_id,period_entry_id,entry_date,denom_1,denom_2,denom_5,denom_10,denom_20,denom_50,denom_100,denom_200,denom_500,remaining_cash,remarks\)/);
+  assert.match(migration,/return public\.get_sales_tracking_current_state\(actor_user_id,target_branch_id,v_business_date\)/);
+  assert.doesNotMatch(migration,/currency_code|country_code|sales_tracking_online_amounts|online_amounts|jsonb_build_object/);
+  assert.match(persistence,/code==="PT409"/);
+ });
 
  it("requires authentication and forbids Manager authority",async()=>{
   const path=`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/current-state`;

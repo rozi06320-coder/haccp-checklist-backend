@@ -52,7 +52,7 @@ export type ColdStorageDraftDiagnostics = {
 };
 
 function throwChecklistRpcError(code:string|undefined):never{
- if(code==="23505"||code==="23514"||code==="40001"||code==="55000")throw new ChecklistConflictError(code);
+ if(code==="23505"||code==="23514"||code==="40001"||code==="PT409"||code==="55000")throw new ChecklistConflictError(code);
  if(code==="22023")throw new ChecklistInputError();
  if(code==="42501")throw new ChecklistAccessError();
  if(code==="P0002")throw new ChecklistNotFoundError();
