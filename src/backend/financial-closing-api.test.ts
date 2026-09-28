@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import path from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { createApp } from "./app";
 import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError } from "./checklist-persistence";
@@ -116,6 +118,32 @@ describe("Financial Closing API", () => {
   });
   after(() => new Promise<void>((resolve) => server.close(() => resolve())));
   beforeEach(() => { calls.length = 0; });
+
+  it("keeps the Financial Closing PT409 migration limited to the stale-revision SQLSTATE", async () => {
+    const [migration, persistence] = await Promise.all([
+      readFile(path.resolve("supabase/migrations/20260928130000_financial_closing_conflict_nonretryable.sql"), "utf8"),
+      readFile(path.resolve("src/backend/checklist-persistence.ts"), "utf8"),
+    ]);
+
+    assert.match(migration, /save_financial_closing_draft\(actor_user_id uuid, target_branch_id uuid, expected_revision bigint, report_items jsonb\)/);
+    assert.match(migration, /submit_financial_closing\(actor_user_id uuid, target_branch_id uuid, expected_revision bigint, report_items jsonb\)/);
+    assert.match(migration, /returns jsonb language plpgsql security definer set search_path = ''/);
+    assert.doesNotMatch(migration, /financial closing changed' using errcode\s*=\s*'40001'/);
+    assert.equal((migration.match(/raise sqlstate 'PT409' using message = 'financial closing changed'/g) ?? []).length, 4);
+    assert.match(migration, /pg_advisory_xact_lock\(hashtextextended\(c\.organization_id::text \|\| ':' \|\| c\.branch_id::text \|\| ':' \|\| c\.business_date::text \|\| ':financial_closing', 0\)\)/);
+    assert.match(migration, /for update;/);
+    assert.match(migration, /insert into public\.financial_closing_reports\(/);
+    assert.match(migration, /financial closing already submitted' using errcode = '55000'/);
+    assert.match(migration, /delete from public\.financial_closing_items item where item\.report_id = report\.id;/);
+    assert.match(migration, /insert into public\.financial_closing_items\(report_id, item_key, status, reason, follow_up\)/);
+    assert.match(migration, /set revision = revision \+ 1,/);
+    assert.match(migration, /set state = 'submitted',/);
+    assert.match(migration, /return private\.financial_closing_payload\(actor_user_id, target_branch_id\);/);
+    assert.match(migration, /revoke all on function public\.save_financial_closing_draft\(uuid, uuid, bigint, jsonb\) from public, anon, authenticated;/);
+    assert.match(migration, /grant execute on function public\.submit_financial_closing\(uuid, uuid, bigint, jsonb\) to postgres, service_role;/);
+    assert.doesNotMatch(migration, /currency_code|provider|jsonb_build_object\('current'|sales_tracking/i);
+    assert.match(persistence, /code==="PT409"/);
+  });
 
   it("requires Supervisor branch authority for current-state", async () => {
     const path = `/api/v1/supervisor/branches/${branch}/checklists/financial_closing/current-state`;
