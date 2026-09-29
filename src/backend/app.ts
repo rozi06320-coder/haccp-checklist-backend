@@ -17,7 +17,7 @@ import {
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
 import { branchLocalDate, canonicalizeMaintenancePurchasePayload, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_PURCHASE_REQUEST_PRODUCT_PHOTO_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, purchaseRequestProductPhotoMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime, SupervisorPromotionConflictDiagnosticError, type MaintenanceIssuesStageTiming, type MaintenanceIssuesTimingDiagnostics } from "./operational";
-import { CatalogMappedIngredientError, ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ChecklistNotFoundError, ManagementOverviewUnavailableError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
+import { CatalogMappedIngredientError, ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ChecklistNotFoundError, ManagementOverviewUnavailableError, SalesTrackingOnlineProviderBreakdownRequiredError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
 import { MaintenancePushAccessError, MaintenancePushConflictError, MaintenancePushInputError, MaintenancePushUnavailableError } from "./maintenance-push";
@@ -2065,6 +2065,7 @@ function coldStorageReportDetailWithItems(detail:z.infer<typeof phase4aDetailSch
 
 function checklistError(error:unknown){
  if(error instanceof ChecklistConflictError)return new HttpError(409,"conflict","A final report already exists or the replay key conflicts.");
+ if(error instanceof SalesTrackingOnlineProviderBreakdownRequiredError)return new HttpError(422,"unprocessable_entity","Enter the online order breakdown before saving.");
  if(error instanceof ChecklistInputError)return new HttpError(422,"unprocessable_entity","Checklist answers are incomplete or no longer eligible.");
  if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
  return new HttpError(503,"service_unavailable","The service is unavailable.");

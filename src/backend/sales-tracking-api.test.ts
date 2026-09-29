@@ -7,7 +7,7 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import { createApp } from "./app";
 import type { BackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
-import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError } from "./checklist-persistence";
+import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, SalesTrackingOnlineProviderBreakdownRequiredError } from "./checklist-persistence";
 import { managementSalesTrackingMonthlySummarySchema } from "../lib/contracts/management-sales-tracking-monthly";
 
 const supervisor="16000000-0000-4000-8000-000000000001",manager="16000000-0000-4000-8000-000000000002",otherManager="16000000-0000-4000-8000-000000000003";
@@ -24,6 +24,7 @@ let submittedByNameSnapshot:string|null=null;
 let malformedManagedSalesTracking=false;
 let malformedMonthlySummary=false;
 let useProviderAliasShape=false;
+let requireOnlineBreakdownError=false;
 const replay=new Map<string,string>();
 let providers:Array<Record<string,unknown>>=[];
 
@@ -111,6 +112,7 @@ const persistence={
  async saveSalesTrackingDraft(input:{actorUserId:string;branchId:string;businessDate?:string|null;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:{sales_rows:Array<Record<string,unknown>>;cash_rows:Array<{entry_date:string;denominations:Record<string,number>;remaining_cash:unknown;remarks:string}>}}){
   calls.push({name:"sales-draft",input});
   if(input.branchId!==branch)throw new ChecklistAccessError();
+  if(requireOnlineBreakdownError)throw new SalesTrackingOnlineProviderBreakdownRequiredError();
   if(currentState==="submitted"||input.expectedRevision!==currentRevision||currentPeriods.some((period)=>period.entry_period===input.entryPeriod))throw new ChecklistConflictError();
   if(input.entryPeriod==="middle_shift"&&currentPeriods.some((period)=>period.entry_period==="closing_shift"))throw new ChecklistConflictError();
   const attribution={entry_period:input.entryPeriod,entered_by_user_id:supervisor,entered_by_name:"S",entered_at:"2026-08-08T10:00:00.000Z"};
@@ -234,7 +236,7 @@ async function submitSavedDay(idempotencyKey:string,expectedRevision=2){
 describe("Sales Tracking API integration",()=>{
  before(async()=>{server=createServer(createApp(config,deps()));await new Promise<void>((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));origin=`http://127.0.0.1:${(server.address()as AddressInfo).port}`;});
  after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
- beforeEach(()=>{calls.length=0;currentSalesRows=[];currentCashRows=[];currentPeriods=[];currentRevision=0;currentState="draft";submittedAt=null;submittedByUserId=null;submittedByNameSnapshot=null;malformedManagedSalesTracking=false;malformedMonthlySummary=false;useProviderAliasShape=false;replay.clear();providers=[
+ beforeEach(()=>{calls.length=0;currentSalesRows=[];currentCashRows=[];currentPeriods=[];currentRevision=0;currentState="draft";submittedAt=null;submittedByUserId=null;submittedByNameSnapshot=null;malformedManagedSalesTracking=false;malformedMonthlySummary=false;useProviderAliasShape=false;requireOnlineBreakdownError=false;replay.clear();providers=[
   {id:"57000000-0000-4000-8000-000000000001",organization_id:org,branch_id:branch,name:"Jahez",normalized_name:"jahez",default_provider_key:"jahez",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
   {id:"57000000-0000-4000-8000-000000000003",organization_id:org,branch_id:branch,name:"HungerStation",normalized_name:"hungerstation",default_provider_key:"hungerstation",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
   {id:"57000000-0000-4000-8000-000000000002",organization_id:org,branch_id:branch,name:"Ninja",normalized_name:"ninja",default_provider_key:"ninja",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
@@ -333,6 +335,16 @@ describe("Sales Tracking API integration",()=>{
   assert.equal(body.current.totals.actual_total,5249);
   assert.equal(body.current.totals.cash_total,1000);
   assert.deepEqual(body.current.cash_rows[0].denominations,{"1":8,"2":1,"5":24,"10":3,"20":2,"50":2,"100":0,"200":1,"500":1});
+ });
+
+ it("maps the required online provider breakdown input error to a safe 422 response",async()=>{
+  requireOnlineBreakdownError=true;
+  const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/draft`,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(draftPayload)});
+  assert.equal(response.status,422);
+  const body=await response.json();
+  assert.equal(body.error.code,"unprocessable_entity");
+  assert.equal(body.error.message,"Enter the online order breakdown before saving.");
+  assert.doesNotMatch(JSON.stringify(body),/online provider breakdown required|SQL|Supabase/i);
  });
  it("saves provider amounts as the Online Delivery aggregate and restores breakdown",async()=>{
   const payload={...draftPayload,sales_rows:[{...draftPayload.sales_rows[0],online_delivery:"999.00",online_amounts:[{provider_id:"57000000-0000-4000-8000-000000000001",amount:"100.00"},{provider_id:"57000000-0000-4000-8000-000000000002",amount:"50.00"}]}]};

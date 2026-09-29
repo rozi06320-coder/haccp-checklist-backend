@@ -11,6 +11,7 @@ export class ChecklistConflictError extends Error {
   }
 }
 export class ChecklistInputError extends Error {}
+export class SalesTrackingOnlineProviderBreakdownRequiredError extends ChecklistInputError {}
 export class ChecklistAccessError extends Error {}
 export class ChecklistNotFoundError extends Error {}
 export class ManagementOverviewUnavailableError extends Error {}
@@ -51,8 +52,9 @@ export type ColdStorageDraftDiagnostics = {
   log: (event: ColdStorageDraftDiagnosticEvent) => void;
 };
 
-function throwChecklistRpcError(code:string|undefined):never{
+function throwChecklistRpcError(code:string|undefined,message?:string):never{
  if(code==="23505"||code==="23514"||code==="40001"||code==="PT409"||code==="55000")throw new ChecklistConflictError(code);
+ if(code==="22023"&&message==="online provider breakdown required")throw new SalesTrackingOnlineProviderBreakdownRequiredError();
  if(code==="22023")throw new ChecklistInputError();
  if(code==="42501")throw new ChecklistAccessError();
  if(code==="P0002")throw new ChecklistNotFoundError();
@@ -594,7 +596,7 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
  const client=createClient(url,secretKey,{auth:nonPersistentAuth});
  async function rpc(name:string,args:Record<string,unknown>){
   const result=await client.rpc(name,args);
-  if(result.error)throwChecklistRpcError(result.error.code);
+  if(result.error)throwChecklistRpcError(result.error.code,result.error.message);
   return result.data;
  }
  async function productSalesRpc(name:string,args:Record<string,unknown>){
