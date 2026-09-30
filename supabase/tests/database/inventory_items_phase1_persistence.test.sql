@@ -1,5 +1,5 @@
 begin;
-select plan(78);
+select plan(85);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated',
@@ -44,9 +44,12 @@ insert into public.branch_supervisor_teams(id,organization_id,branch_id,supervis
 select has_table('public','inventory_items_reports','inventory report table exists');
 select has_table('public','inventory_items_submission_idempotency','inventory idempotency table exists');
 select has_table('public','inventory_beef_production_rows','beef production row table exists');
+select has_table('public','branch_inventory_items_settings','branch inventory settings table exists');
 select has_column('public','inventory_beef_production_rows','russian_label_snapshot','beef Russian label snapshot exists');
 select has_column('public','inventory_beef_production_rows','australian_label_snapshot','beef Australian label snapshot exists');
 select has_column('public','inventory_beef_production_rows','hunch_sauce_label_snapshot','beef Hunch Sauce label snapshot exists');
+select has_function('private','inventory_items_label_snapshot',array['jsonb','text','text'],'inventory label snapshot helper exists');
+select has_function('public','update_inventory_beef_production_field_labels',array['uuid','uuid','text','text','text'],'inventory label settings RPC exists');
 select has_table('public','inventory_item_usage_items','item usage item table exists');
 select has_table('public','inventory_item_usage_day_values','item usage day value table exists');
 select ok((select relrowsecurity from pg_class where oid = 'public.inventory_items_reports'::regclass),'inventory reports RLS enabled');
@@ -59,6 +62,8 @@ select is(has_function_privilege('authenticated','public.get_inventory_items_cur
 select is(has_function_privilege('authenticated','public.submit_inventory_items(uuid,uuid,uuid,text,jsonb,jsonb)','execute'),false,'authenticated cannot execute inventory submit RPC');
 select is(has_function_privilege('service_role','public.save_inventory_items_draft(uuid,uuid,jsonb,jsonb)','execute'),true,'service role can execute inventory draft RPC');
 select is(has_function_privilege('service_role','public.submit_inventory_items(uuid,uuid,uuid,text,jsonb,jsonb)','execute'),true,'service role can execute inventory submit RPC');
+select is(has_function_privilege('authenticated','public.update_inventory_beef_production_field_labels(uuid,uuid,text,text,text)','execute'),false,'authenticated cannot execute inventory label settings RPC');
+select is(has_function_privilege('service_role','public.update_inventory_beef_production_field_labels(uuid,uuid,text,text,text)','execute'),true,'service role can execute inventory label settings RPC');
 select ok(not has_table_privilege('authenticated','public.inventory_items_reports','insert')
   and not has_table_privilege('authenticated','public.inventory_beef_production_rows','insert')
   and not has_table_privilege('authenticated','public.inventory_item_usage_items','insert')
@@ -78,6 +83,11 @@ select is(
   jsonb_array_length(public.get_inventory_items_current_state('1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001')->'beef_rows'),
   0,
   'empty state has no beef rows'
+);
+select ok(
+  public.get_inventory_items_current_state('1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001') ? 'beef_production_labels'
+  and not public.get_inventory_items_current_state('1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001') ? 'beef_production_label',
+  'inventory state exposes only the current field-label response contract'
 );
 select is(
   public.get_inventory_items_current_state('1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001',(date_trunc('month', private.phase4a_business_date('Asia/Riyadh')) + interval '1 month')::date)->>'inventory_month',
@@ -266,6 +276,16 @@ select lives_ok(format($$
     '{"usage_month":"%s","items":[{"group_name":"Liwa","item_name":"Next Month Item","usage":{"1":"1"}}]}'::jsonb
   )
 $$, (date_trunc('month', private.phase4a_business_date('Asia/Riyadh')) + interval '1 month')::date, (date_trunc('month', private.phase4a_business_date('Asia/Riyadh')) + interval '1 month')::date), 'next month remains editable after current month submit');
+select throws_ok(format($$
+  select public.submit_inventory_items(
+    '1d000000-0000-4000-8000-000000000001',
+    '3d000000-0000-4000-8000-000000000001',
+    '5d000000-0000-4000-8000-000000000003',
+    'future-inventory-hash',
+    '[{"production_date":"%s","russian_kg":"1","australian_kg":"1","fat_kg":"0","ready_patty":"10","hunch_sauce_kg":"1","wastage_grams":"0"}]'::jsonb,
+    '{"usage_month":"%s","items":[{"group_name":"Liwa","item_name":"Next Month Item","usage":{"1":"1"}}]}'::jsonb
+  )
+$$, (date_trunc('month', private.phase4a_business_date('Asia/Riyadh')) + interval '1 month')::date, (date_trunc('month', private.phase4a_business_date('Asia/Riyadh')) + interval '1 month')::date), '22023', null, 'future inventory month cannot be closed');
 select throws_ok(format($$
   select public.save_inventory_items_draft('1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001','[{"production_date":"%s","russian_kg":"-1","australian_kg":0,"fat_kg":0,"ready_patty":0,"hunch_sauce_kg":0,"wastage_grams":0}]'::jsonb,'{"usage_month":"%s-01","items":[]}'::jsonb)
 $$, private.phase4a_business_date('Asia/Riyadh'), to_char(private.phase4a_business_date('Asia/Riyadh'), 'YYYY-MM')), '22023', null, 'negative beef value rejected');
