@@ -13,13 +13,13 @@ const organization="33000000-0000-4000-8000-000000000001";
 const counts={expected_checks:0,answered_checks:0,compliant_checks:0,issue_checks:0,pending_checks:0,completion_percentage:null,compliance_percentage:null};
 const overview={
  business_date:"2026-08-12",
- totals:{expected_checks:50,answered_checks:40,compliant_checks:39,issue_checks:1,pending_checks:10,completion_percentage:80,compliance_percentage:98},
+ totals:{expected_checks:50,answered_checks:40,compliant_checks:39,issue_checks:1,pending_checks:10,completion_percentage:78,compliance_percentage:98},
  checklists:[
   {checklist_type:"kitchen_opening",state:"submitted",expected_checks:17,answered_checks:17,compliant_checks:16,issue_checks:1,pending_checks:0,completion_percentage:100,compliance_percentage:94},
   {checklist_type:"foh_opening",state:"submitted",expected_checks:18,answered_checks:18,compliant_checks:18,issue_checks:0,pending_checks:0,completion_percentage:100,compliance_percentage:100},
   {checklist_type:"staff_hygiene",state:"not_started",expected_checks:4,answered_checks:0,compliant_checks:0,issue_checks:0,pending_checks:4,completion_percentage:0,compliance_percentage:null},
   {checklist_type:"oil_tracking",state:"draft",expected_checks:8,answered_checks:2,compliant_checks:2,issue_checks:0,pending_checks:6,completion_percentage:25,compliance_percentage:100},
-  {checklist_type:"cold_storage",state:"draft",expected_checks:3,answered_checks:3,compliant_checks:3,issue_checks:0,pending_checks:0,completion_percentage:100,compliance_percentage:100},
+  {checklist_type:"cold_storage",state:"draft",expected_checks:3,answered_checks:3,compliant_checks:3,issue_checks:0,pending_checks:0,completion_percentage:67,compliance_percentage:100},
  ],
 };
 let overviewPayload:unknown=overview;
@@ -69,5 +69,62 @@ describe("Branch-shared supervisor Overview API",()=>{
   const response=await request("supervisor-a");
   assert.equal(response.status,503);
   assert.doesNotMatch(JSON.stringify(await response.json()),/database|postgres|zod|checklists/i);
+ });
+
+ it("accepts raw-complete draft counts without allowing false 100 percent completion",async()=>{
+  overviewPayload={
+   business_date:"2026-09-30",
+   totals:{expected_checks:88,answered_checks:86,compliant_checks:86,issue_checks:0,pending_checks:2,completion_percentage:97,compliance_percentage:100},
+   checklists:[
+    {checklist_type:"kitchen_opening",state:"submitted",expected_checks:17,answered_checks:17,compliant_checks:17,issue_checks:0,pending_checks:0,completion_percentage:100,compliance_percentage:100},
+    {checklist_type:"foh_opening",state:"submitted",expected_checks:18,answered_checks:18,compliant_checks:18,issue_checks:0,pending_checks:0,completion_percentage:100,compliance_percentage:100},
+    {checklist_type:"staff_hygiene",state:"submitted",expected_checks:40,answered_checks:40,compliant_checks:40,issue_checks:0,pending_checks:0,completion_percentage:100,compliance_percentage:100},
+    {checklist_type:"oil_tracking",state:"not_started",expected_checks:2,answered_checks:0,compliant_checks:0,issue_checks:0,pending_checks:2,completion_percentage:0,compliance_percentage:null},
+    {checklist_type:"cold_storage",state:"draft",expected_checks:11,answered_checks:11,compliant_checks:11,issue_checks:0,pending_checks:0,completion_percentage:91,compliance_percentage:100},
+   ],
+  };
+  const response=await request("supervisor-a");
+  assert.equal(response.status,200);
+  assert.equal((await response.json()).totals.completion_percentage,97);
+ });
+
+ it("caps an incomplete 199 of 200 ratio at 99 percent",async()=>{
+  overviewPayload={
+   business_date:"2026-09-30",
+   totals:{expected_checks:200,answered_checks:199,compliant_checks:199,issue_checks:0,pending_checks:1,completion_percentage:99,compliance_percentage:100},
+   checklists:[
+    {...counts,checklist_type:"kitchen_opening",state:"not_started"},
+    {...counts,checklist_type:"foh_opening",state:"not_started"},
+    {...counts,checklist_type:"staff_hygiene",state:"not_started"},
+    {...counts,checklist_type:"oil_tracking",state:"not_started"},
+    {checklist_type:"cold_storage",state:"submitted",expected_checks:200,answered_checks:199,compliant_checks:199,issue_checks:0,pending_checks:1,completion_percentage:99,compliance_percentage:100},
+   ],
+  };
+  const response=await request("supervisor-a");
+  assert.equal(response.status,200);
+  assert.equal((await response.json()).totals.completion_percentage,99);
+ });
+
+ it("allows 100 percent when all applicable work is submitted and complete",async()=>{
+  overviewPayload={
+   business_date:"2026-09-30",
+   totals:{expected_checks:200,answered_checks:200,compliant_checks:200,issue_checks:0,pending_checks:0,completion_percentage:100,compliance_percentage:100},
+   checklists:[
+    {...counts,checklist_type:"kitchen_opening",state:"not_started"},
+    {...counts,checklist_type:"foh_opening",state:"not_started"},
+    {...counts,checklist_type:"staff_hygiene",state:"not_started"},
+    {...counts,checklist_type:"oil_tracking",state:"not_started"},
+    {checklist_type:"cold_storage",state:"submitted",expected_checks:200,answered_checks:200,compliant_checks:200,issue_checks:0,pending_checks:0,completion_percentage:100,compliance_percentage:100},
+   ],
+  };
+  const response=await request("supervisor-a");
+  assert.equal(response.status,200);
+  assert.equal((await response.json()).totals.completion_percentage,100);
+ });
+
+ it("fails closed when an incomplete overview is rounded to 100 percent",async()=>{
+  overviewPayload={...overview,totals:{...overview.totals,completion_percentage:100}};
+  const response=await request("supervisor-a");
+  assert.equal(response.status,503);
  });
 });

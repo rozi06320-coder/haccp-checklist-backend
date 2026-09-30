@@ -1,5 +1,5 @@
 begin;
-select plan(33);
+select plan(40);
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000',id,'authenticated','authenticated',id||'@example.invalid','{}','{}',now(),now()
 from unnest(array['1a000000-0000-4000-8000-000000000001'::uuid,'1a000000-0000-4000-8000-000000000002','1a000000-0000-4000-8000-000000000003'])id;
@@ -31,11 +31,19 @@ values
  ('2a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001','5a000000-0000-4000-8000-000000000002','6a000000-0000-4000-8000-000000000002',private.phase4a_business_date('Asia/Riyadh'),'day_off','1a000000-0000-4000-8000-000000000001'),
  ('2a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001','5a000000-0000-4000-8000-000000000003','6a000000-0000-4000-8000-000000000003',private.phase4a_business_date('Asia/Riyadh'),'on_vacation','1a000000-0000-4000-8000-000000000001');
 
-select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'totals'->>'expected_checks')::int,39,'no state expects 17 + 18 + four hygiene checks');
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'totals'->>'expected_checks')::int,41,'no state expects opening, hygiene, and two pending Oil sections');
 select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'totals'->>'answered_checks')::int,0,'no state has no answers');
 select is(public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'totals'->>'completion_percentage','0','valid expected zero-answer completion is zero');
 select is(public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'totals'->>'compliance_percentage',null,'zero answered compliance is null');
 select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->2->>'expected_checks')::int,4,'day off staff excluded before final');
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->3->>'expected_checks')::int,2,'missing applicable Oil expects opening and closing work');
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->3->>'pending_checks')::int,2,'missing applicable Oil remains pending');
+
+insert into public.oil_tracking_submissions(id,organization_id,branch_id,supervisor_user_id,supervisor_team_id,business_date,state,branch_name_snapshot,supervisor_name_snapshot,team_name_snapshot)
+values('7a000000-0000-4000-8000-000000000010','2a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001','1a000000-0000-4000-8000-000000000001','4a000000-0000-4000-8000-000000000001',private.phase4a_business_date('Asia/Riyadh'),'draft','Overview Branch','Overview Supervisor','Overview Team');
+insert into public.oil_tracking_fryer_results(submission_id,fryer_id,fryer_label_snapshot,fryer_short_label_snapshot,in_use_today,oil_status)
+values('7a000000-0000-4000-8000-000000000010','fryer-1','Fryer 1','F1',false,'pending');
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->3->>'expected_checks')::int,0,'explicit all-fryers-not-in-use Oil is genuinely not applicable');
 
 insert into public.checklist_submissions(id,organization_id,branch_id,supervisor_user_id,supervisor_team_id,business_date,checklist_type,definition_id,state,branch_name_snapshot,branch_code_snapshot,supervisor_name_snapshot)
 values('7a000000-0000-4000-8000-000000000001','2a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001','1a000000-0000-4000-8000-000000000001','4a000000-0000-4000-8000-000000000001',private.phase4a_business_date('Asia/Riyadh'),'kitchen_opening','kitchen_opening_v1','draft','Overview Branch','OV','Overview Supervisor');
@@ -48,6 +56,21 @@ select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-00000
 select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->0->>'completion_percentage')::int,12,'2/17 rounds to 12');
 select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'totals'->>'completion_percentage')::int,5,'overall is weighted 2/39, not average percentages');
 select is(public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000002','3a000000-0000-4000-8000-000000000001')->'checklists'->0->>'state','draft','same-branch Supervisor sees the shared Opening state');
+
+insert into public.cold_storage_submissions(id,organization_id,branch_id,supervisor_user_id,supervisor_team_id,business_date,state,branch_name_snapshot,supervisor_name_snapshot,team_name_snapshot)
+values('7a000000-0000-4000-8000-000000000020','2a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001','1a000000-0000-4000-8000-000000000001','4a000000-0000-4000-8000-000000000001',private.phase4a_business_date('Asia/Riyadh'),'draft','Overview Branch','Overview Supervisor','Overview Team');
+insert into public.cold_storage_equipment(submission_id,equipment_id,equipment_name,equipment_type)
+values('7a000000-0000-4000-8000-000000000020','cold-1','Walk-in','refrigerator');
+insert into public.cold_storage_readings(submission_id,equipment_id,slot,temperature_c,status,submitted_at)
+values
+ ('7a000000-0000-4000-8000-000000000020','cold-1','12:00',2,'pass',now()),
+ ('7a000000-0000-4000-8000-000000000020','cold-1','20:00',2,'pass',now()),
+ ('7a000000-0000-4000-8000-000000000020','cold-1','02:00',2,'pass',now());
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'answered_checks')::int,3,'Cold draft preserves all raw answered readings');
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'completion_percentage')::int,67,'Cold draft cannot report 100 percent completion');
+select ok((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'totals'->>'completion_percentage')::int<100,'Cold draft cannot produce 100 percent overall completion');
+update public.cold_storage_submissions set state='submitted' where id='7a000000-0000-4000-8000-000000000020';
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'completion_percentage')::int,100,'submitted complete Cold contributes fully');
 
 insert into public.checklist_submissions(id,organization_id,branch_id,supervisor_user_id,supervisor_team_id,operational_team_id,operational_team_name_snapshot,submitted_by_user_id,hygiene_revision,business_date,checklist_type,definition_id,state,branch_name_snapshot,branch_code_snapshot,supervisor_name_snapshot,submitted_at,updated_at)
 values
