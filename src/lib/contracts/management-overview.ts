@@ -8,6 +8,11 @@ const countKeys = [
   "issue_checks",
   "pending_checks",
 ] as const;
+const percentageBasisKeys = [
+  "percentage_expected_checks",
+  "percentage_answered_checks",
+  "percentage_compliant_checks",
+] as const;
 
 const percentage = z.number().int().min(0).max(100).nullable();
 
@@ -17,6 +22,9 @@ export const managementPerformanceCountsSchema = z.object({
   compliant_checks: z.number().int().nonnegative(),
   issue_checks: z.number().int().nonnegative(),
   pending_checks: z.number().int().nonnegative(),
+  percentage_expected_checks: z.number().int().nonnegative().optional(),
+  percentage_answered_checks: z.number().int().nonnegative().optional(),
+  percentage_compliant_checks: z.number().int().nonnegative().optional(),
   completion_percentage: percentage,
   compliance_percentage: percentage,
 }).strict().superRefine((value, context) => {
@@ -26,12 +34,22 @@ export const managementPerformanceCountsSchema = z.object({
   if (value.pending_checks !== value.expected_checks - value.answered_checks) {
     context.addIssue({ code: "custom", message: "Pending checks do not reconcile." });
   }
-  const completion = value.expected_checks === 0
+  const providedBasisCount = percentageBasisKeys.filter((key) => value[key] !== undefined).length;
+  if (providedBasisCount !== 0 && providedBasisCount !== percentageBasisKeys.length) {
+    context.addIssue({ code: "custom", message: "Percentage basis is incomplete." });
+  }
+  const percentageExpected = value.percentage_expected_checks ?? value.expected_checks;
+  const percentageAnswered = value.percentage_answered_checks ?? value.answered_checks;
+  const percentageCompliant = value.percentage_compliant_checks ?? value.compliant_checks;
+  if (percentageAnswered > percentageExpected || percentageCompliant > percentageAnswered) {
+    context.addIssue({ code: "custom", message: "Percentage basis does not reconcile." });
+  }
+  const completion = percentageExpected === 0
     ? null
-    : Math.round(value.answered_checks * 100 / value.expected_checks);
-  const compliance = value.answered_checks === 0
+    : Math.round(percentageAnswered * 100 / percentageExpected);
+  const compliance = percentageAnswered === 0
     ? null
-    : Math.round(value.compliant_checks * 100 / value.answered_checks);
+    : Math.round(percentageCompliant * 100 / percentageAnswered);
   if (value.completion_percentage !== completion) {
     context.addIssue({ code: "custom", message: "Completion percentage is invalid." });
   }
@@ -69,6 +87,14 @@ const branchSchema = z.object({
   }
   for (const key of countKeys) {
     const expected = value.checklists.reduce((sum, checklist) => sum + checklist[key], 0);
+    if (value.totals[key] !== expected) {
+      context.addIssue({ code: "custom", message: `Branch ${key} does not reconcile.` });
+    }
+  }
+  for (const key of percentageBasisKeys) {
+    if (value.totals[key] === undefined) continue;
+    const rawKey = key.replace("percentage_", "") as "expected_checks" | "answered_checks" | "compliant_checks";
+    const expected = value.checklists.reduce((sum, checklist) => sum + (checklist[key] ?? checklist[rawKey]), 0);
     if (value.totals[key] !== expected) {
       context.addIssue({ code: "custom", message: `Branch ${key} does not reconcile.` });
     }
@@ -123,6 +149,14 @@ export const managementOverviewSchema = z.object({
   }
   for (const key of countKeys) {
     const expected = value.branches.reduce((sum, branch) => sum + branch.totals[key], 0);
+    if (value.totals[key] !== expected) {
+      context.addIssue({ code: "custom", message: `Organization ${key} does not reconcile.` });
+    }
+  }
+  for (const key of percentageBasisKeys) {
+    if (value.totals[key] === undefined) continue;
+    const rawKey = key.replace("percentage_", "") as "expected_checks" | "answered_checks" | "compliant_checks";
+    const expected = value.branches.reduce((sum, branch) => sum + (branch.totals[key] ?? branch.totals[rawKey]), 0);
     if (value.totals[key] !== expected) {
       context.addIssue({ code: "custom", message: `Organization ${key} does not reconcile.` });
     }

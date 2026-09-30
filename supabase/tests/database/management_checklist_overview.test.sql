@@ -1,5 +1,5 @@
 begin;
-select plan(56);
+select plan(72);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000',id,'authenticated','authenticated',id||'@example.invalid','{}','{}',now(),now()
@@ -144,6 +144,37 @@ select throws_ok($$select public.get_phase4a_management_overview('81000000-0000-
 update public.profiles set must_change_password=false,disabled_at=now() where id='81000000-0000-4000-8000-000000000001';
 select throws_ok($$select public.get_phase4a_management_overview('81000000-0000-4000-8000-000000000001','83000000-0000-4000-8000-000000000001')$$,'42501','management overview access denied','disabled Manager denied');
 update public.profiles set disabled_at=null where id='81000000-0000-4000-8000-000000000001';
+
+create temporary table manager_overview_applicability_baseline(payload jsonb) on commit drop;
+insert into manager_overview_applicability_baseline
+select public.get_phase4a_management_overview('81000000-0000-4000-8000-000000000001','83000000-0000-4000-8000-000000000001');
+update public.branches
+set oil_tracking_percentage_included=false,
+    sales_tracking_percentage_included=false
+where id='84000000-0000-4000-8000-000000000001';
+update manager_overview_result set payload=public.get_phase4a_management_overview('81000000-0000-4000-8000-000000000001','83000000-0000-4000-8000-000000000001');
+
+select is((select (checklist->>'expected_checks')::int from manager_overview_result cross join lateral pg_catalog.jsonb_array_elements(payload->'branches'->0->'checklists') checklist where checklist->>'checklist_type'='oil_tracking'),2,'excluded Oil raw expected count remains visible') from manager_overview_result;
+select is((select checklist->'team_states' from manager_overview_result cross join lateral pg_catalog.jsonb_array_elements(payload->'branches'->0->'checklists') checklist where checklist->>'checklist_type'='oil_tracking'),'{"draft": 0, "submitted": 0, "not_started": 1}'::jsonb,'excluded Oil team state remains visible') from manager_overview_result;
+select is((select checklist->>'completion_percentage' from manager_overview_result cross join lateral pg_catalog.jsonb_array_elements(payload->'branches'->0->'checklists') checklist where checklist->>'checklist_type'='oil_tracking'),null,'excluded Oil completion percentage is null') from manager_overview_result;
+select is((select (checklist->>'answered_checks')::int from manager_overview_result cross join lateral pg_catalog.jsonb_array_elements(payload->'branches'->0->'checklists') checklist where checklist->>'checklist_type'='sales_tracking'),1,'excluded Sales raw answered count remains visible') from manager_overview_result;
+select is((select (checklist->>'issue_checks')::int from manager_overview_result cross join lateral pg_catalog.jsonb_array_elements(payload->'branches'->0->'checklists') checklist where checklist->>'checklist_type'='sales_tracking'),1,'excluded Sales raw issue count remains visible') from manager_overview_result;
+select is((select checklist->'team_states'->>'submitted' from manager_overview_result cross join lateral pg_catalog.jsonb_array_elements(payload->'branches'->0->'checklists') checklist where checklist->>'checklist_type'='sales_tracking'),'1','excluded Sales submitted state remains visible') from manager_overview_result;
+select is((select checklist->>'completion_percentage' from manager_overview_result cross join lateral pg_catalog.jsonb_array_elements(payload->'branches'->0->'checklists') checklist where checklist->>'checklist_type'='sales_tracking'),null,'excluded Sales completion percentage is null') from manager_overview_result;
+select is((select checklist->>'compliance_percentage' from manager_overview_result cross join lateral pg_catalog.jsonb_array_elements(payload->'branches'->0->'checklists') checklist where checklist->>'checklist_type'='sales_tracking'),null,'excluded Sales compliance percentage is null') from manager_overview_result;
+select is((payload->'branches'->0->'totals'->>'expected_checks')::int,(select (payload->'branches'->0->'totals'->>'expected_checks')::int from manager_overview_applicability_baseline),'percentage exclusion preserves branch raw expected count') from manager_overview_result;
+select is((payload->'branches'->0->'totals'->>'issue_checks')::int,(select (payload->'branches'->0->'totals'->>'issue_checks')::int from manager_overview_applicability_baseline),'percentage exclusion preserves branch raw issue count') from manager_overview_result;
+select is((payload->'branches'->0->'totals'->>'completion_percentage')::int,pg_catalog.round((payload->'branches'->0->'totals'->>'percentage_answered_checks')::numeric*100/(payload->'branches'->0->'totals'->>'percentage_expected_checks')::numeric)::int,'branch overall percentage uses applicable checklist basis') from manager_overview_result;
+select is((payload->'totals'->>'completion_percentage')::int,pg_catalog.round((payload->'totals'->>'percentage_answered_checks')::numeric*100/(payload->'totals'->>'percentage_expected_checks')::numeric)::int,'organization overall percentage uses applicable checklist basis') from manager_overview_result;
+select is((payload->'summary'->>'active_branch_count')::int,2,'percentage exclusion preserves active branch count') from manager_overview_result;
+select is(pg_catalog.jsonb_array_length(payload->'branches'),2,'percentage-excluded branch remains in overview') from manager_overview_result;
+select is((select checklist->>'completion_percentage' from manager_overview_result cross join lateral pg_catalog.jsonb_array_elements(payload->'branches'->0->'checklists') checklist where checklist->>'checklist_type'='foh_opening'),(select checklist->>'completion_percentage' from manager_overview_applicability_baseline cross join lateral pg_catalog.jsonb_array_elements(payload->'branches'->0->'checklists') checklist where checklist->>'checklist_type'='foh_opening'),'other checklist percentage remains unchanged') from manager_overview_result;
+select lives_ok($$select public.get_management_overview_with_daily_audit('81000000-0000-4000-8000-000000000001','83000000-0000-4000-8000-000000000001')$$,'Daily Audit wrapper preserves percentage applicability basis');
+
+update public.branches
+set oil_tracking_percentage_included=true,
+    sales_tracking_percentage_included=true
+where id='84000000-0000-4000-8000-000000000001';
 
 select is(has_function_privilege('authenticated','public.get_phase4a_management_overview(uuid,uuid)','execute'),false,'authenticated cannot execute Manager Overview RPC');
 select is(has_function_privilege('anon','public.get_phase4a_management_overview(uuid,uuid)','execute'),false,'anonymous cannot execute Manager Overview RPC');
