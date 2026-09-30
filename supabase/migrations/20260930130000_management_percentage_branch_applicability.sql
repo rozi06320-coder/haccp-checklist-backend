@@ -14,141 +14,116 @@ do $management_percentage_applicability$
 declare
   definition text;
   previous_definition text;
+  match_count integer;
 begin
   select pg_catalog.pg_get_functiondef('public.get_phase4a_management_overview(uuid,uuid)'::regprocedure)
   into definition;
 
-  previous_definition := definition;
-  definition := pg_catalog.replace(definition, $old$
-    select branch.id, branch.name, branch.code, branch.timezone,
-      private.phase4a_business_date(branch.timezone) business_date,
-$old$, $new$
-    select branch.id, branch.name, branch.code, branch.timezone,
-      branch.sales_tracking_percentage_included,
-      branch.oil_tracking_percentage_included,
-      private.phase4a_business_date(branch.timezone) business_date,
-$new$);
-  if definition = previous_definition then
+  select pg_catalog.count(*) into match_count
+  from pg_catalog.regexp_matches(
+    definition,
+    $pattern$select[[:space:]]+branch\.id,[[:space:]]*branch\.name,[[:space:]]*branch\.code,[[:space:]]*branch\.timezone,[[:space:]]+private\.phase4a_business_date\(branch\.timezone\)[[:space:]]+business_date,$pattern$,
+    'g'
+  );
+  if match_count <> 1 then
     raise exception 'management overview active branch projection changed' using errcode = '22023';
   end if;
+  definition := pg_catalog.regexp_replace(
+    definition,
+    $pattern$select[[:space:]]+branch\.id,[[:space:]]*branch\.name,[[:space:]]*branch\.code,[[:space:]]*branch\.timezone,[[:space:]]+private\.phase4a_business_date\(branch\.timezone\)[[:space:]]+business_date,$pattern$,
+    $replacement$select branch.id, branch.name, branch.code, branch.timezone,
+      branch.sales_tracking_percentage_included,
+      branch.oil_tracking_percentage_included,
+      private.phase4a_business_date(branch.timezone) business_date,$replacement$
+  );
 
-  previous_definition := definition;
-  definition := pg_catalog.replace(definition, $old$
-  branch_checklist_metrics as materialized (
-    select branch.id branch_id, checklist.checklist_type, checklist.ordinal,
-      pg_catalog.count(metric.team_id) filter (where metric.state = 'not_started')::bigint not_started_teams,
-      pg_catalog.count(metric.team_id) filter (where metric.state = 'draft')::bigint draft_teams,
-      pg_catalog.count(metric.team_id) filter (where metric.state = 'submitted')::bigint submitted_teams,
-      coalesce(pg_catalog.sum(metric.expected_checks), 0)::bigint expected_checks,
-      coalesce(pg_catalog.sum(metric.answered_checks), 0)::bigint answered_checks,
-      coalesce(pg_catalog.sum(metric.compliant_checks), 0)::bigint compliant_checks,
-      coalesce(pg_catalog.sum(metric.issue_checks), 0)::bigint issue_checks
-    from active_branches branch
-    cross join checklist_types checklist
-    left join unit_metrics metric
-      on metric.branch_id = branch.id and metric.checklist_type = checklist.checklist_type
-    group by branch.id, checklist.checklist_type, checklist.ordinal
-  ),
-$old$, $new$
-  branch_checklist_metrics as materialized (
-    select branch.id branch_id, checklist.checklist_type, checklist.ordinal,
-      case
-        when checklist.checklist_type = 'oil_tracking' then branch.oil_tracking_percentage_included
-        when checklist.checklist_type = 'sales_tracking' then branch.sales_tracking_percentage_included
-        else true
-      end percentage_included,
-      pg_catalog.count(metric.team_id) filter (where metric.state = 'not_started')::bigint not_started_teams,
-      pg_catalog.count(metric.team_id) filter (where metric.state = 'draft')::bigint draft_teams,
-      pg_catalog.count(metric.team_id) filter (where metric.state = 'submitted')::bigint submitted_teams,
-      coalesce(pg_catalog.sum(metric.expected_checks), 0)::bigint expected_checks,
-      coalesce(pg_catalog.sum(metric.answered_checks), 0)::bigint answered_checks,
-      coalesce(pg_catalog.sum(metric.compliant_checks), 0)::bigint compliant_checks,
-      coalesce(pg_catalog.sum(metric.issue_checks), 0)::bigint issue_checks
-    from active_branches branch
-    cross join checklist_types checklist
-    left join unit_metrics metric
-      on metric.branch_id = branch.id and metric.checklist_type = checklist.checklist_type
-    group by branch.id, checklist.checklist_type, checklist.ordinal,
-      branch.oil_tracking_percentage_included, branch.sales_tracking_percentage_included
-  ),
-$new$);
-  if definition = previous_definition then
-    raise exception 'management overview checklist rollup changed' using errcode = '22023';
+  select pg_catalog.count(*) into match_count
+  from pg_catalog.regexp_matches(definition, $pattern$branch_rows[[:space:]]+as[[:space:]]+materialized[[:space:]]*\($pattern$, 'g');
+  if match_count <> 1 then
+    raise exception 'management overview branch rows changed' using errcode = '22023';
   end if;
-
-  previous_definition := definition;
-  definition := pg_catalog.replace(definition, $old$
-  branch_rows as materialized (
-    select branch.id branch_id, branch.name branch_name, branch.code branch_code,
-      branch.timezone, branch.business_date,
-      pg_catalog.count(distinct team.team_id)::bigint active_team_count,
-      metric.expected_checks, metric.answered_checks, metric.compliant_checks, metric.issue_checks,
-      (metric.expected_checks - metric.answered_checks)::bigint pending_checks,
-      case when metric.expected_checks = 0 then null
-        else pg_catalog.round(metric.answered_checks * 100.0 / metric.expected_checks)::integer
-      end completion_percentage,
-      case when metric.answered_checks = 0 then null
-        else pg_catalog.round(metric.compliant_checks * 100.0 / metric.answered_checks)::integer
-      end compliance_percentage
-    from active_branches branch
-    join branch_metrics metric on metric.branch_id = branch.id
-    left join eligible_teams team on team.branch_id = branch.id
-    group by branch.id, branch.name, branch.code, branch.timezone, branch.business_date,
-      metric.expected_checks, metric.answered_checks, metric.compliant_checks, metric.issue_checks
+  definition := pg_catalog.regexp_replace(
+    definition,
+    $pattern$branch_rows[[:space:]]+as[[:space:]]+materialized[[:space:]]*\($pattern$,
+    $replacement$branch_percentage_candidates as materialized (
+    select metric.*,
+      case
+        when metric.checklist_type = 'oil_tracking' then branch.oil_tracking_percentage_included
+        when metric.checklist_type = 'sales_tracking' then branch.sales_tracking_percentage_included
+        else true
+      end percentage_included
+    from branch_checklist_metrics metric
+    join active_branches branch on branch.id = metric.branch_id
   ),
-  organization_totals as (
-    select coalesce(pg_catalog.sum(branch.expected_checks), 0)::bigint expected_checks,
-      coalesce(pg_catalog.sum(branch.answered_checks), 0)::bigint answered_checks,
-      coalesce(pg_catalog.sum(branch.compliant_checks), 0)::bigint compliant_checks,
-      coalesce(pg_catalog.sum(branch.issue_checks), 0)::bigint issue_checks
-    from branch_rows branch
-  )
-$old$, $new$
   branch_percentage_metrics as materialized (
     select branch.id branch_id,
       coalesce(pg_catalog.sum(metric.expected_checks) filter (where metric.percentage_included), 0)::bigint expected_checks,
       coalesce(pg_catalog.sum(metric.answered_checks) filter (where metric.percentage_included), 0)::bigint answered_checks,
       coalesce(pg_catalog.sum(metric.compliant_checks) filter (where metric.percentage_included), 0)::bigint compliant_checks
     from active_branches branch
-    left join branch_checklist_metrics metric on metric.branch_id = branch.id
+    left join branch_percentage_candidates metric on metric.branch_id = branch.id
     group by branch.id
   ),
-  branch_rows as materialized (
-    select branch.id branch_id, branch.name branch_name, branch.code branch_code,
-      branch.timezone, branch.business_date,
-      pg_catalog.count(distinct team.team_id)::bigint active_team_count,
-      metric.expected_checks, metric.answered_checks, metric.compliant_checks, metric.issue_checks,
-      (metric.expected_checks - metric.answered_checks)::bigint pending_checks,
-      percentage_metric.expected_checks percentage_expected_checks,
-      percentage_metric.answered_checks percentage_answered_checks,
-      percentage_metric.compliant_checks percentage_compliant_checks,
-      case when percentage_metric.expected_checks = 0 then null
-        else pg_catalog.round(percentage_metric.answered_checks * 100.0 / percentage_metric.expected_checks)::integer
+  branch_rows as materialized ($replacement$
+  );
+
+  previous_definition := definition;
+  definition := pg_catalog.replace(
+    definition,
+    '(metric.expected_checks - metric.answered_checks)::bigint pending_checks,',
+    '(metric.expected_checks - metric.answered_checks)::bigint pending_checks,
+      pg_catalog.max(percentage_metric.expected_checks) percentage_expected_checks,
+      pg_catalog.max(percentage_metric.answered_checks) percentage_answered_checks,
+      pg_catalog.max(percentage_metric.compliant_checks) percentage_compliant_checks,'
+  );
+  if definition = previous_definition then
+    raise exception 'management overview branch count projection changed' using errcode = '22023';
+  end if;
+
+  previous_definition := definition;
+  definition := pg_catalog.replace(definition, $old$
+      case when metric.expected_checks = 0 then null
+        else pg_catalog.round(metric.answered_checks * 100.0 / metric.expected_checks)::integer
       end completion_percentage,
-      case when percentage_metric.answered_checks = 0 then null
-        else pg_catalog.round(percentage_metric.compliant_checks * 100.0 / percentage_metric.answered_checks)::integer
+      case when metric.answered_checks = 0 then null
+        else pg_catalog.round(metric.compliant_checks * 100.0 / metric.answered_checks)::integer
       end compliance_percentage
-    from active_branches branch
-    join branch_metrics metric on metric.branch_id = branch.id
-    join branch_percentage_metrics percentage_metric on percentage_metric.branch_id = branch.id
-    left join eligible_teams team on team.branch_id = branch.id
-    group by branch.id, branch.name, branch.code, branch.timezone, branch.business_date,
-      metric.expected_checks, metric.answered_checks, metric.compliant_checks, metric.issue_checks,
-      percentage_metric.expected_checks, percentage_metric.answered_checks, percentage_metric.compliant_checks
-  ),
-  organization_totals as (
-    select coalesce(pg_catalog.sum(branch.expected_checks), 0)::bigint expected_checks,
-      coalesce(pg_catalog.sum(branch.answered_checks), 0)::bigint answered_checks,
-      coalesce(pg_catalog.sum(branch.compliant_checks), 0)::bigint compliant_checks,
+$old$, $new$
+      case when pg_catalog.max(percentage_metric.expected_checks) = 0 then null
+        else pg_catalog.round(pg_catalog.max(percentage_metric.answered_checks) * 100.0 / pg_catalog.max(percentage_metric.expected_checks))::integer
+      end completion_percentage,
+      case when pg_catalog.max(percentage_metric.answered_checks) = 0 then null
+        else pg_catalog.round(pg_catalog.max(percentage_metric.compliant_checks) * 100.0 / pg_catalog.max(percentage_metric.answered_checks))::integer
+      end compliance_percentage
+$new$);
+  if definition = previous_definition then
+    raise exception 'management overview branch percentage expressions changed' using errcode = '22023';
+  end if;
+
+  previous_definition := definition;
+  definition := pg_catalog.replace(
+    definition,
+    'join branch_metrics metric on metric.branch_id = branch.id',
+    'join branch_metrics metric on metric.branch_id = branch.id
+    join branch_percentage_metrics percentage_metric on percentage_metric.branch_id = branch.id'
+  );
+  if definition = previous_definition then
+    raise exception 'management overview branch metric join changed' using errcode = '22023';
+  end if;
+
+  previous_definition := definition;
+  definition := pg_catalog.replace(definition, $old$
+      coalesce(pg_catalog.sum(branch.issue_checks), 0)::bigint issue_checks
+    from branch_rows branch
+$old$, $new$
       coalesce(pg_catalog.sum(branch.issue_checks), 0)::bigint issue_checks,
       coalesce(pg_catalog.sum(branch.percentage_expected_checks), 0)::bigint percentage_expected_checks,
       coalesce(pg_catalog.sum(branch.percentage_answered_checks), 0)::bigint percentage_answered_checks,
       coalesce(pg_catalog.sum(branch.percentage_compliant_checks), 0)::bigint percentage_compliant_checks
     from branch_rows branch
-  )
 $new$);
   if definition = previous_definition then
-    raise exception 'management overview percentage rollup changed' using errcode = '22023';
+    raise exception 'management overview organization percentage basis changed' using errcode = '22023';
   end if;
 
   previous_definition := definition;
@@ -208,6 +183,16 @@ $old$, $new$
 $new$);
   if definition = previous_definition then
     raise exception 'management overview checklist JSON changed' using errcode = '22023';
+  end if;
+
+  previous_definition := definition;
+  definition := pg_catalog.replace(
+    definition,
+    'from branch_checklist_metrics checklist',
+    'from branch_percentage_candidates checklist'
+  );
+  if definition = previous_definition then
+    raise exception 'management overview checklist JSON source changed' using errcode = '22023';
   end if;
 
   execute definition;
