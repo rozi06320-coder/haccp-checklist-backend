@@ -1,5 +1,5 @@
 begin;
-select plan(16);
+select plan(20);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated', email, '{}', '{}', now(), now()
@@ -33,9 +33,18 @@ insert into public.purchasing_memberships(organization_id,user_id,active) values
  ('2e000000-0000-4000-8000-000000000002','1e000000-0000-4000-8000-000000000006',true);
 
 select ok(to_regclass('public.purchase_request_creation_idempotency') is not null,'Purchase Request idempotency table exists');
+select ok(has_function_privilege('service_role','public.create_supervisor_purchase_request(uuid,uuid,text,text,jsonb)','execute'),'service role still executes legacy create RPC');
 select ok(has_function_privilege('service_role','public.create_supervisor_purchase_request(uuid,uuid,uuid,text,text,text,jsonb)','execute'),'service role executes idempotent create RPC');
 select ok(not has_function_privilege('authenticated','public.create_supervisor_purchase_request(uuid,uuid,uuid,text,text,text,jsonb)','execute'),'authenticated cannot execute create RPC directly');
 select ok(not has_table_privilege('authenticated','public.purchase_request_creation_idempotency','select'),'authenticated cannot read idempotency rows');
+select is((
+  select count(*)
+  from pg_catalog.pg_proc procedure
+  join pg_catalog.pg_namespace namespace on namespace.oid = procedure.pronamespace
+  where namespace.nspname = 'public'
+    and procedure.proname = 'create_supervisor_purchase_request'
+    and procedure.pronargs in (5, 7)
+),2::bigint,'legacy and idempotent create overloads coexist');
 
 select lives_ok($$select * from public.register_purchasing_push_subscription(
  '1e000000-0000-4000-8000-000000000002','https://push.example/buyer','abcdefghijklmnopqrstuvwxyz','authsecret','Browser'
@@ -68,6 +77,18 @@ select throws_ok($$select public.create_supervisor_purchase_request(
  '4e000000-0000-4000-8000-000000000001',repeat('b',64),'kitchen',null,
  '[{"name":"Gloves","quantity":2,"unit":"box","notes":null}]'::jsonb
 )$$,'23505','purchase request idempotency conflict','changed payload conflicts');
+
+create temporary table legacy_push_request_result as
+select public.create_supervisor_purchase_request(
+ '1e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000001',
+ 'stationary',null,'[{"name":"Paper","quantity":2,"unit":"pack","notes":null}]'::jsonb
+) as payload;
+
+select ok(
+  (select payload ? 'purchase_request' and not payload ? 'created' from legacy_push_request_result),
+  'legacy create keeps its original response shape'
+);
+select is((select count(*) from public.purchase_requests where branch_id='3e000000-0000-4000-8000-000000000001'),2::bigint,'legacy and idempotent calls each create normally');
 
 insert into public.push_subscriptions(user_id,endpoint,p256dh,auth,disabled_at) values
  ('1e000000-0000-4000-8000-000000000003','https://push.example/inactive','abcdefghijklmnopqrstuvwxyz','authsecret',null),

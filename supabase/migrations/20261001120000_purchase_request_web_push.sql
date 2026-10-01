@@ -16,8 +16,6 @@ create index purchase_request_creation_idempotency_request_idx
 alter table public.purchase_request_creation_idempotency enable row level security;
 revoke all on table public.purchase_request_creation_idempotency from public, anon, authenticated, service_role;
 
-drop function public.create_supervisor_purchase_request(uuid, uuid, text, text, jsonb);
-
 create function public.create_supervisor_purchase_request(
   actor_user_id uuid,
   target_branch_id uuid,

@@ -4,10 +4,15 @@ import path from "node:path";
 import { describe, it } from "node:test";
 
 const migrationPath = path.resolve("supabase/migrations/20261001120000_purchase_request_web_push.sql");
+const legacyMigrationPath = path.resolve("supabase/migrations/20260921130000_purchase_requests_phase1b.sql");
+const cleanupMigrationPath = path.resolve("supabase/migrations/20261001130000_purchase_request_remove_legacy_create_rpc.sql");
 
 describe("Purchase Request web push migration contract", () => {
-  it("adds actor-scoped idempotency and replaces only the idempotent create signature", async () => {
-    const sql = await readFile(migrationPath, "utf8");
+  it("adds actor-scoped idempotency while preserving the legacy create overload", async () => {
+    const [sql, legacySql] = await Promise.all([
+      readFile(migrationPath, "utf8"),
+      readFile(legacyMigrationPath, "utf8"),
+    ]);
     assert.match(sql, /create table public\.purchase_request_creation_idempotency/);
     assert.match(sql, /primary key \(actor_user_id, idempotency_key\)/);
     assert.match(sql, /request_hash ~ '\^\[0-9a-f\]\{64\}\$'/);
@@ -15,8 +20,17 @@ describe("Purchase Request web push migration contract", () => {
     assert.match(sql, /v_existing\.request_hash <> request_hash[\s\S]*errcode = '23505'/);
     assert.match(sql, /'created', false/);
     assert.match(sql, /'created', true/);
-    assert.match(sql, /drop function public\.create_supervisor_purchase_request\(uuid, uuid, text, text, jsonb\)/);
+    assert.doesNotMatch(sql, /drop function public\.create_supervisor_purchase_request\(uuid, uuid, text, text, jsonb\)/);
+    assert.match(legacySql, /create or replace function public\.create_supervisor_purchase_request\(\s*actor_user_id uuid,\s*target_branch_id uuid,\s*request_category text,\s*request_notes text,\s*request_items jsonb\s*\)/);
     assert.match(sql, /create function public\.create_supervisor_purchase_request\([\s\S]*idempotency_key uuid,[\s\S]*request_hash text/);
+  });
+
+  it("removes only the legacy overload in the later contract migration", async () => {
+    const sql = await readFile(cleanupMigrationPath, "utf8");
+    assert.equal(
+      sql.trim(),
+      "drop function public.create_supervisor_purchase_request(uuid, uuid, text, text, jsonb);",
+    );
   });
 
   it("reuses push_subscriptions with exact Purchasing recipient restrictions", async () => {
