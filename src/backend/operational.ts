@@ -505,6 +505,25 @@ export function maintenancePurchaseRequestHash(input:{issueId?:string|null;paylo
   })).digest("hex");
 }
 
+export function purchaseRequestCreateRequestHash(input:{
+  branchId:string;
+  category:z.infer<typeof purchaseRequestCategory>;
+  notes?:string|null;
+  items:Array<{name:string;quantity:string|number;unit?:string|null;notes?:string|null}>;
+}){
+  return createHash("sha256").update(JSON.stringify({
+    branch_id:input.branchId,
+    category:input.category,
+    notes:input.notes??null,
+    items:input.items.map((item)=>({
+      name:item.name,
+      quantity:Number(item.quantity),
+      unit:item.unit??null,
+      notes:item.notes??null,
+    })),
+  })).digest("hex");
+}
+
 export type MaintenancePurchaseWriterPayload={
   purchase_type?:z.infer<typeof maintenancePurchaseType>;
   purchase_scope?:z.infer<typeof maintenancePurchaseScope>|null;
@@ -693,6 +712,7 @@ export type OperationalAdmin = {
   createSupervisorPurchaseRequest?(input: {
     actorUserId: string;
     branchId: string;
+    idempotencyKey: string;
     category: z.infer<typeof purchaseRequestCategory>;
     notes?: string | null;
     items: Array<{ name: string; quantity: string | number; unit?: string | null; notes?: string | null }>;
@@ -2134,6 +2154,8 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       return await signPurchaseRequestPayload(await rpcObject("create_supervisor_purchase_request", {
         actor_user_id: input.actorUserId,
         target_branch_id: input.branchId,
+        idempotency_key: input.idempotencyKey,
+        request_hash: purchaseRequestCreateRequestHash(input),
         request_category: input.category,
         request_notes: input.notes ?? null,
         request_items: input.items,

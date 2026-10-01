@@ -16,6 +16,7 @@ const otherBranch = "27000000-0000-4000-8000-000000000002";
 const organization = "37000000-0000-4000-8000-000000000001";
 const otherOrganization = "37000000-0000-4000-8000-000000000002";
 const requestId = "47000000-0000-4000-8000-000000000001";
+const createIdempotencyKey = "47000000-0000-4000-8000-000000000099";
 const purchaseLogId = "67000000-0000-4000-8000-000000000001";
 
 const config: BackendConfig = { nodeEnv: "test", host: "127.0.0.1", port: 1, trustProxy: false, supabase: { url: "http://127.0.0.1", publishableKey: "test", secretKey: "test" }, dailyAuditGrantSecret: "test-placeholder-long-enough-for-tests" };
@@ -205,17 +206,18 @@ describe("Purchase Request API", () => {
   beforeEach(() => { calls.length = 0; });
 
   it("lets a Supervisor create a multi-item request for the route branch only", async () => {
-    const response = await request(`/api/v1/supervisor/branches/${branch}/purchase-requests`, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ category: "kitchen", notes: " Need stock ", items: [{ name: "Gloves", quantity: 3, unit: "box" }] }) });
+    const response = await request(`/api/v1/supervisor/branches/${branch}/purchase-requests`, "supervisor", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": createIdempotencyKey }, body: JSON.stringify({ category: "kitchen", notes: " Need stock ", items: [{ name: "Gloves", quantity: 3, unit: "box" }] }) });
     assert.equal(response.status, 201);
     assert.equal(calls[0]?.name, "create-supervisor");
     assert.deepEqual((calls[0]?.input as { branchId: string; category: string }).branchId, branch);
+    assert.equal((calls[0]?.input as { idempotencyKey: string }).idempotencyKey, createIdempotencyKey);
     assert.equal(calls.some((call) => call.name === "create-purchase-log"), false);
   });
 
   it("does not trust Supervisor supplied organization or requester identifiers", async () => {
     const response = await request(`/api/v1/supervisor/branches/${branch}/purchase-requests`, "supervisor", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Idempotency-Key": createIdempotencyKey },
       body: JSON.stringify({
         organization_id: otherOrganization,
         requested_by: manager,
@@ -230,7 +232,7 @@ describe("Purchase Request API", () => {
   it("denies Supervisor creation for an unauthorized branch through the authoritative backend check", async () => {
     const response = await request(`/api/v1/supervisor/branches/${otherBranch}/purchase-requests`, "supervisor", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Idempotency-Key": createIdempotencyKey },
       body: JSON.stringify({ category: "kitchen", items: [{ name: "Gloves", quantity: 1 }] }),
     });
     assert.equal(response.status, 403);
@@ -276,9 +278,19 @@ describe("Purchase Request API", () => {
       { category: "equipment", items: [{ name: "Gloves", quantity: 1 }] },
       { category: "kitchen", items: [{ name: "Gloves", quantity: 0 }] },
     ]) {
-      const response = await request(`/api/v1/supervisor/branches/${branch}/purchase-requests`, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const response = await request(`/api/v1/supervisor/branches/${branch}/purchase-requests`, "supervisor", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": createIdempotencyKey }, body: JSON.stringify(body) });
       assert.equal(response.status, 400);
     }
+    assert.equal(calls.length, 0);
+  });
+
+  it("requires a valid idempotency key for Purchase Request creation", async () => {
+    const response = await request(`/api/v1/supervisor/branches/${branch}/purchase-requests`, "supervisor", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category: "kitchen", items: [{ name: "Gloves", quantity: 1 }] }),
+    });
+    assert.equal(response.status, 400);
     assert.equal(calls.length, 0);
   });
 

@@ -31,6 +31,18 @@ const recipientRow = z.object({
   branch_name: z.string(),
   issue_title: z.string(),
 }).strict();
+const purchaseRequestRecipientRow = z.object({
+  subscription_id: uuid,
+  user_id: uuid,
+  endpoint: z.string(),
+  p256dh: z.string(),
+  auth: z.string(),
+  organization_id: uuid,
+  branch_id: uuid,
+  branch_name: z.string(),
+  category: z.enum(["stationary", "kitchen", "other"]),
+  request_created_at: z.string(),
+}).strict();
 const supervisorDeliveryRow = z.object({
   notification_id: uuid,
   subscription_id: uuid,
@@ -74,12 +86,27 @@ export type MaintenancePushService = {
     auth: string;
     userAgent?: string | null;
   }): Promise<unknown>;
+  registerPurchasingSubscription?(input: {
+    actorUserId: string;
+    endpoint: string;
+    p256dh: string;
+    auth: string;
+    userAgent?: string | null;
+  }): Promise<unknown>;
   notifyMaintenanceIssueCreated(input: {
     issueId: string;
     branchId: string | null;
     branchName: string;
     priority: string;
     title: string;
+  }): Promise<void>;
+  notifyPurchaseRequestCreated?(input: {
+    requestId: string;
+    organizationId: string;
+    branchId: string;
+    branchName: string | null;
+    category: "stationary" | "kitchen" | "other";
+    createdAt: string;
   }): Promise<void>;
   notifyDueSupervisorChecklistReminders(input: {
     asOf: Date;
@@ -187,6 +214,16 @@ export function createMaintenancePushService(
       }, subscriptionRow);
       return { subscription: rows[0] ?? null };
     },
+    async registerPurchasingSubscription(input) {
+      const rows = await rpcRows("register_purchasing_push_subscription", {
+        actor_user_id: input.actorUserId,
+        p_endpoint: input.endpoint,
+        p_p256dh: input.p256dh,
+        p_auth: input.auth,
+        p_user_agent: input.userAgent ?? null,
+      }, subscriptionRow);
+      return { subscription: rows[0] ?? null };
+    },
     async notifyMaintenanceIssueCreated(input) {
       if (!enabled) return;
       const recipients = await rpcRows("list_maintenance_issue_push_subscriptions", {
@@ -216,6 +253,68 @@ export function createMaintenancePushService(
         });
       });
       await Promise.allSettled(deliveries);
+    },
+    async notifyPurchaseRequestCreated(input) {
+      if (!enabled) return;
+      let recipients: Array<z.infer<typeof purchaseRequestRecipientRow>>;
+      try {
+        recipients = await rpcRows("list_purchase_request_push_subscriptions", {
+          target_request_id: input.requestId,
+        }, purchaseRequestRecipientRow);
+      } catch {
+        console.warn("PURCHASE_REQUEST_PUSH_DIAGNOSTIC " + JSON.stringify({
+          requestId: input.requestId,
+          organizationId: input.organizationId,
+          branchId: input.branchId,
+          outcome: "recipient_lookup_failed",
+        }));
+        return;
+      }
+
+      const sentEndpoints = new Set<string>();
+      let sent = 0;
+      let failed = 0;
+      let disabled = 0;
+      const deliveries = recipients.flatMap((recipient) => {
+        if (sentEndpoints.has(recipient.endpoint)) return [];
+        sentEndpoints.add(recipient.endpoint);
+        const payload = JSON.stringify({
+          type: "purchase_request_created",
+          request_id: input.requestId,
+          organization_id: recipient.organization_id,
+          branch_id: recipient.branch_id,
+          category: recipient.category,
+          created_at: recipient.request_created_at,
+          title: "New Purchase Request",
+          body: `${recipient.branch_name || input.branchName || "A branch"} submitted a new purchase request.`,
+          url: "/purchasing",
+        });
+        return pushTransport.sendNotification({
+          endpoint: recipient.endpoint,
+          keys: { p256dh: recipient.p256dh, auth: recipient.auth },
+        }, payload, { TTL: 60 * 60 }).then(() => {
+          sent += 1;
+        }).catch(async (error: unknown) => {
+          failed += 1;
+          const status = deliveryStatusCode(error);
+          if (status === 404 || status === 410) {
+            await disableDelivery(recipient.subscription_id, recipient.endpoint).catch(() => undefined);
+            disabled += 1;
+          }
+        });
+      });
+      await Promise.allSettled(deliveries);
+      console.info("PURCHASE_REQUEST_PUSH_DIAGNOSTIC " + JSON.stringify({
+        requestId: input.requestId,
+        organizationId: input.organizationId,
+        branchId: input.branchId,
+        recipientCount: recipients.length,
+        subscriptionCount: sentEndpoints.size,
+        sent,
+        failed,
+        disabled,
+        outcome: failed === 0 ? "complete" : "partial_failure",
+      }));
     },
     async notifyDueSupervisorChecklistReminders(input) {
       const evaluatedAt = input.asOf.toISOString();

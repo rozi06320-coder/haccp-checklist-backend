@@ -663,6 +663,16 @@ function maintenanceIssueCreateResponsePayload(result: unknown) {
     ? { maintenance_issue: (result as { maintenance_issue?: unknown }).maintenance_issue }
     : result;
 }
+function purchaseRequestCreateResultWasCreated(result: unknown) {
+  return typeof result === "object" && result !== null && "created" in result
+    ? (result as { created?: unknown }).created !== false
+    : true;
+}
+function purchaseRequestCreateResponsePayload(result: unknown) {
+  return typeof result === "object" && result !== null && "purchase_request" in result
+    ? { purchase_request: (result as { purchase_request?: unknown }).purchase_request }
+    : result;
+}
 type MaintenanceIssueUpdateRequest =
   | { contract: "legacy"; data: z.infer<typeof maintenanceIssueLegacyUpdateBodySchema> }
   | { contract: "phase1"; data: z.infer<typeof maintenanceIssuePhase1UpdateBodySchema> };
@@ -4321,6 +4331,63 @@ export function createApp(
       }
     });
 
+  app.get("/api/v1/purchasing/push/public-key", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        if (!emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || !(context.purchasing_organizations ?? []).length) throw new HttpError(403, "forbidden", "Access is denied.");
+        const publicKey = dependencies.maintenancePush?.getPublicKey() ?? null;
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ enabled: publicKey !== null, public_key: publicKey });
+      } catch (error) {
+        next(error instanceof HttpError ? error : browserPushError(error));
+      }
+    });
+
+  app.post("/api/v1/purchasing/push/subscriptions", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const body = pushSubscriptionBodySchema.safeParse(request.body);
+        if (!body.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        if (!dependencies.maintenancePush?.registerPurchasingSubscription) throw new HttpError(503, "service_unavailable", "Notifications are temporarily unavailable.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || !(context.purchasing_organizations ?? []).length) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = pushSubscriptionResponseSchema.parse(await dependencies.maintenancePush.registerPurchasingSubscription({
+          actorUserId: auth.userId,
+          endpoint: body.data.endpoint,
+          p256dh: body.data.keys.p256dh,
+          auth: body.data.keys.auth,
+          userAgent: request.header("User-Agent") ?? null,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : browserPushError(error));
+      }
+    });
+
+  app.delete("/api/v1/purchasing/push/subscriptions", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const body = pushSubscriptionDeleteBodySchema.safeParse(request.body);
+        if (!body.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        if (!dependencies.maintenancePush) throw new HttpError(503, "service_unavailable", "Notifications are temporarily unavailable.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || !(context.purchasing_organizations ?? []).length) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = pushSubscriptionResponseSchema.parse(await dependencies.maintenancePush.disableSubscription({
+          actorUserId: auth.userId,
+          endpoint: body.data.endpoint,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : browserPushError(error));
+      }
+    });
+
   app.patch("/api/v1/purchasing/organizations/:organizationId/purchase-requests/:requestId/status", protectedRateLimit, authenticate,
     async (request, response, next) => {
       try {
@@ -6651,19 +6718,31 @@ export function createApp(
       try {
         const branchId = branchIdSchema.safeParse(request.params.branchId);
         const body = purchaseRequestBodySchema.safeParse(request.body);
-        if (!branchId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const idempotencyKey = idempotencySchema.safeParse(request.header("Idempotency-Key"));
+        if (!branchId.success || !body.success || !idempotencyKey.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
         const auth = requireAuthContext(request);
         const context = await loadActiveUser(request);
         if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin?.createSupervisorPurchaseRequest) throw new HttpError(403, "forbidden", "Access is denied.");
-        const result = purchaseRequestMutationResponseSchema.parse(await dependencies.operationalAdmin.createSupervisorPurchaseRequest({
+        const serviceResult = await dependencies.operationalAdmin.createSupervisorPurchaseRequest({
           actorUserId: auth.userId,
           branchId: branchId.data,
+          idempotencyKey: idempotencyKey.data,
           category: body.data.category,
           notes: body.data.notes,
           items: body.data.items,
-        }));
+        });
+        const created = purchaseRequestCreateResultWasCreated(serviceResult);
+        const result = purchaseRequestMutationResponseSchema.parse(purchaseRequestCreateResponsePayload(serviceResult));
         response.setHeader("Cache-Control", "private, no-store");
-        response.status(201).json(result);
+        response.status(created ? 201 : 200).json(result);
+        if (created) void dependencies.maintenancePush?.notifyPurchaseRequestCreated?.({
+          requestId: result.purchase_request.id,
+          organizationId: result.purchase_request.organization_id,
+          branchId: result.purchase_request.branch_id,
+          branchName: result.purchase_request.branch_name,
+          category: result.purchase_request.category,
+          createdAt: result.purchase_request.created_at,
+        }).catch(() => undefined);
       } catch (error) {
         next(error instanceof HttpError ? error : operationalPurchaseRequestError(error));
       }
