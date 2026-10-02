@@ -1,5 +1,5 @@
 begin;
-select plan(85);
+select plan(107);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated',
@@ -52,6 +52,9 @@ select has_function('private','inventory_items_label_snapshot',array['jsonb','te
 select has_function('public','update_inventory_beef_production_field_labels',array['uuid','uuid','text','text','text'],'inventory label settings RPC exists');
 select has_table('public','inventory_item_usage_items','item usage item table exists');
 select has_table('public','inventory_item_usage_day_values','item usage day value table exists');
+select has_column('public','inventory_item_usage_items','deleted_at','item usage tombstone timestamp exists');
+select has_column('public','inventory_item_usage_items','deleted_by_user_id','item usage tombstone actor exists');
+select has_function('public','delete_inventory_item_usage_item',array['uuid','uuid','uuid'],'empty Item Usage delete RPC exists');
 select ok((select relrowsecurity from pg_class where oid = 'public.inventory_items_reports'::regclass),'inventory reports RLS enabled');
 select ok((select relrowsecurity from pg_class where oid = 'public.inventory_items_submission_idempotency'::regclass),'inventory idempotency RLS enabled');
 select ok((select relrowsecurity from pg_class where oid = 'public.inventory_beef_production_rows'::regclass),'beef rows RLS enabled');
@@ -62,6 +65,8 @@ select is(has_function_privilege('authenticated','public.get_inventory_items_cur
 select is(has_function_privilege('authenticated','public.submit_inventory_items(uuid,uuid,uuid,text,jsonb,jsonb)','execute'),false,'authenticated cannot execute inventory submit RPC');
 select is(has_function_privilege('service_role','public.save_inventory_items_draft(uuid,uuid,jsonb,jsonb)','execute'),true,'service role can execute inventory draft RPC');
 select is(has_function_privilege('service_role','public.submit_inventory_items(uuid,uuid,uuid,text,jsonb,jsonb)','execute'),true,'service role can execute inventory submit RPC');
+select is(has_function_privilege('authenticated','public.delete_inventory_item_usage_item(uuid,uuid,uuid)','execute'),false,'authenticated cannot execute Item Usage delete RPC directly');
+select is(has_function_privilege('service_role','public.delete_inventory_item_usage_item(uuid,uuid,uuid)','execute'),true,'service role can execute Item Usage delete RPC');
 select is(has_function_privilege('authenticated','public.update_inventory_beef_production_field_labels(uuid,uuid,text,text,text)','execute'),false,'authenticated cannot execute inventory label settings RPC');
 select is(has_function_privilege('service_role','public.update_inventory_beef_production_field_labels(uuid,uuid,text,text,text)','execute'),true,'service role can execute inventory label settings RPC');
 select ok(not has_table_privilege('authenticated','public.inventory_items_reports','insert')
@@ -196,6 +201,105 @@ $$, private.phase4a_business_date('Asia/Riyadh'), to_char(private.phase4a_busine
 select is(public.get_inventory_items_current_state('1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001')->'item_usage'->'items'->0->'usage'->>'1','2','previous item usage survives later saves');
 select is(public.get_inventory_items_current_state('1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001')->'item_usage'->'items'->0->'usage'->>'9','4','new item usage is restored');
 
+insert into public.branch_inventory_catalog_items(id,organization_id,branch_id,name,unit,kind)
+values('7d000000-0000-4000-8000-000000000100','2d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001','Delete Safety Catalog Item','kg','ingredient');
+
+select lives_ok(format($$
+  select public.save_inventory_items_draft(
+    '1d000000-0000-4000-8000-000000000001',
+    '3d000000-0000-4000-8000-000000000001',
+    '[]'::jsonb,
+    '{"usage_month":"%s-01","items":[
+      {"item_id":"6d000000-0000-4000-8000-000000000001","group_name":"Liwa","item_name":"Smokey Beef Burger","usage":{"1":"2","8":3.5,"9":"4"}},
+      {"item_id":"7d000000-0000-4000-8000-000000000001","group_name":"Liwa","item_name":"Empty Saved Row","usage":{}},
+      {"item_id":"7d000000-0000-4000-8000-000000000002","group_name":"Liwa","item_name":"Empty Until Submit","usage":{}}
+    ]}'::jsonb
+  )
+$$, to_char(private.phase4a_business_date('Asia/Riyadh'), 'YYYY-MM')), 'two empty Item Usage rows can be saved before deletion');
+select lives_ok($$
+  select public.delete_inventory_item_usage_item(
+    '1d000000-0000-4000-8000-000000000001',
+    '3d000000-0000-4000-8000-000000000001',
+    '7d000000-0000-4000-8000-000000000001'
+  )
+$$, 'saved empty Item Usage row can be deleted while report is draft');
+select ok((
+  select deleted_at is not null and deleted_by_user_id='1d000000-0000-4000-8000-000000000001'
+  from public.inventory_item_usage_items
+  where id='7d000000-0000-4000-8000-000000000001'
+), 'delete records a one-way actor/timestamp tombstone');
+select ok(not exists (
+  select 1
+  from jsonb_array_elements(public.get_inventory_items_current_state(
+    '1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001'
+  )->'item_usage'->'items') item
+  where item->>'id'='7d000000-0000-4000-8000-000000000001'
+), 'deleted Item Usage row stays absent from current state');
+select is((
+  select jsonb_array_length(public.get_inventory_items_current_state(
+    '1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001'
+  )->'item_usage'->'items')
+), 2, 'other Item Usage rows remain unchanged');
+select ok(not exists (
+  select 1
+  from jsonb_array_elements(public.list_managed_inventory_items_reports(
+    '1d000000-0000-4000-8000-000000000003','2d000000-0000-4000-8000-000000000001',
+    date_trunc('month',private.phase4a_business_date('Asia/Riyadh'))::date,null
+  )->'reports'->0->'item_usage_rows') item
+  where item->>'item_id'='7d000000-0000-4000-8000-000000000001'
+), 'manager report/export state excludes tombstoned rows');
+select throws_ok(format($$
+  select public.save_inventory_items_draft(
+    '1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001','[]'::jsonb,
+    '{"usage_month":"%s-01","items":[{"item_id":"7d000000-0000-4000-8000-000000000001","group_name":"Liwa","item_name":"Empty Saved Row","usage":{}}]}'::jsonb
+  )
+$$, to_char(private.phase4a_business_date('Asia/Riyadh'), 'YYYY-MM')), '23505', null, 'stale whole-grid save cannot resurrect a deleted UUID');
+select throws_ok(format($$
+  select public.save_inventory_items_draft(
+    '1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001','[]'::jsonb,
+    '{"usage_month":"%s-01","items":[{"group_name":"Liwa","item_name":"Empty Saved Row","usage":{}}]}'::jsonb
+  )
+$$, to_char(private.phase4a_business_date('Asia/Riyadh'), 'YYYY-MM')), '23505', null, 'stale no-ID save cannot recreate a tombstoned logical row');
+select is((
+  select count(*) from public.inventory_item_usage_items item
+  where item.report_id=(select report.id from public.inventory_items_reports report where report.branch_id='3d000000-0000-4000-8000-000000000001' and report.inventory_month=date_trunc('month',private.phase4a_business_date('Asia/Riyadh'))::date)
+    and item.usage_month=date_trunc('month',private.phase4a_business_date('Asia/Riyadh'))::date
+    and item.group_name='Liwa' and item.item_name='Empty Saved Row' and item.deleted_at is null
+), 0::bigint, 'no-ID stale save creates no replacement active row');
+select ok((
+  select item.deleted_at is not null
+  from public.inventory_item_usage_items item
+  where item.id='7d000000-0000-4000-8000-000000000001'
+), 'no-ID stale save preserves the original tombstone');
+select ok(not exists (
+  select 1
+  from jsonb_array_elements(public.get_inventory_items_current_state(
+    '1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001'
+  )->'item_usage'->'items') item
+  where item->>'group_name'='Liwa' and item->>'item_name'='Empty Saved Row'
+), 'current state still excludes the row after no-ID stale save');
+select throws_ok($$
+  select public.delete_inventory_item_usage_item(
+    '1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001','6d000000-0000-4000-8000-000000000001'
+  )
+$$, '23505', null, 'saved populated Item Usage row cannot be deleted');
+select throws_ok($$
+  select public.delete_inventory_item_usage_item(
+    '1d000000-0000-4000-8000-000000000005','3d000000-0000-4000-8000-000000000001','7d000000-0000-4000-8000-000000000002'
+  )
+$$, '42501', null, 'another branch supervisor cannot delete Item Usage rows');
+select throws_ok($$
+  select public.delete_inventory_item_usage_item(
+    '1d000000-0000-4000-8000-000000000002','3d000000-0000-4000-8000-000000000001','7d000000-0000-4000-8000-000000000002'
+  )
+$$, '42501', null, 'another organization supervisor cannot delete Item Usage rows');
+select throws_ok($$
+  select public.delete_inventory_item_usage_item(
+    '1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001','7d000000-0000-4000-8000-000000000001'
+  )
+$$, '23505', null, 'repeated or concurrent delete fails without changing active rows');
+select is((select count(*) from public.branch_inventory_catalog_items where id='7d000000-0000-4000-8000-000000000100'),1::bigint,'deleting Item Usage never removes the catalog master item');
+
 select lives_ok(format($$
   select public.submit_inventory_items(
     '1d000000-0000-4000-8000-000000000004',
@@ -209,6 +313,11 @@ $$, private.phase4a_business_date('Asia/Riyadh'), to_char(private.phase4a_busine
 select is((select state from public.inventory_items_reports where supervisor_user_id='1d000000-0000-4000-8000-000000000001'),'submitted','submitted month is marked submitted');
 select is(public.get_inventory_items_current_state('1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001')->>'state','submitted','current state returns submitted lock');
 select is(public.get_inventory_items_current_state('1d000000-0000-4000-8000-000000000004','3d000000-0000-4000-8000-000000000001')->>'state','submitted','branch peer sees the shared submitted lock');
+select throws_ok($$
+  select public.delete_inventory_item_usage_item(
+    '1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001','7d000000-0000-4000-8000-000000000002'
+  )
+$$, '23505', null, 'submitted month keeps empty Item Usage rows immutable');
 select is((select submitted_by_user_id from public.inventory_items_reports where branch_id='3d000000-0000-4000-8000-000000000001' and inventory_month=date_trunc('month',private.phase4a_business_date('Asia/Riyadh'))::date),'1d000000-0000-4000-8000-000000000004'::uuid,'shared month records the submitting supervisor');
 select throws_ok($$
   update public.inventory_items_reports set state='draft'

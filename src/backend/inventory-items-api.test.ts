@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { createApp } from "./app";
-import { ChecklistAccessError, ChecklistInputError } from "./checklist-persistence";
+import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError } from "./checklist-persistence";
 import type { BackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
 
@@ -13,10 +13,23 @@ const other = "17000000-0000-4000-8000-000000000003";
 const branch = "27000000-0000-4000-8000-000000000001";
 const otherBranch = "27000000-0000-4000-8000-000000000002";
 const org = "37000000-0000-4000-8000-000000000001";
+const itemUsageId = "47000000-0000-4000-8000-000000000001";
 const calls: Array<{ name: string; input: unknown }> = [];
-let mode: "ok" | "access" | "input" = "ok";
+let mode: "ok" | "access" | "conflict" | "input" = "ok";
 
 type BeefLabels = { russian_label: string | null; australian_label: string | null; hunch_sauce_label: string | null };
+
+const inventoryCurrent = {
+  report_id: "57000000-0000-4000-8000-000000000001",
+  business_date: "2026-10-02",
+  inventory_month: "2026-10-01",
+  state: "draft" as const,
+  updated_at: "2026-10-02T12:00:00.000Z",
+  submitted_at: null,
+  beef_production_labels: { russian_label: null, australian_label: null, hunch_sauce_label: null },
+  beef_rows: [],
+  item_usage: { usage_month: "2026-10-01", items: [] },
+};
 
 const persistence = {
   async updateInventoryBeefProductionFieldLabels(input: { actorUserId: string; branchId: string; labels: BeefLabels }) {
@@ -24,6 +37,12 @@ const persistence = {
     if (mode === "access" || input.branchId !== branch) throw new ChecklistAccessError();
     if (mode === "input") throw new ChecklistInputError();
     return { beef_production_labels: input.labels };
+  },
+  async deleteInventoryItemUsageItem(input: { actorUserId: string; branchId: string; itemUsageId: string }) {
+    calls.push({ name: "deleteInventoryItemUsageItem", input });
+    if (mode === "access" || input.branchId !== branch) throw new ChecklistAccessError();
+    if (mode === "conflict") throw new ChecklistConflictError("23505");
+    return inventoryCurrent;
   },
   async getOverview() { throw new Error("unused"); },
   async getCurrentState() { throw new Error("unused"); },
@@ -126,5 +145,24 @@ describe("Inventory Items Beef Production field labels API", () => {
     assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production-labels`, undefined, { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status, 401);
     assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production-labels`, "manager", { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status, 403);
     assert.equal((await request(`/api/v1/supervisor/branches/${otherBranch}/inventory-items/beef-production-labels`, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status, 403);
+  });
+
+  it("deletes an authorized empty Item Usage row and returns authoritative state", async () => {
+    const response = await request(`/api/v1/supervisor/branches/${branch}/inventory-items/item-usage/${itemUsageId}`, "supervisor", { method: "DELETE" });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { current: inventoryCurrent });
+    assert.deepEqual(calls, [{
+      name: "deleteInventoryItemUsageItem",
+      input: { actorUserId: supervisor, branchId: branch, itemUsageId },
+    }]);
+  });
+
+  it("rejects populated/closed conflicts and unauthorized Item Usage deletes safely", async () => {
+    mode = "conflict";
+    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/item-usage/${itemUsageId}`, "supervisor", { method: "DELETE" })).status, 409);
+    mode = "ok";
+    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/item-usage/not-a-uuid`, "supervisor", { method: "DELETE" })).status, 400);
+    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/item-usage/${itemUsageId}`, "manager", { method: "DELETE" })).status, 403);
+    assert.equal((await request(`/api/v1/supervisor/branches/${otherBranch}/inventory-items/item-usage/${itemUsageId}`, "supervisor", { method: "DELETE" })).status, 403);
   });
 });

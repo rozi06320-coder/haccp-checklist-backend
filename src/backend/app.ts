@@ -7554,6 +7554,15 @@ export function createApp(
     response.setHeader("Cache-Control","private, no-store");response.status(201).json({current});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
+  app.delete("/api/v1/supervisor/branches/:branchId/inventory-items/item-usage/:itemUsageId",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),itemUsageId=z.uuid().safeParse(request.params.itemUsageId);
+    if(!branch.success||!itemUsageId.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.deleteInventoryItemUsageItem)throw new HttpError(403,"forbidden","Access is denied.");
+    const current=inventoryItemsCurrentSchema.parse(await dependencies.checklistPersistence.deleteInventoryItemUsageItem({actorUserId:auth.userId,branchId:branch.data,itemUsageId:itemUsageId.data}));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
+  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
   app.get("/api/v1/supervisor/branches/:branchId/catalog",protectedRateLimit,authenticate,async(request,response,next)=>{try{
     const branch=branchIdSchema.safeParse(request.params.branchId);
     if(!branch.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");

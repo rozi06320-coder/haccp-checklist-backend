@@ -184,6 +184,7 @@ export type ChecklistPersistence = {
   updateInventoryBeefProductionFieldLabels?(input:{actorUserId:string;branchId:string;labels:{russian_label:string|null;australian_label:string|null;hunch_sauce_label:string|null}}):Promise<unknown>;
   saveInventoryItemsDraft?(input:{actorUserId:string;branchId:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
   submitInventoryItems?(input:{actorUserId:string;branchId:string;idempotencyKey:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
+  deleteInventoryItemUsageItem?(input:{actorUserId:string;branchId:string;itemUsageId:string}):Promise<unknown>;
   listBranchCatalog?(actorUserId:string,branchId:string):Promise<unknown>;
   createBranchCatalogProduct?(input:{actorUserId:string;branchId:string;payload:BranchCatalogProductInput}):Promise<unknown>;
   createBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;payload:BranchCatalogInventoryItemInput}):Promise<unknown>;
@@ -697,6 +698,9 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   },
   async submitInventoryItems(input){
    return inventoryItemsCurrent.parse(await rpc("submit_inventory_items",inventoryItemsSubmitRpcArgs(input.actorUserId,input.branchId,input.idempotencyKey,input.payload)));
+  },
+  async deleteInventoryItemUsageItem(input){
+   return inventoryItemsCurrent.parse(await rpc("delete_inventory_item_usage_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_item_usage_id:input.itemUsageId}));
   },
   listBranchCatalog:(actorUserId,branchId)=>rpc("list_branch_catalog",{actor_user_id:actorUserId,target_branch_id:branchId}),
   createBranchCatalogProduct:(input)=>rpc("create_branch_catalog_product",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,payload:{name:input.payload.name,inventory_behavior:input.payload.inventoryBehavior,unit:input.payload.unit??null,recipe_rows:input.payload.recipeRows??[]}}),
