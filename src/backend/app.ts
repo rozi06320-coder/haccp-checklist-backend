@@ -1106,6 +1106,24 @@ const existingSupervisorGrantBodySchema = existingUserGrantBodySchema.extend({
 });
 const reactivateAccessBodySchema = z.object({ active: z.literal(true) }).strict();
 const reactivateSupervisorAccessBodySchema = reactivateAccessBodySchema.extend({ branch_id: z.uuid() }).strict();
+const supervisorDemotionBodySchema = z.object({
+  destination_branch_id: z.uuid(),
+  destination_team_id: z.uuid(),
+  operational_roles: z.array(operationalRoleSchema).min(1).max(2),
+  expected_active_branch_ids: z.array(z.uuid()).min(1).max(50),
+  expected_active_supervisor_assignment_ids: z.array(z.uuid()).max(100),
+  replacement_primary_supervisor_user_id: z.uuid().nullable().optional(),
+}).strict().superRefine((value, context) => {
+  if (new Set(value.operational_roles).size !== value.operational_roles.length) {
+    context.addIssue({ code: "custom", path: ["operational_roles"], message: "Duplicate roles are not allowed." });
+  }
+  if (new Set(value.expected_active_branch_ids).size !== value.expected_active_branch_ids.length) {
+    context.addIssue({ code: "custom", path: ["expected_active_branch_ids"], message: "Duplicate branches are not allowed." });
+  }
+  if (new Set(value.expected_active_supervisor_assignment_ids).size !== value.expected_active_supervisor_assignment_ids.length) {
+    context.addIssue({ code: "custom", path: ["expected_active_supervisor_assignment_ids"], message: "Duplicate assignments are not allowed." });
+  }
+});
 
 const checklistTypeSchema=z.enum(["kitchen_opening","foh_opening","staff_hygiene"]);
 const supervisorChecklistTypeSchema=z.enum(["kitchen_opening","foh_opening","staff_hygiene","oil_tracking","cold_storage","sales_tracking","daily_audit","purchase_log","supplier_receiving","financial_closing"]);
@@ -4108,6 +4126,73 @@ export function createApp(
         if (error instanceof HttpError) next(error);
         else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
         else next(new HttpError(503, "service_unavailable", "Maintenance users are unavailable."));
+      }
+    },
+  );
+  app.get(
+    "/api/v1/internal-admin/organizations/:organizationId/supervisors/:userId/demotion-eligibility",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        if (!organizationId.success || !userId.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.getSupervisorDemotionEligibilityForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Supervisor demotion is unavailable.");
+        }
+        const eligibility = await dependencies.managementAdmin.getSupervisorDemotionEligibilityForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ eligibility });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "The active Supervisor is unavailable."));
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Supervisor demotion is unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/supervisors/:userId/demote-to-staff",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        const body = supervisorDemotionBodySchema.safeParse(request.body);
+        if (!organizationId.success || !userId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The demotion request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.demoteSupervisorToStaffForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Supervisor demotion is unavailable.");
+        }
+        const demotion = await dependencies.managementAdmin.demoteSupervisorToStaffForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+          destinationBranchId: body.data.destination_branch_id,
+          destinationTeamId: body.data.destination_team_id,
+          operationalRoles: body.data.operational_roles,
+          expectedActiveBranchIds: body.data.expected_active_branch_ids,
+          expectedActiveSupervisorAssignmentIds: body.data.expected_active_supervisor_assignment_ids,
+          replacementPrimarySupervisorUserId: body.data.replacement_primary_supervisor_user_id,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ demotion });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Choose valid demotion details."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "The Supervisor or destination is unavailable."));
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Supervisor or team data changed. Refresh and try again."));
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Supervisor demotion is unavailable."));
       }
     },
   );

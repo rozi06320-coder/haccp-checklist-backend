@@ -30,6 +30,54 @@ const internalAdminOperationalTeamPrimarySupervisorChangeSchema = z.object({
   new_supervisor_user_id: z.string().uuid(),
   effective_business_date: z.string(),
 }).strict();
+const supervisorDemotionReplacementSchema = z.object({
+  user_id: z.string().uuid(),
+  full_name: z.string().nullable(),
+  current_role: z.enum(["primary", "backup"]).nullable(),
+}).strict();
+const supervisorDemotionEligibilitySchema = z.object({
+  supervisor_user_id: z.string().uuid(),
+  supervisor_name: z.string().nullable(),
+  expected_active_branch_ids: z.array(z.string().uuid()).max(50),
+  expected_active_supervisor_assignment_ids: z.array(z.string().uuid()).max(100),
+  destination_branches: z.array(z.object({
+    id: z.string().uuid(),
+    name: z.string(),
+    name_ar: z.string().nullable(),
+    code: z.string(),
+    teams: z.array(z.object({ id: z.string().uuid(), name: z.string() }).strict()).max(100),
+  }).strict()).max(100),
+  primary_source_teams: z.array(z.object({
+    team_id: z.string().uuid(),
+    team_name: z.string(),
+    branch_id: z.string().uuid(),
+    active_staff_count: z.number().int().nonnegative(),
+    eligible_replacements: z.array(supervisorDemotionReplacementSchema).max(500),
+  }).strict()).max(100),
+}).strict();
+const supervisorDemotionResultSchema = z.object({
+  supervisor_user_id: z.string().uuid(),
+  operational_staff_id: z.string().uuid(),
+  destination_branch_id: z.string().uuid(),
+  destination_team_id: z.string().uuid(),
+  staff_assignment_id: z.string().uuid(),
+  operational_roles: z.array(operationalRoleSchema).min(1).max(2),
+  staff_identity: z.enum(["created", "reused"]),
+  closed_supervisor_assignments: z.array(z.object({
+    assignment_id: z.string().uuid(),
+    operational_team_id: z.string().uuid(),
+    assignment_role: z.enum(["primary", "backup"]),
+  }).strict()).max(100),
+  replacement_primary_assignments: z.array(z.object({
+    operational_team_id: z.string().uuid(),
+    replacement_supervisor_user_id: z.string().uuid(),
+    new_assignment_id: z.string().uuid(),
+    closed_backup_assignment_id: z.string().uuid().nullable(),
+  }).strict()).max(1),
+}).strict();
+
+export type InternalAdminSupervisorDemotionEligibility = z.infer<typeof supervisorDemotionEligibilitySchema>;
+export type InternalAdminSupervisorDemotionResult = z.infer<typeof supervisorDemotionResultSchema>;
 
 export type ProvisionedUser = { id: string };
 export type CreateAuthUserInput = {
@@ -447,6 +495,22 @@ export type ManagementAdmin = {
     userId: string;
     branchId: string;
   }): Promise<void>;
+  getSupervisorDemotionEligibilityForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    userId: string;
+  }): Promise<InternalAdminSupervisorDemotionEligibility>;
+  demoteSupervisorToStaffForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    userId: string;
+    destinationBranchId: string;
+    destinationTeamId: string;
+    operationalRoles: Array<z.infer<typeof operationalRoleSchema>>;
+    expectedActiveBranchIds: string[];
+    expectedActiveSupervisorAssignmentIds: string[];
+    replacementPrimarySupervisorUserId?: string | null;
+  }): Promise<InternalAdminSupervisorDemotionResult>;
   grantExistingSupervisorForInternalAdmin?(input: {
     actorUserId: string;
     organizationId: string;
@@ -1129,6 +1193,44 @@ export function createManagementAdmin(
         updated_at: z.string(),
       }).strict()).length(1).safeParse(data);
       if (!rows.success) throw new AdminOperationError();
+    },
+    async getSupervisorDemotionEligibilityForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("get_internal_admin_supervisor_demotion_eligibility", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_supervisor_user_id: input.userId,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        throw new AdminOperationError();
+      }
+      const parsed = supervisorDemotionEligibilitySchema.safeParse(data);
+      if (!parsed.success) throw new AdminOperationError();
+      return parsed.data;
+    },
+    async demoteSupervisorToStaffForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("demote_internal_admin_supervisor_to_staff", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_supervisor_user_id: input.userId,
+        destination_branch_id: input.destinationBranchId,
+        destination_team_id: input.destinationTeamId,
+        new_operational_roles: input.operationalRoles,
+        expected_active_branch_ids: input.expectedActiveBranchIds,
+        expected_active_supervisor_assignment_ids: input.expectedActiveSupervisorAssignmentIds,
+        replacement_primary_supervisor_user_id: input.replacementPrimarySupervisorUserId ?? null,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "22023") throw new AdminInputError();
+        if (["23505", "23514", "40001"].includes(error.code)) throw new AdminConflictError();
+        throw new AdminOperationError();
+      }
+      const parsed = supervisorDemotionResultSchema.safeParse(data);
+      if (!parsed.success) throw new AdminOperationError();
+      return parsed.data;
     },
     async grantExistingSupervisorForInternalAdmin(input) {
       const { data, error } = await admin.rpc("grant_existing_branch_supervisor", {
