@@ -445,6 +445,7 @@ export type ManagementAdmin = {
     actorUserId: string;
     organizationId: string;
     userId: string;
+    branchId: string;
   }): Promise<void>;
   grantExistingSupervisorForInternalAdmin?(input: {
     actorUserId: string;
@@ -1111,9 +1112,13 @@ export function createManagementAdmin(
         actor_user_id: input.actorUserId,
         target_organization_id: input.organizationId,
         target_user_id: input.userId,
+        target_branch_id: input.branchId,
       });
       if (error) {
         if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "22023") throw new AdminInputError();
+        if (error.code === "23505" || error.code === "23514" || error.code === "40001") throw new AdminConflictError();
         throw new AdminOperationError();
       }
       const rows = z.array(z.object({

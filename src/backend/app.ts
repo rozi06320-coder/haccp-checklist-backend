@@ -1105,6 +1105,7 @@ const existingSupervisorGrantBodySchema = existingUserGrantBodySchema.extend({
   rejectDuplicateSupervisorTeamAssignments(value, context);
 });
 const reactivateAccessBodySchema = z.object({ active: z.literal(true) }).strict();
+const reactivateSupervisorAccessBodySchema = reactivateAccessBodySchema.extend({ branch_id: z.uuid() }).strict();
 
 const checklistTypeSchema=z.enum(["kitchen_opening","foh_opening","staff_hygiene"]);
 const supervisorChecklistTypeSchema=z.enum(["kitchen_opening","foh_opening","staff_hygiene","oil_tracking","cold_storage","sales_tracking","daily_audit","purchase_log","supplier_receiving","financial_closing"]);
@@ -5201,7 +5202,7 @@ export function createApp(
       try {
         const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
         const userId = z.uuid().safeParse(request.params.userId);
-        const body = reactivateAccessBodySchema.safeParse(request.body);
+        const body = reactivateSupervisorAccessBodySchema.safeParse(request.body);
         if (!organizationId.success || !userId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
           throw new HttpError(400, "bad_request", "The request is invalid.");
         }
@@ -5214,11 +5215,15 @@ export function createApp(
           actorUserId: auth.userId,
           organizationId: organizationId.data,
           userId: userId.data,
+          branchId: body.data.branch_id,
         });
         response.setHeader("Cache-Control", "private, no-store");
         response.status(204).end();
       } catch (error) {
         if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "The Supervisor or branch is unavailable."));
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Select a valid branch."));
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Supervisor access cannot be restored to that branch."));
         else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
         else next(new HttpError(503, "service_unavailable", "Supervisors are unavailable."));
       }

@@ -510,14 +510,20 @@ async function postExistingSupervisor(dependencies: BackendDependencies, body: u
   });
 }
 
-async function patchSupervisor(dependencies: BackendDependencies, userId = ids.created, organization = ids.orgA, token = "valid") {
+async function patchSupervisor(
+  dependencies: BackendDependencies,
+  userId = ids.created,
+  organization = ids.orgA,
+  token = "valid",
+  body: unknown = { active: true, branch_id: ids.branch },
+) {
   const server = createServer(createApp(config, dependencies));
   servers.push(server);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   return fetch(`${origin(server)}/api/v1/internal-admin/organizations/${organization}/supervisors/${userId}`, {
     method: "PATCH",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ active: true }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -1357,7 +1363,7 @@ describe("internal-admin supervisor provisioning", () => {
     assert.doesNotMatch(await missing.text(), /postgres|auth\.users|service_role|stack/i);
   });
 
-  it("grants existing supervisor and maintenance access, and reactivates membership-only access", async () => {
+  it("grants existing supervisor access and restores one explicit branch", async () => {
     const calls: Record<string, unknown> = {};
     const supervisorGrant = await postExistingSupervisor(deps({ calls }), {
       email: " Existing.Supervisor@Example.Invalid ",
@@ -1378,7 +1384,10 @@ describe("internal-admin supervisor provisioning", () => {
       actorUserId: ids.actor,
       organizationId: ids.orgA,
       userId: ids.created,
+      branchId: ids.branch,
     });
+
+    assert.equal((await patchSupervisor(deps({ calls }), ids.created, ids.orgA, "valid", { active: true })).status, 400);
 
     const maintenanceGrant = await postExistingMaintenanceUser(deps({ calls }), { email: " Existing.Maintenance@Example.Invalid " });
     assert.equal(maintenanceGrant.status, 204);
