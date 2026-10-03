@@ -151,6 +151,9 @@ runSqlInDisposableDb('supabase/migrations/20260909100000_product_inventory_recip
 // Step 3: Apply Phase 3B1
 runSqlInDisposableDb('supabase/migrations/20260910100000_product_sales_snapshots_phase3b1.sql');
 
+// Step 3b: Apply one-product delete successor
+runSqlInDisposableDb('supabase/migrations/20261003130000_delete_branch_product_sale.sql');
+
 // Step 4: Run pgTAP test suite
 console.log('\x1b[36m--> Running pgTAP test suite: supabase/tests/database/product_sales_snapshots_phase3b1.test.sql...\x1b[0m');
 const tapOutput = runSqlInDisposableDb('supabase/tests/database/product_sales_snapshots_phase3b1.test.sql');

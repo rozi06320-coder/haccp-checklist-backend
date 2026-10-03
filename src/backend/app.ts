@@ -1436,6 +1436,10 @@ const productSalesBodySchema=z.object({
     return true;
   },{message:"Duplicate product_id in sales payload."}),
 }).strict();
+const productSalesDeleteBodySchema=z.object({
+  business_date:dateOnlySchema,
+  expected_revision:z.number().int().min(0),
+}).strict();
 const productSalesQuantityResponseSchema=z.union([z.number(),z.string()]).transform(Number).pipe(z.number());
 const productSalesSaleItemResponseSchema=z.object({
   id:z.uuid(),
@@ -2138,6 +2142,14 @@ function productSalesError(error:unknown){
  if(error instanceof ChecklistInputError)return new HttpError(422,"unprocessable_entity","The product sales request is invalid or violates a business rule.");
  if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
  return new HttpError(503,"service_unavailable","The service is unavailable.");
+}
+
+function productSalesDeleteError(error:unknown){
+ if(error instanceof ChecklistConflictError)return new HttpError(409,"conflict","Product sales data has been modified by another request.");
+ if(error instanceof ChecklistInputError)return new HttpError(422,"unprocessable_entity","The product sales delete request is invalid or violates a business rule.");
+ if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
+ if(error instanceof ChecklistNotFoundError)return new HttpError(404,"not_found","The saved product sale was not found.");
+ return new HttpError(500,"service_unavailable","Unable to delete the saved product right now.");
 }
 
 function dailyWasteError(error:unknown){
@@ -7792,6 +7804,21 @@ export function createApp(
   };
 
   app.patch("/api/v1/supervisor/branches/:branchId/inventory/product-sales",protectedRateLimit,authenticate,handleSaveProductSales);
+
+  app.delete("/api/v1/supervisor/branches/:branchId/inventory/product-sales/:productSaleId",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),productSaleId=branchIdSchema.safeParse(request.params.productSaleId),body=productSalesDeleteBodySchema.safeParse(request.body);
+    if(!branch.success||!productSaleId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||!hasTargetBranchManagerAccess(context,branch.data)||!dependencies.checklistPersistence?.deleteBranchProductSale)throw new HttpError(403,"forbidden","Access is denied.");
+    const productSales=productSalesResponseSchema.parse(await dependencies.checklistPersistence.deleteBranchProductSale({
+      actorUserId:auth.userId,
+      branchId:branch.data,
+      businessDate:body.data.business_date,
+      productSaleId:productSaleId.data,
+      expectedRevision:body.data.expected_revision,
+    }));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json(productSales);
+  }catch(error){next(error instanceof HttpError?error:productSalesDeleteError(error));}});
 
   app.get("/api/v1/supervisor/branches/:branchId/inventory/daily-waste",protectedRateLimit,authenticate,async(request,response,next)=>{try{
     const branch=branchIdSchema.safeParse(request.params.branchId),query=dailyWasteQuerySchema.safeParse(request.query);

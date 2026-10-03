@@ -176,5 +176,72 @@ select ok(public.get_branch_product_sales('1b100000-0000-4000-8000-000000000001'
 select throws_ok($$delete from public.branch_product_catalog_products where id='5b100000-0000-4000-8000-000000000001'$$,'23503',null,'historical product FK is restrictive');
 select throws_ok($$delete from public.branch_inventory_catalog_items where id='4b100000-0000-4000-8000-000000000002'$$,'23503',null,'historical inventory item FK is restrictive');
 
+select ok(has_function_privilege('service_role','public.delete_branch_product_sale(uuid,uuid,date,uuid,bigint)','execute')
+  and not has_function_privilege('authenticated','public.delete_branch_product_sale(uuid,uuid,date,uuid,bigint)','execute'),
+  'one-product delete RPC is service-role only');
+
+select is((public.delete_branch_product_sale(
+  '1b100000-0000-4000-8000-000000000001',
+  '3b100000-0000-4000-8000-000000000001',
+  private.phase4a_business_date('Asia/Riyadh'),
+  (select id from public.branch_product_sales where branch_id='3b100000-0000-4000-8000-000000000001' and product_id='5b100000-0000-4000-8000-000000000001'),
+  8
+)->>'revision'),'9','deleting one saved product increments the report revision exactly once');
+select is((select count(*)::int from public.branch_product_sales where branch_id='3b100000-0000-4000-8000-000000000001'),5,'only the selected Product Sale is deleted');
+select is((select count(*)::int from public.branch_product_sales_usage_snapshots where branch_id='3b100000-0000-4000-8000-000000000001' and product_id='5b100000-0000-4000-8000-000000000001'),0,'selected product usage snapshots cascade away');
+select is((select count(*)::int from public.branch_product_sales_usage_snapshots where branch_id='3b100000-0000-4000-8000-000000000001' and product_id='5b100000-0000-4000-8000-000000000006'),1,'other product usage snapshots remain');
+select is((select count(*)::int from public.branch_product_catalog_products),9,'product masters remain untouched');
+select is((select count(*)::int from public.branch_inventory_catalog_items),7,'ingredient masters remain untouched');
+select is((select count(*)::int from public.branch_product_usage_mappings),4,'recipe mappings remain untouched');
+select throws_ok($$select public.delete_branch_product_sale(
+  '1b100000-0000-4000-8000-000000000001',
+  '3b100000-0000-4000-8000-000000000001',
+  private.phase4a_business_date('Asia/Riyadh'),
+  '00000000-0000-4000-8000-000000000099',
+  8
+)$$,'40001','product sales changed','stale delete is rejected before mutation');
+select throws_ok($$select public.delete_branch_product_sale(
+  '1b100000-0000-4000-8000-000000000001',
+  '3b100000-0000-4000-8000-000000000001',
+  private.phase4a_business_date('Asia/Riyadh'),
+  '00000000-0000-4000-8000-000000000099',
+  9
+)$$,'P0002','product sale not found','missing or repeated sale delete is safely not found');
+select throws_ok($$select public.delete_branch_product_sale(
+  '1b100000-0000-4000-8000-000000000002',
+  '3b100000-0000-4000-8000-000000000001',
+  private.phase4a_business_date('Asia/Riyadh'),
+  '00000000-0000-4000-8000-000000000099',
+  9
+)$$,'42501','product sales access denied','cross-organization actor cannot delete');
+
+select is((public.save_branch_product_sales(
+  '1b100000-0000-4000-8000-000000000001',
+  '3b100000-0000-4000-8000-000000000001',
+  private.phase4a_business_date('Asia/Riyadh'),
+  9,
+  '[{"product_id":"5b100000-0000-4000-8000-000000000001","quantity":2}]'
+)->>'revision'),'10','deleted product can be re-added through the existing save flow');
+select is((select count(*)::int from public.branch_product_sales where branch_id='3b100000-0000-4000-8000-000000000001' and product_id='5b100000-0000-4000-8000-000000000001'),1,'re-add creates exactly one fresh Product Sale');
+select ok((select bool_and(product_name_snapshot='Burger v2') and count(*)=2 from public.branch_product_sales_usage_snapshots where branch_id='3b100000-0000-4000-8000-000000000001' and product_id='5b100000-0000-4000-8000-000000000001'),'re-add creates fresh snapshots from current catalog and recipe mappings');
+
+select is((public.save_branch_product_sales(
+  '1b100000-0000-4000-8000-000000000001',
+  '3b100000-0000-4000-8000-000000000001',
+  private.phase4a_business_date('Asia/Riyadh') - 1,
+  0,
+  '[{"product_id":"5b100000-0000-4000-8000-000000000002","quantity":1}]'
+)->>'revision'),'1','single-product historical report is created for last-product coverage');
+select is((public.delete_branch_product_sale(
+  '1b100000-0000-4000-8000-000000000001',
+  '3b100000-0000-4000-8000-000000000001',
+  private.phase4a_business_date('Asia/Riyadh') - 1,
+  (select id from public.branch_product_sales where branch_id='3b100000-0000-4000-8000-000000000001' and business_date=private.phase4a_business_date('Asia/Riyadh') - 1),
+  1
+)->>'revision'),'2','deleting the last product keeps the report and advances revision');
+select ok((select count(*)=1 and min(revision)=2 from public.branch_product_sales_daily_reports where branch_id='3b100000-0000-4000-8000-000000000001' and business_date=private.phase4a_business_date('Asia/Riyadh') - 1),'empty parent report remains with monotonic revision');
+select is(jsonb_array_length(public.get_branch_product_sales('1b100000-0000-4000-8000-000000000001','3b100000-0000-4000-8000-000000000001',private.phase4a_business_date('Asia/Riyadh') - 1)->'sales'),0,'last-product delete returns an empty canonical sales array');
+select is(jsonb_array_length(public.get_branch_product_sales('1b100000-0000-4000-8000-000000000001','3b100000-0000-4000-8000-000000000001',private.phase4a_business_date('Asia/Riyadh') - 1)->'usage_snapshots'),0,'last-product cascade returns an empty canonical usage array');
+
 select * from finish();
 rollback;

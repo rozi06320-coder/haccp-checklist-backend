@@ -109,6 +109,7 @@ function throwProductSalesRpcError(code:string|undefined):never{
  if(code==="40001"||code==="23505")throw new ChecklistConflictError(code);
  if(code==="22023"||code==="22004")throw new ChecklistInputError();
  if(code==="42501")throw new ChecklistAccessError();
+ if(code==="P0002")throw new ChecklistNotFoundError();
  throw new Error("Checklist persistence unavailable.");
 }
 
@@ -196,6 +197,7 @@ export type ChecklistPersistence = {
   saveBranchProductUsageMappings?(input:{actorUserId:string;branchId:string;productId:string;recipeRows:BranchCatalogRecipeInput;requestId?:string|null}):Promise<unknown>;
   getBranchProductSales?(actorUserId:string,branchId:string,businessDate:string):Promise<unknown>;
   saveBranchProductSales?(input:SaveBranchProductSalesInput):Promise<unknown>;
+  deleteBranchProductSale?(input:DeleteBranchProductSaleInput):Promise<unknown>;
   getBranchDailyWaste?(actorUserId:string,branchId:string,startDate:string,endDate:string):Promise<unknown>;
   saveBranchDailyWaste?(input:SaveBranchDailyWasteInput):Promise<unknown>;
   getBranchDailyInventory?(input:GetBranchDailyInventoryInput):Promise<unknown>;
@@ -272,6 +274,7 @@ export type BranchCatalogInventoryItemInput = {name:string;unit:"pcs"|"kg"|"g"|"
 export type BranchCatalogRecipeInput = Array<{inventory_item_id?:string;ingredient:string;quantity:number|string;unit:"pcs"|"kg"|"g"|"L"|"ml"}>;
 export type BranchProductSaleItem = {product_id:string;quantity:number};
 export type SaveBranchProductSalesInput = {actorUserId:string;branchId:string;businessDate:string;expectedRevision:number;sales:BranchProductSaleItem[]};
+export type DeleteBranchProductSaleInput = {actorUserId:string;branchId:string;businessDate:string;productSaleId:string;expectedRevision:number};
 export type BranchDailyWasteItem = {inventory_item_id:string;quantity:number;note?:string|null};
 export type SaveBranchDailyWasteInput = {actorUserId:string;branchId:string;businessDate:string;expectedRevision:number;waste:BranchDailyWasteItem[]};
 export type GetBranchDailyInventoryInput = {actorUserId:string;branchId:string;businessDate?:string|null;startDate?:string|null;endDate?:string|null};
@@ -763,6 +766,7 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   },
   getBranchProductSales:(actorUserId,branchId,businessDate)=>productSalesRpc("get_branch_product_sales",{actor_user_id:actorUserId,target_branch_id:branchId,target_business_date:businessDate}),
   saveBranchProductSales:(input)=>productSalesRpc("save_branch_product_sales",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,sales:input.sales}),
+  deleteBranchProductSale:(input)=>productSalesRpc("delete_branch_product_sale",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,target_product_sale_id:input.productSaleId,expected_revision:input.expectedRevision}),
   getBranchDailyWaste:(actorUserId,branchId,startDate,endDate)=>dailyWasteRpc("get_branch_daily_waste",{actor_user_id:actorUserId,target_branch_id:branchId,start_date:startDate,end_date:endDate}),
   saveBranchDailyWaste:(input)=>dailyWasteRpc("save_branch_daily_waste",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,waste:input.waste}),
   async getBranchDailyInventory(input:GetBranchDailyInventoryInput){

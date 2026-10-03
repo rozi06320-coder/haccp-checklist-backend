@@ -7,7 +7,9 @@ import {
   ChecklistAccessError,
   ChecklistConflictError,
   ChecklistInputError,
+  ChecklistNotFoundError,
   createChecklistPersistence,
+  type DeleteBranchProductSaleInput,
   type SaveBranchProductSalesInput,
 } from "./checklist-persistence";
 import type { BackendConfig } from "./config";
@@ -36,6 +38,7 @@ let mode:
   | "access"
   | "future_date"
   | "recipe_no_mapping"
+  | "not_found"
   | "db_integrity_error" = "empty";
 
 function emptyProductSales() {
@@ -112,6 +115,16 @@ const persistence = {
     if (mode === "db_integrity_error") throw new Error("fatal: transaction aborted");
     mode = "populated";
     return populatedProductSales();
+  },
+  async deleteBranchProductSale(input: DeleteBranchProductSaleInput) {
+    calls.push({ name: "deleteBranchProductSale", input });
+    if (mode === "conflict") throw new ChecklistConflictError("40001");
+    if (mode === "access" || input.branchId !== branch) throw new ChecklistAccessError();
+    if (mode === "future_date") throw new ChecklistInputError();
+    if (mode === "not_found") throw new ChecklistNotFoundError();
+    if (mode === "db_integrity_error") throw new Error("fatal: delete transaction aborted");
+    const payload = populatedProductSales();
+    return { ...payload, revision: 2, sales: [], usage_snapshots: [] };
   },
   async getOverview() { throw new Error("unused"); },
   async getCurrentState() { throw new Error("unused"); },
@@ -713,6 +726,73 @@ describe("Supervisor Product Sales API", () => {
     assert.equal(body.usage_snapshots[0].total_usage_quantity, 7.5);
   });
 
+  it("DELETE validates and forwards one scoped persisted Product Sale", async () => {
+    mode = "populated";
+    const res = await request(
+      `/api/v1/supervisor/branches/${branch}/inventory/product-sales/${saleId}`,
+      "supervisor",
+      {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ business_date: "2026-09-10", expected_revision: 1 }),
+      },
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.report_id, reportId);
+    assert.equal(body.revision, 2);
+    assert.deepEqual(body.sales, []);
+    assert.deepEqual(body.usage_snapshots, []);
+    assert.deepEqual(calls, [{
+      name: "deleteBranchProductSale",
+      input: {
+        actorUserId: supervisor,
+        branchId: branch,
+        businessDate: "2026-09-10",
+        productSaleId: saleId,
+        expectedRevision: 1,
+      },
+    }]);
+  });
+
+  it("DELETE rejects invalid input before persistence", async () => {
+    const badSale = await request(
+      `/api/v1/supervisor/branches/${branch}/inventory/product-sales/not-a-uuid`,
+      "supervisor",
+      { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ business_date: "2026-09-10", expected_revision: 1 }) },
+    );
+    assert.equal(badSale.status, 400);
+    const badRevision = await request(
+      `/api/v1/supervisor/branches/${branch}/inventory/product-sales/${saleId}`,
+      "supervisor",
+      { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ business_date: "2026-09-10", expected_revision: -1 }) },
+    );
+    assert.equal(badRevision.status, 400);
+    assert.equal(calls.length, 0);
+  });
+
+  it("DELETE maps stale, missing, access, validation, and unexpected failures safely", async () => {
+    const cases: Array<[typeof mode, number, string]> = [
+      ["conflict", 409, "conflict"],
+      ["not_found", 404, "not_found"],
+      ["access", 403, "forbidden"],
+      ["future_date", 422, "unprocessable_entity"],
+      ["db_integrity_error", 500, "service_unavailable"],
+    ];
+    for (const [testMode, status, code] of cases) {
+      mode = testMode;
+      const res = await request(
+        `/api/v1/supervisor/branches/${branch}/inventory/product-sales/${saleId}`,
+        "supervisor",
+        { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ business_date: "2026-09-10", expected_revision: 1 }) },
+      );
+      assert.equal(res.status, status, testMode);
+      const body = await res.json();
+      assert.equal(body.error.code, code, testMode);
+      assert.equal(JSON.stringify(body).includes("fatal"), false, testMode);
+    }
+  });
+
   it("maps product sales SQLSTATE classes without leaking raw database details", async () => {
     const cases: Array<[string, number, string, () => Error]> = [
       ["40001", 409, "conflict", () => new ChecklistConflictError("40001")],
@@ -754,6 +834,7 @@ describe("Supervisor Product Sales API", () => {
       ["22023", ChecklistInputError],
       ["22004", ChecklistInputError],
       ["42501", ChecklistAccessError],
+      ["P0002", ChecklistNotFoundError],
       ["23514", Error],
       ["55000", Error],
       ["22000", Error],
