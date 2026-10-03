@@ -3,7 +3,7 @@ import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { createApp } from "./app";
-import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError } from "./checklist-persistence";
+import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ChecklistNotFoundError } from "./checklist-persistence";
 import type { BackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
 
@@ -14,8 +14,9 @@ const branch = "27000000-0000-4000-8000-000000000001";
 const otherBranch = "27000000-0000-4000-8000-000000000002";
 const org = "37000000-0000-4000-8000-000000000001";
 const itemUsageId = "47000000-0000-4000-8000-000000000001";
+const beefRowId = "47000000-0000-4000-8000-000000000002";
 const calls: Array<{ name: string; input: unknown }> = [];
-let mode: "ok" | "access" | "conflict" | "input" = "ok";
+let mode: "ok" | "access" | "conflict" | "input" | "not-found" = "ok";
 
 type BeefLabels = { russian_label: string | null; australian_label: string | null; hunch_sauce_label: string | null };
 
@@ -37,6 +38,14 @@ const persistence = {
     if (mode === "access" || input.branchId !== branch) throw new ChecklistAccessError();
     if (mode === "input") throw new ChecklistInputError();
     return { beef_production_labels: input.labels };
+  },
+  async updateInventoryBeefProductionRow(input: { actorUserId: string; branchId: string; rowId: string; expectedUpdatedAt: string; rowValues: Record<string, string> }) {
+    calls.push({ name: "updateInventoryBeefProductionRow", input });
+    if (mode === "access" || input.branchId !== branch) throw new ChecklistAccessError();
+    if (mode === "conflict") throw new ChecklistConflictError("40001");
+    if (mode === "input") throw new ChecklistInputError();
+    if (mode === "not-found") throw new ChecklistNotFoundError();
+    return inventoryCurrent;
   },
   async deleteInventoryItemUsageItem(input: { actorUserId: string; branchId: string; itemUsageId: string }) {
     calls.push({ name: "deleteInventoryItemUsageItem", input });
@@ -145,6 +154,37 @@ describe("Inventory Items Beef Production field labels API", () => {
     assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production-labels`, undefined, { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status, 401);
     assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production-labels`, "manager", { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status, 403);
     assert.equal((await request(`/api/v1/supervisor/branches/${otherBranch}/inventory-items/beef-production-labels`, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status, 403);
+  });
+
+  it("updates one saved Beef Production row through the narrow authoritative route", async () => {
+    const body = {
+      expected_updated_at: "2026-10-02T12:00:00.000Z",
+      row_values: { russian_kg: "11", australian_kg: "4", fat_kg: "1", ready_patty: "20", hunch_sauce_kg: "3", wastage_grams: "100" },
+    };
+    const response = await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production/${beefRowId}`, "supervisor", {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { current: inventoryCurrent });
+    assert.deepEqual(calls, [{ name: "updateInventoryBeefProductionRow", input: { actorUserId: supervisor, branchId: branch, rowId: beefRowId, expectedUpdatedAt: body.expected_updated_at, rowValues: body.row_values } }]);
+  });
+
+  it("maps saved Beef update validation, stale, missing, and access failures safely", async () => {
+    const body = JSON.stringify({ expected_updated_at: "2026-10-02T12:00:00.000Z", row_values: { russian_kg: "11", australian_kg: "4", fat_kg: "1", ready_patty: "20", hunch_sauce_kg: "3", wastage_grams: "100" } });
+    const path = `/api/v1/supervisor/branches/${branch}/inventory-items/beef-production/${beefRowId}`;
+    mode = "conflict";
+    const conflict = await request(path, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body });
+    assert.equal(conflict.status, 409);
+    assert.doesNotMatch(JSON.stringify(await conflict.json()), /40001|postgres|database/i);
+    mode = "input";
+    assert.equal((await request(path, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status, 422);
+    mode = "not-found";
+    assert.equal((await request(path, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status, 404);
+    mode = "access";
+    assert.equal((await request(path, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status, 403);
+    mode = "ok";
+    assert.equal((await request(path, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_updated_at: "bad", row_values: {} }) })).status, 400);
+    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production/not-a-uuid`, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status, 400);
   });
 
   it("deletes an authorized empty Item Usage row and returns authoritative state", async () => {

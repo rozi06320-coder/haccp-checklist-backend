@@ -1385,6 +1385,18 @@ const inventoryBeefProductionFieldLabelsBodySchema=z.object({
   australian_label:z.string().max(120).nullable().optional(),
   hunch_sauce_label:z.string().max(120).nullable().optional(),
 }).strict();
+const inventoryBeefProductionRowValuesSchema=z.object({
+  russian_kg:inventoryDecimalInputSchema,
+  australian_kg:inventoryDecimalInputSchema,
+  fat_kg:inventoryDecimalInputSchema,
+  ready_patty:inventoryDecimalInputSchema,
+  hunch_sauce_kg:inventoryDecimalInputSchema,
+  wastage_grams:inventoryDecimalInputSchema,
+}).strict();
+const inventoryBeefProductionRowUpdateBodySchema=z.object({
+  expected_updated_at:z.iso.datetime({offset:true}),
+  row_values:inventoryBeefProductionRowValuesSchema,
+}).strict();
 const inventoryItemsQuerySchema=z.object({
   inventory_month:dateOnlySchema.refine(value=>value.endsWith("-01"),"Month must be first day of the month.").optional(),
 }).strict();
@@ -1980,6 +1992,8 @@ const inventoryItemsCurrentSchema=z.object({
     russian_label_snapshot:z.string().nullable().optional().default(null),
     australian_label_snapshot:z.string().nullable().optional().default(null),
     hunch_sauce_label_snapshot:z.string().nullable().optional().default(null),
+    updated_at:z.string().nullable().optional(),
+    updated_by_user_id:z.uuid().nullable().optional(),
   }).strict()).max(62),
   item_usage:z.object({
     usage_month:dateOnlySchema,
@@ -2101,6 +2115,14 @@ function checklistError(error:unknown){
  if(error instanceof ChecklistInputError)return new HttpError(422,"unprocessable_entity","Checklist answers are incomplete or no longer eligible.");
  if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
  return new HttpError(503,"service_unavailable","The service is unavailable.");
+}
+
+function inventoryBeefProductionRowUpdateError(error:unknown){
+ if(error instanceof ChecklistConflictError)return new HttpError(409,"conflict","This Beef Production row changed or the month is already closed. Refresh and try again.");
+ if(error instanceof ChecklistInputError)return new HttpError(422,"unprocessable_entity","The Beef Production values are invalid.");
+ if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
+ if(error instanceof ChecklistNotFoundError)return new HttpError(404,"not_found","The Beef Production row was not found.");
+ return new HttpError(500,"service_unavailable","Unable to update Beef Production right now.");
 }
 
 function catalogError(error:unknown){
@@ -7625,6 +7647,15 @@ export function createApp(
     const result=z.object({beef_production_labels:z.object({russian_label:z.string().nullable(),australian_label:z.string().nullable(),hunch_sauce_label:z.string().nullable()}).strict()}).strict().parse(await dependencies.checklistPersistence.updateInventoryBeefProductionFieldLabels({actorUserId:auth.userId,branchId:branch.data,labels:{russian_label:normalizeLabel(body.data.russian_label),australian_label:normalizeLabel(body.data.australian_label),hunch_sauce_label:normalizeLabel(body.data.hunch_sauce_label)}}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+  app.patch("/api/v1/supervisor/branches/:branchId/inventory-items/beef-production/:rowId",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),rowId=z.uuid().safeParse(request.params.rowId),body=inventoryBeefProductionRowUpdateBodySchema.safeParse(request.body);
+    if(!branch.success||!rowId.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.updateInventoryBeefProductionRow)throw new HttpError(403,"forbidden","Access is denied.");
+    const current=inventoryItemsCurrentSchema.parse(await dependencies.checklistPersistence.updateInventoryBeefProductionRow({actorUserId:auth.userId,branchId:branch.data,rowId:rowId.data,expectedUpdatedAt:body.data.expected_updated_at,rowValues:body.data.row_values}));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
+  }catch(error){next(error instanceof HttpError?error:inventoryBeefProductionRowUpdateError(error));}});
 
   app.put("/api/v1/supervisor/branches/:branchId/inventory-items/draft",protectedRateLimit,authenticate,async(request,response,next)=>{try{
     const branch=branchIdSchema.safeParse(request.params.branchId),body=inventoryItemsBodySchema.safeParse(request.body);

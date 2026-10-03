@@ -1,5 +1,5 @@
 begin;
-select plan(107);
+select plan(130);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated',
@@ -48,8 +48,10 @@ select has_table('public','branch_inventory_items_settings','branch inventory se
 select has_column('public','inventory_beef_production_rows','russian_label_snapshot','beef Russian label snapshot exists');
 select has_column('public','inventory_beef_production_rows','australian_label_snapshot','beef Australian label snapshot exists');
 select has_column('public','inventory_beef_production_rows','hunch_sauce_label_snapshot','beef Hunch Sauce label snapshot exists');
+select has_column('public','inventory_beef_production_rows','updated_by_user_id','beef row updater attribution exists');
 select has_function('private','inventory_items_label_snapshot',array['jsonb','text','text'],'inventory label snapshot helper exists');
 select has_function('public','update_inventory_beef_production_field_labels',array['uuid','uuid','text','text','text'],'inventory label settings RPC exists');
+select has_function('public','update_inventory_beef_production_row',array['uuid','uuid','uuid','timestamptz','jsonb'],'saved Beef row update RPC exists');
 select has_table('public','inventory_item_usage_items','item usage item table exists');
 select has_table('public','inventory_item_usage_day_values','item usage day value table exists');
 select has_column('public','inventory_item_usage_items','deleted_at','item usage tombstone timestamp exists');
@@ -69,6 +71,8 @@ select is(has_function_privilege('authenticated','public.delete_inventory_item_u
 select is(has_function_privilege('service_role','public.delete_inventory_item_usage_item(uuid,uuid,uuid)','execute'),true,'service role can execute Item Usage delete RPC');
 select is(has_function_privilege('authenticated','public.update_inventory_beef_production_field_labels(uuid,uuid,text,text,text)','execute'),false,'authenticated cannot execute inventory label settings RPC');
 select is(has_function_privilege('service_role','public.update_inventory_beef_production_field_labels(uuid,uuid,text,text,text)','execute'),true,'service role can execute inventory label settings RPC');
+select is(has_function_privilege('authenticated','public.update_inventory_beef_production_row(uuid,uuid,uuid,timestamptz,jsonb)','execute'),false,'authenticated cannot execute Beef row update RPC directly');
+select is(has_function_privilege('service_role','public.update_inventory_beef_production_row(uuid,uuid,uuid,timestamptz,jsonb)','execute'),true,'service role can execute Beef row update RPC');
 select ok(not has_table_privilege('authenticated','public.inventory_items_reports','insert')
   and not has_table_privilege('authenticated','public.inventory_beef_production_rows','insert')
   and not has_table_privilege('authenticated','public.inventory_item_usage_items','insert')
@@ -121,6 +125,77 @@ select is(public.get_inventory_items_current_state('1d000000-0000-4000-8000-0000
 select is(public.get_inventory_items_current_state('1d000000-0000-4000-8000-000000000004','3d000000-0000-4000-8000-000000000001')->'item_usage'->'items'->0->'usage'->>'8','3.5','branch peer sees first supervisor item usage day');
 select is((select created_by from public.inventory_beef_production_rows limit 1),'1d000000-0000-4000-8000-000000000001'::uuid,'first beef day keeps its creator');
 select is((select created_by from public.inventory_item_usage_day_values where day_number=8),'1d000000-0000-4000-8000-000000000001'::uuid,'first item usage day keeps its creator');
+select ok(
+  (public.get_inventory_items_current_state('1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001')->'beef_rows'->0) ? 'updated_at',
+  'current state returns the Beef row concurrency timestamp'
+);
+
+create temp table _beef_edit_original on commit drop as
+select * from public.inventory_beef_production_rows limit 1;
+
+select lives_ok($$
+  select public.update_inventory_beef_production_row(
+    '1d000000-0000-4000-8000-000000000004',
+    '3d000000-0000-4000-8000-000000000001',
+    (select id from _beef_edit_original),
+    (select updated_at from _beef_edit_original),
+    '{"russian_kg":"11","australian_kg":"5","fat_kg":"2","ready_patty":"121","hunch_sauce_kg":"3.5","wastage_grams":"151"}'::jsonb
+  )
+$$, 'branch peer edits one saved Beef day through the dedicated RPC');
+select is(
+  (select russian_kg::text || '|' || australian_kg::text || '|' || fat_kg::text || '|' || ready_patty::text || '|' || hunch_sauce_kg::text || '|' || wastage_grams::text from public.inventory_beef_production_rows where id=(select id from _beef_edit_original)),
+  '11|5|2|121|3.5|151',
+  'all six Beef values update in place including Hunch Sauce'
+);
+select is((select id from public.inventory_beef_production_rows where id=(select id from _beef_edit_original)),(select id from _beef_edit_original),'Beef row UUID is unchanged');
+select is((select production_date from public.inventory_beef_production_rows where id=(select id from _beef_edit_original)),(select production_date from _beef_edit_original),'Beef production date is unchanged');
+select is((select created_by from public.inventory_beef_production_rows where id=(select id from _beef_edit_original)),(select created_by from _beef_edit_original),'Beef creator is unchanged');
+select is((select created_at from public.inventory_beef_production_rows where id=(select id from _beef_edit_original)),(select created_at from _beef_edit_original),'Beef creation timestamp is unchanged');
+select is(
+  (select russian_label_snapshot || '|' || australian_label_snapshot || '|' || hunch_sauce_label_snapshot from public.inventory_beef_production_rows where id=(select id from _beef_edit_original)),
+  (select russian_label_snapshot || '|' || australian_label_snapshot || '|' || hunch_sauce_label_snapshot from _beef_edit_original),
+  'Beef label snapshots are unchanged'
+);
+select ok((select updated_at > (select updated_at from _beef_edit_original) from public.inventory_beef_production_rows where id=(select id from _beef_edit_original)),'Beef update advances the concurrency timestamp');
+select is((select updated_by_user_id from public.inventory_beef_production_rows where id=(select id from _beef_edit_original)),'1d000000-0000-4000-8000-000000000004'::uuid,'Beef update records the editing supervisor');
+select is((select count(*) from public.inventory_beef_production_rows where report_id=(select report_id from _beef_edit_original)),1::bigint,'Beef edit creates no duplicate row');
+select throws_ok($$
+  select public.update_inventory_beef_production_row(
+    '1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001',
+    (select id from _beef_edit_original),(select updated_at from _beef_edit_original),
+    '{"russian_kg":"99","australian_kg":"5","fat_kg":"2","ready_patty":"121","hunch_sauce_kg":"3.5","wastage_grams":"151"}'::jsonb
+  )
+$$, '40001', null, 'stale Beef edit is rejected');
+select is((select russian_kg::text from public.inventory_beef_production_rows where id=(select id from _beef_edit_original)),'11','stale Beef edit does not overwrite the saved value');
+select throws_ok($$
+  select public.update_inventory_beef_production_row(
+    '1d000000-0000-4000-8000-000000000005','3d000000-0000-4000-8000-000000000003',
+    (select id from _beef_edit_original),(select updated_at from public.inventory_beef_production_rows where id=(select id from _beef_edit_original)),
+    '{"russian_kg":"11","australian_kg":"5","fat_kg":"2","ready_patty":"121","hunch_sauce_kg":"3.5","wastage_grams":"151"}'::jsonb
+  )
+$$, '42501', null, 'another branch cannot edit the Beef row');
+select throws_ok($$
+  select public.update_inventory_beef_production_row(
+    '1d000000-0000-4000-8000-000000000002','3d000000-0000-4000-8000-000000000002',
+    (select id from _beef_edit_original),(select updated_at from public.inventory_beef_production_rows where id=(select id from _beef_edit_original)),
+    '{"russian_kg":"11","australian_kg":"5","fat_kg":"2","ready_patty":"121","hunch_sauce_kg":"3.5","wastage_grams":"151"}'::jsonb
+  )
+$$, '42501', null, 'another organization cannot edit the Beef row');
+select throws_ok($$
+  select public.update_inventory_beef_production_row(
+    '1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001',
+    '6d000000-0000-4000-8000-000000000099',pg_catalog.clock_timestamp(),
+    '{"russian_kg":"11","australian_kg":"5","fat_kg":"2","ready_patty":"121","hunch_sauce_kg":"3.5","wastage_grams":"151"}'::jsonb
+  )
+$$, 'P0002', null, 'missing Beef row is reported safely');
+select lives_ok($$
+  select public.update_inventory_beef_production_row(
+    '1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001',
+    (select id from _beef_edit_original),(select updated_at from public.inventory_beef_production_rows where id=(select id from _beef_edit_original)),
+    '{"russian_kg":"10.5","australian_kg":"4","fat_kg":"1.5","ready_patty":"120","hunch_sauce_kg":"2","wastage_grams":"150"}'::jsonb
+  )
+$$, 'a second Beef edit updates the same logical row');
+select is((select russian_kg::text from public.inventory_beef_production_rows where id=(select id from _beef_edit_original)),'10.5','second Beef edit persists without a duplicate');
 select throws_ok(format($$
   select public.save_inventory_items_draft(
     '1d000000-0000-4000-8000-000000000004',
@@ -326,7 +401,14 @@ $$, '23505', null, 'submitted report cannot be reopened directly');
 select throws_ok($$
   update public.inventory_beef_production_rows set russian_kg=999
   where report_id=(select id from public.inventory_items_reports where supervisor_user_id='1d000000-0000-4000-8000-000000000001')
-$$, '23505', null, 'saved beef row cannot be updated directly');
+$$, '23514', null, 'submitted Beef row cannot be updated directly');
+select throws_ok($$
+  select public.update_inventory_beef_production_row(
+    '1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001',
+    (select id from _beef_edit_original),(select updated_at from public.inventory_beef_production_rows where id=(select id from _beef_edit_original)),
+    '{"russian_kg":"12","australian_kg":"4","fat_kg":"1.5","ready_patty":"120","hunch_sauce_kg":"2","wastage_grams":"150"}'::jsonb
+  )
+$$, '23514', null, 'dedicated Beef edit RPC rejects a submitted month');
 select throws_ok($$
   delete from public.inventory_item_usage_day_values
   where item_id='6d000000-0000-4000-8000-000000000001' and day_number=1
