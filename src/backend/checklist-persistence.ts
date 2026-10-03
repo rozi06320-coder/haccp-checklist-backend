@@ -183,6 +183,7 @@ export type ChecklistPersistence = {
   markSupervisorNotificationRead?(actorUserId:string,notificationId:string):Promise<unknown>;
   getInventoryItemsCurrentState?(actorUserId:string,branchId:string,inventoryMonth?:string|null):Promise<unknown>;
   updateInventoryBeefProductionFieldLabels?(input:{actorUserId:string;branchId:string;labels:{russian_label:string|null;australian_label:string|null;hunch_sauce_label:string|null}}):Promise<unknown>;
+  createInventoryBeefProductionRow?(input:{actorUserId:string;branchId:string;productionDate:string;rowValues:InventoryBeefProductionRowValues}):Promise<unknown>;
   updateInventoryBeefProductionRow?(input:{actorUserId:string;branchId:string;rowId:string;expectedUpdatedAt:string;rowValues:InventoryBeefProductionRowValues}):Promise<unknown>;
   saveInventoryItemsDraft?(input:{actorUserId:string;branchId:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
   submitInventoryItems?(input:{actorUserId:string;branchId:string;idempotencyKey:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
@@ -707,6 +708,9 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   },
   async updateInventoryBeefProductionFieldLabels(input){
    return z.object({beef_production_labels:z.object({russian_label:z.string().nullable(),australian_label:z.string().nullable(),hunch_sauce_label:z.string().nullable()}).strict()}).strict().parse(await rpc("update_inventory_beef_production_field_labels",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,russian_label:input.labels.russian_label,australian_label:input.labels.australian_label,hunch_sauce_label:input.labels.hunch_sauce_label}));
+  },
+  async createInventoryBeefProductionRow(input){
+   return inventoryItemsCurrent.parse(await rpc("create_inventory_beef_production_row",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,production_date:input.productionDate,row_values:input.rowValues}));
   },
   async updateInventoryBeefProductionRow(input){
    return inventoryItemsCurrent.parse(await rpc("update_inventory_beef_production_row",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_row_id:input.rowId,expected_updated_at:input.expectedUpdatedAt,row_values:input.rowValues}));

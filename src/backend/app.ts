@@ -1393,6 +1393,9 @@ const inventoryBeefProductionRowValuesSchema=z.object({
   hunch_sauce_kg:inventoryDecimalInputSchema,
   wastage_grams:inventoryDecimalInputSchema,
 }).strict();
+const inventoryBeefProductionRowCreateBodySchema=inventoryBeefProductionRowValuesSchema.extend({
+  production_date:dateOnlySchema,
+}).strict();
 const inventoryBeefProductionRowUpdateBodySchema=z.object({
   expected_updated_at:z.iso.datetime({offset:true}),
   row_values:inventoryBeefProductionRowValuesSchema,
@@ -2127,6 +2130,14 @@ function inventoryBeefProductionRowUpdateError(error:unknown){
  if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
  if(error instanceof ChecklistNotFoundError)return new HttpError(404,"not_found","The Beef Production row was not found.");
  return new HttpError(500,"service_unavailable","Unable to update Beef Production right now.");
+}
+
+function inventoryBeefProductionRowCreateError(error:unknown){
+ if(error instanceof ChecklistConflictError)return new HttpError(409,"conflict","A Beef Production entry already exists for this date.");
+ if(error instanceof ChecklistInputError)return new HttpError(422,"unprocessable_entity","The Beef Production values or date are invalid.");
+ if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
+ if(error instanceof ChecklistNotFoundError)return new HttpError(404,"not_found","The Inventory Items scope was not found.");
+ return new HttpError(500,"service_unavailable","Unable to create Beef Production right now.");
 }
 
 function catalogError(error:unknown){
@@ -7659,6 +7670,16 @@ export function createApp(
     const result=z.object({beef_production_labels:z.object({russian_label:z.string().nullable(),australian_label:z.string().nullable(),hunch_sauce_label:z.string().nullable()}).strict()}).strict().parse(await dependencies.checklistPersistence.updateInventoryBeefProductionFieldLabels({actorUserId:auth.userId,branchId:branch.data,labels:{russian_label:normalizeLabel(body.data.russian_label),australian_label:normalizeLabel(body.data.australian_label),hunch_sauce_label:normalizeLabel(body.data.hunch_sauce_label)}}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+  app.post("/api/v1/supervisor/branches/:branchId/inventory-items/beef-production",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),body=inventoryBeefProductionRowCreateBodySchema.safeParse(request.body);
+    if(!branch.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.createInventoryBeefProductionRow)throw new HttpError(403,"forbidden","Access is denied.");
+    const {production_date,...rowValues}=body.data;
+    const current=inventoryItemsCurrentSchema.parse(await dependencies.checklistPersistence.createInventoryBeefProductionRow({actorUserId:auth.userId,branchId:branch.data,productionDate:production_date,rowValues}));
+    response.setHeader("Cache-Control","private, no-store");response.status(201).json({current});
+  }catch(error){next(error instanceof HttpError?error:inventoryBeefProductionRowCreateError(error));}});
 
   app.patch("/api/v1/supervisor/branches/:branchId/inventory-items/beef-production/:rowId",protectedRateLimit,authenticate,async(request,response,next)=>{try{
     const branch=branchIdSchema.safeParse(request.params.branchId),rowId=z.uuid().safeParse(request.params.rowId),body=inventoryBeefProductionRowUpdateBodySchema.safeParse(request.body);
