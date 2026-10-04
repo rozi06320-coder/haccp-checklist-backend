@@ -1322,9 +1322,11 @@ const salesTrackingCashRowInputSchema=z.object({
 }).strict();
 const salesTrackingPeriodSchema=z.enum(["middle_shift","closing_shift"]);
 const salesTrackingTotalsSchema=z.object({actual_cash:z.union([z.number(),z.string()]),actual_credit:z.union([z.number(),z.string()]),pos_cash:z.union([z.number(),z.string()]),pos_credit:z.union([z.number(),z.string()]),online_delivery:z.union([z.number(),z.string()]),actual_total:z.union([z.number(),z.string()]),gross_sales:z.union([z.number(),z.string()]),refund_total:z.union([z.number(),z.string()]),net_sales:z.union([z.number(),z.string()]),pos_total:z.union([z.number(),z.string()]),variance:z.union([z.number(),z.string()]),cash_total:z.union([z.number(),z.string()]),remaining_cash:z.union([z.number(),z.string()])}).strict();
-const salesTrackingPhotoResponseSchema=z.object({id:z.uuid(),original_filename:z.string(),mime_type:z.enum(["image/jpeg","image/png","image/webp"]),size_bytes:z.number().int().positive().max(MAX_SALES_TRACKING_PHOTO_BYTES),created_at:z.string(),signed_url:z.string().nullable()}).strict();
+const salesTrackingPhotoResponseSchema=z.object({id:z.uuid(),original_filename:z.string(),mime_type:z.enum(["image/jpeg","image/png","image/webp"]),size_bytes:z.number().int().positive().max(MAX_SALES_TRACKING_PHOTO_BYTES),created_at:z.string(),signed_url:z.string().nullable(),display_order:z.number().int().min(1).max(3).optional()}).strict();
 const salesTrackingPhotoQuerySchema=z.object({business_date:dateOnlySchema,expected_revision:z.coerce.number().int().nonnegative()}).strict();
 const salesTrackingPhotoDeleteBodySchema=z.object({expected_revision:z.number().int().nonnegative()}).strict();
+const salesTrackingPhotoIntentBodySchema=z.object({business_date:dateOnlySchema,report_id:z.uuid().nullable(),expected_revision:z.number().int().nonnegative(),mime_type:z.enum(["image/jpeg","image/png","image/webp"]),original_filename:z.string().min(1).max(180),size_bytes:z.number().int().positive().max(MAX_SALES_TRACKING_PHOTO_BYTES),replacement_attachment_id:z.uuid().nullable().optional()}).strict();
+const salesTrackingPhotoFinalizeBodySchema=z.object({business_date:dateOnlySchema,expected_revision:z.number().int().nonnegative(),mime_type:z.enum(["image/jpeg","image/png","image/webp"]),original_filename:z.string().min(1).max(180),size_bytes:z.number().int().positive().max(MAX_SALES_TRACKING_PHOTO_BYTES),replacement_attachment_id:z.uuid().nullable().optional()}).strict();
 const salesTrackingCurrentQuerySchema=z.object({business_date:dateOnlySchema.optional()}).strict();
 const salesTrackingBodySchema=z.object({
   business_date:dateOnlySchema.optional(),
@@ -1790,7 +1792,7 @@ const managedSalesTrackingOnlineProviderAmountSchema=z.object({provider_id:z.uui
 const managedSalesTrackingSchema=z.object({
   sales_rows:z.array(z.object({
     report_id:z.uuid(),row_id:z.uuid(),currency_code:z.enum(["SAR","AED"]).default("SAR"),business_date:dateOnlySchema,entry_date:dateOnlySchema,entry_period:salesTrackingPeriodSchema.nullable(),entered_by:z.string().nullable(),entered_at:z.string().nullable(),branch_id:z.uuid(),branch_name:z.string(),supervisor_user_id:z.uuid(),submitted_by:z.string().nullable(),supervisor_team_id:z.uuid(),supervisor_team_name:z.string(),submitted_at:z.string(),
-    actual_cash:z.union([z.number(),z.string()]),actual_credit:z.union([z.number(),z.string()]),pos_cash:z.union([z.number(),z.string()]),pos_credit:z.union([z.number(),z.string()]),online_delivery:z.union([z.number(),z.string()]),refund_total:z.union([z.number(),z.string()]),online_provider_breakdown:z.array(managedSalesTrackingOnlineProviderAmountSchema).optional().default([]),actual_total:z.union([z.number(),z.string()]),gross_sales:z.union([z.number(),z.string()]),net_sales:z.union([z.number(),z.string()]),evidence_filename:z.string().nullable(),evidence_available:z.boolean(),pos_total:z.union([z.number(),z.string()]),variance:z.union([z.number(),z.string()]),remarks:z.string().nullable().optional(),
+	    actual_cash:z.union([z.number(),z.string()]),actual_credit:z.union([z.number(),z.string()]),pos_cash:z.union([z.number(),z.string()]),pos_credit:z.union([z.number(),z.string()]),online_delivery:z.union([z.number(),z.string()]),refund_total:z.union([z.number(),z.string()]),online_provider_breakdown:z.array(managedSalesTrackingOnlineProviderAmountSchema).optional().default([]),actual_total:z.union([z.number(),z.string()]),gross_sales:z.union([z.number(),z.string()]),net_sales:z.union([z.number(),z.string()]),evidence_filename:z.string().nullable(),evidence_filenames:z.array(z.string()).max(3).optional().default([]),evidence_count:z.coerce.number().int().min(0).max(3),evidence_available:z.boolean(),pos_total:z.union([z.number(),z.string()]),variance:z.union([z.number(),z.string()]),remarks:z.string().nullable().optional(),
   }).strict()).max(1000),
   cash_rows:z.array(z.object({
     report_id:z.uuid(),row_id:z.uuid(),currency_code:z.enum(["SAR","AED"]).default("SAR"),business_date:dateOnlySchema,entry_date:dateOnlySchema,entry_period:salesTrackingPeriodSchema.nullable(),entered_by:z.string().nullable(),entered_at:z.string().nullable(),branch_id:z.uuid(),branch_name:z.string(),supervisor_user_id:z.uuid(),submitted_by:z.string().nullable(),supervisor_team_id:z.uuid(),supervisor_team_name:z.string(),submitted_at:z.string(),
@@ -1891,6 +1893,7 @@ const salesTrackingCurrentSchema=z.object({
   submitted_by_user_id:z.uuid().nullable(),
   submitted_by_name_snapshot:z.string().nullable(),
   attachment:salesTrackingPhotoResponseSchema.nullable(),
+  attachments:z.array(salesTrackingPhotoResponseSchema).max(3).optional(),
   periods:z.array(z.object({id:z.uuid(),entry_period:salesTrackingPeriodSchema,entered_by_user_id:z.uuid(),entered_by_name:z.string(),entered_at:z.string()}).strict()).max(2),
   sales_rows:z.array(z.object({
     id:z.uuid().optional(),
@@ -7717,13 +7720,29 @@ export function createApp(
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}};
   app.post("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/photo",protectedRateLimit,authenticate,salesTrackingPhotoRawBody,uploadSalesTrackingPhoto);
   app.post("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/:reportId/photo",protectedRateLimit,authenticate,salesTrackingPhotoRawBody,uploadSalesTrackingPhoto);
+  app.post("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/photos/upload-intent",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),body=salesTrackingPhotoIntentBodySchema.safeParse(request.body);
+    if(!branch.success||!body.success||!dependencies.checklistPersistence?.prepareSalesTrackingPhotoUpload)throw new HttpError(400,"bad_request","The photo request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||context.managed_organizations.length>0)throw new HttpError(403,"forbidden","Access is denied.");
+    const result=z.object({report_id:z.uuid(),revision:z.number().int().nonnegative(),attachment_id:z.uuid(),signed_upload_url:z.url(),original_filename:z.string()}).strict().parse(await dependencies.checklistPersistence.prepareSalesTrackingPhotoUpload({actorUserId:auth.userId,branchId:branch.data,businessDate:body.data.business_date,reportId:body.data.report_id,expectedRevision:body.data.expected_revision,mimeType:body.data.mime_type,originalFilename:body.data.original_filename,sizeBytes:body.data.size_bytes,replacementAttachmentId:body.data.replacement_attachment_id??null}));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+  app.post("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/:reportId/photos/:photoId/finalize",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),report=z.uuid().safeParse(request.params.reportId),photo=z.uuid().safeParse(request.params.photoId),body=salesTrackingPhotoFinalizeBodySchema.safeParse(request.body);
+    if(!branch.success||!report.success||!photo.success||!body.success||!dependencies.checklistPersistence?.finalizeSalesTrackingPhotoUpload)throw new HttpError(400,"bad_request","The photo request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||context.managed_organizations.length>0)throw new HttpError(403,"forbidden","Access is denied.");
+    const result=z.object({report_id:z.uuid(),revision:z.number().int().nonnegative(),attachments:z.array(salesTrackingPhotoResponseSchema).max(3)}).strict().parse(await dependencies.checklistPersistence.finalizeSalesTrackingPhotoUpload({actorUserId:auth.userId,branchId:branch.data,businessDate:body.data.business_date,reportId:report.data,expectedRevision:body.data.expected_revision,attachmentId:photo.data,mimeType:body.data.mime_type,originalFilename:body.data.original_filename,sizeBytes:body.data.size_bytes,replacementAttachmentId:body.data.replacement_attachment_id??null}));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
   app.delete("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/:reportId/photo/:photoId",protectedRateLimit,authenticate,async(request,response,next)=>{try{
     const branch=branchIdSchema.safeParse(request.params.branchId),report=z.uuid().safeParse(request.params.reportId),photo=z.uuid().safeParse(request.params.photoId),body=salesTrackingPhotoDeleteBodySchema.safeParse(request.body);
     if(!branch.success||!report.success||!photo.success||!body.success)throw new HttpError(400,"bad_request","The photo request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request);
     if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.removeSalesTrackingPhoto)throw new HttpError(403,"forbidden","Access is denied.");
-    await dependencies.checklistPersistence.removeSalesTrackingPhoto({actorUserId:auth.userId,branchId:branch.data,reportId:report.data,attachmentId:photo.data,expectedRevision:body.data.expected_revision});
-    response.setHeader("Cache-Control","private, no-store");response.status(200).json({attachment:null});
+    const result=z.object({attachments:z.array(salesTrackingPhotoResponseSchema).max(3)}).strict().parse(await dependencies.checklistPersistence.removeSalesTrackingPhoto({actorUserId:auth.userId,branchId:branch.data,reportId:report.data,attachmentId:photo.data,expectedRevision:body.data.expected_revision}));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
   app.get("/api/v1/supervisor/branches/:branchId/inventory-items/current-state",protectedRateLimit,authenticate,async(request,response,next)=>{try{
@@ -8167,7 +8186,7 @@ export function createApp(
     }
   });
 
-  app.get("/api/v1/management/organizations/:organizationId/sales-tracking",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+	  app.get("/api/v1/management/organizations/:organizationId/sales-tracking",protectedRateLimit,authenticate,async(request,response,next)=>{try{
     const org=organizationIdSchema.safeParse(request.params.organizationId),q=managerSalesTrackingQuerySchema.safeParse(request.query);
     if(!org.success||!q.success)throw new HttpError(400,"bad_request","The request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request);
@@ -8178,7 +8197,17 @@ export function createApp(
     const reports=managedSalesTrackingSchema.parse(await dependencies.checklistPersistence.listManagedSalesTrackingReports({actorUserId:auth.userId,organizationId:org.data,dateFrom:q.data.date_from??null,dateTo:q.data.date_to??null,branchId:q.data.branch_id??null}));
     response.setHeader("Cache-Control","private, no-store");
     response.status(200).json(reports);
-  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+	  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+	  app.get("/api/v1/management/organizations/:organizationId/sales-tracking/:reportId/attachments",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+	    const org=organizationIdSchema.safeParse(request.params.organizationId),report=z.uuid().safeParse(request.params.reportId);
+	    if(!org.success||!report.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+	    const auth=requireAuthContext(request),context=await loadActiveUser(request),allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);
+	    if(context.must_change_password||!allowed)throw new HttpError(403,"forbidden","Access is denied.");
+	    if(!dependencies.checklistPersistence?.getManagedSalesTrackingAttachments)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+	    const result=z.object({report_id:z.uuid(),attachments:z.array(salesTrackingPhotoResponseSchema).max(3)}).strict().parse(await dependencies.checklistPersistence.getManagedSalesTrackingAttachments({actorUserId:auth.userId,organizationId:org.data,reportId:report.data}));
+	    response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+	  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
   app.get("/api/v1/management/organizations/:organizationId/sales-tracking/monthly-summary",protectedRateLimit,authenticate,async(request,response,next)=>{try{
     const org=organizationIdSchema.safeParse(request.params.organizationId),q=managerSalesTrackingMonthlyQuerySchema.safeParse(request.query);

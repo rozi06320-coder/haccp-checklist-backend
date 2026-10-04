@@ -39,6 +39,7 @@ const monthlyMetricsSchema = z.object({
   total_variance: decimal,
   balanced_sales_report_count: nonnegativeCount,
   variance_sales_report_count: nonnegativeCount,
+  evidence_photo_count: nonnegativeCount.default(0),
   payment_breakdown: paymentBreakdownSchema,
   online_provider_breakdown: z.array(onlineProviderBreakdownSchema).default([]),
   legacy_online_delivery: decimal.default("0"),

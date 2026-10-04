@@ -177,6 +177,8 @@ export type ChecklistPersistence = {
   saveSalesTrackingDraft?(input:{actorUserId:string;branchId:string;businessDate?:string|null;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:SalesTrackingDraftPayload}):Promise<unknown>;
   submitSalesTracking?(input:{actorUserId:string;branchId:string;businessDate?:string|null;expectedRevision:number;idempotencyKey:string}):Promise<unknown>;
   uploadSalesTrackingPhoto?(input:{actorUserId:string;branchId:string;businessDate:string;reportId?:string|null;expectedRevision:number;bytes:Buffer;mimeType:string;originalFilename:string}):Promise<unknown>;
+  prepareSalesTrackingPhotoUpload?(input:{actorUserId:string;branchId:string;businessDate:string;reportId?:string|null;expectedRevision:number;mimeType:string;originalFilename:string;sizeBytes:number;replacementAttachmentId?:string|null}):Promise<unknown>;
+  finalizeSalesTrackingPhotoUpload?(input:{actorUserId:string;branchId:string;businessDate:string;reportId:string;expectedRevision:number;attachmentId:string;mimeType:string;originalFilename:string;sizeBytes:number;replacementAttachmentId?:string|null}):Promise<unknown>;
   removeSalesTrackingPhoto?(input:{actorUserId:string;branchId:string;reportId:string;attachmentId:string;expectedRevision:number}):Promise<unknown>;
   getFinancialClosingCurrentState?(actorUserId:string,branchId:string):Promise<unknown>;
   saveFinancialClosingDraft?(input:{actorUserId:string;branchId:string;expectedRevision:number;items:unknown[]}):Promise<unknown>;
@@ -207,6 +209,7 @@ export type ChecklistPersistence = {
   getBranchDailyInventory?(input:GetBranchDailyInventoryInput):Promise<unknown>;
   saveBranchDailyInventory?(input:SaveBranchDailyInventoryInput):Promise<unknown>;
   listManagedSalesTrackingReports?(input:{actorUserId:string;organizationId:string;dateFrom?:string|null;dateTo?:string|null;branchId?:string|null}):Promise<unknown>;
+  getManagedSalesTrackingAttachments?(input:{actorUserId:string;organizationId:string;reportId:string}):Promise<unknown>;
   getManagedSalesTrackingMonthlySummary?(input:{actorUserId:string;organizationId:string;month:string;branchId?:string|null}):Promise<unknown>;
   listManagedDailyInventoryReconciliation?(input:{actorUserId:string;organizationId:string;fromDate:string;toDate:string;branchId?:string|null;inventoryItemId?:string|null;page?:number;pageSize?:number}):Promise<unknown>;
   listManagedDailyInventoryBranchOverview?(input:{actorUserId:string;organizationId:string;businessDate:string;branchId?:string|null;attentionFilter?:string|null}):Promise<unknown>;
@@ -341,7 +344,7 @@ const salesTrackingTotals=z.object({
 }).strict();
 const salesTrackingAttachmentInternal=z.object({
   id:z.uuid(),storage_path:z.string().min(1),original_filename:z.string().min(1),
-  mime_type:z.enum(["image/jpeg","image/png","image/webp"]),size_bytes:z.union([z.number(),z.string()]),created_at:z.string(),
+  mime_type:z.enum(["image/jpeg","image/png","image/webp"]),size_bytes:z.union([z.number(),z.string()]),created_at:z.string(),display_order:z.union([z.number(),z.string()]).optional(),
 }).strict();
 const salesTrackingCurrent=z.object({
   report_id:z.uuid().nullable(),
@@ -353,6 +356,7 @@ const salesTrackingCurrent=z.object({
   submitted_by_user_id:z.uuid().nullable(),
   submitted_by_name_snapshot:z.string().nullable(),
   attachment:salesTrackingAttachmentInternal.nullable(),
+  attachments:z.array(salesTrackingAttachmentInternal).max(3).optional(),
   periods:z.array(z.object({id:z.uuid(),entry_period:salesTrackingPeriod,entered_by_user_id:z.uuid(),entered_by_name:z.string(),entered_at:z.string()}).strict()).max(2),
   sales_rows:z.array(z.object({
     id:z.uuid().optional(),
@@ -494,8 +498,10 @@ const managedSalesTrackingReports=z.object({
     actual_total:numericJson,
     gross_sales:numericJson,
     net_sales:numericJson,
-    evidence_filename:z.string().nullable(),
-    evidence_available:z.boolean(),
+	    evidence_filename:z.string().nullable(),
+	    evidence_filenames:z.array(z.string()).max(3).optional().default([]),
+	    evidence_count:z.union([z.number(),z.string()]),
+	    evidence_available:z.boolean(),
     pos_total:numericJson,
     variance:numericJson,
     remarks:z.string().max(2000).nullable().optional(),
@@ -635,6 +641,8 @@ const SALES_TRACKING_EVIDENCE_BUCKET="sales-tracking-evidence";
 const SALES_TRACKING_PHOTO_URL_SECONDS=5*60;
 const ensuredSalesTrackingReport=z.object({report_id:z.uuid(),organization_id:z.uuid(),branch_id:z.uuid(),business_date:dateOnly,revision:z.union([z.number(),z.string()])}).strict();
 const salesTrackingAttachmentMutation=z.object({attachment:salesTrackingAttachmentInternal.nullable(),old_storage_path:z.string().nullable()}).strict();
+const salesTrackingAttachmentsMutation=z.object({attachments:z.array(salesTrackingAttachmentInternal).max(3),old_storage_path:z.string().nullable()}).strict();
+const preparedSalesTrackingAttachment=z.object({report_id:z.uuid(),organization_id:z.uuid(),branch_id:z.uuid(),business_date:dateOnly,revision:z.union([z.number(),z.string()]),attachment_id:z.uuid()}).strict();
 
 export function salesTrackingPhotoMime(bytes:Buffer,declaredMime:string){
  if(bytes.length===0||bytes.length>MAX_SALES_TRACKING_PHOTO_BYTES)throw new ChecklistInputError();
@@ -703,12 +711,14 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   if(!attachment)return null;
   let signedUrl:string|null=null;
   try{const signed=await salesTrackingPhotoStorage.createSignedUrl(attachment.storage_path,SALES_TRACKING_PHOTO_URL_SECONDS);signedUrl=signed.error?null:signed.data?.signedUrl??null;}catch{signedUrl=null;}
-  return{id:attachment.id,original_filename:attachment.original_filename,mime_type:attachment.mime_type,size_bytes:Number(attachment.size_bytes),created_at:attachment.created_at,signed_url:signedUrl};
+  return{id:attachment.id,original_filename:attachment.original_filename,mime_type:attachment.mime_type,size_bytes:Number(attachment.size_bytes),created_at:attachment.created_at,signed_url:signedUrl,...(attachment.display_order===undefined?{}:{display_order:Number(attachment.display_order)})};
  }
+ async function safeSalesTrackingAttachments(attachments:z.infer<typeof salesTrackingAttachmentInternal>[]){return Promise.all(attachments.map((attachment)=>safeSalesTrackingAttachment(attachment))) as Promise<Array<NonNullable<Awaited<ReturnType<typeof safeSalesTrackingAttachment>>>>>;}
  async function safeSalesTrackingCurrent(value:unknown){
   const current=salesTrackingCurrent.parse(value);
-  const {attachment,...rest}=current;
-  return{...rest,attachment:await safeSalesTrackingAttachment(attachment)};
+  const {attachment,attachments,...rest}=current;
+  const safeAttachments=await safeSalesTrackingAttachments(attachments??(attachment?[attachment]:[]));
+  return{...rest,attachment:safeAttachments[0]??null,attachments:safeAttachments};
  }
  return {
   getOverview:(actorUserId,branchId)=>rpc("get_phase4a_supervisor_overview",{actor_user_id:actorUserId,target_branch_id:branchId}),
@@ -767,10 +777,38 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
 	   if(mutation.old_storage_path)await salesTrackingPhotoStorage.remove([mutation.old_storage_path]);
 	   return{report_id:ensured.report_id,revision:Number(ensured.revision),attachment:await safeSalesTrackingAttachment(mutation.attachment)};
 	  },
+	  async prepareSalesTrackingPhotoUpload(input){
+	   const filename=salesTrackingPhotoFilename(input.originalFilename);
+	   if(!["image/jpeg","image/png","image/webp"].includes(input.mimeType)||input.sizeBytes<=0||input.sizeBytes>MAX_SALES_TRACKING_PHOTO_BYTES)throw new ChecklistInputError();
+	   const attachmentId=randomUUID();
+	   const prepared=preparedSalesTrackingAttachment.parse(await rpc("prepare_sales_tracking_attachment_upload",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,target_report_id:input.reportId??null,expected_revision:input.expectedRevision,attachment_id:attachmentId,attachment_mime_type:input.mimeType,replacement_attachment_id:input.replacementAttachmentId??null}));
+	   const extension=input.mimeType==="image/jpeg"?"jpg":input.mimeType==="image/png"?"png":"webp";
+	   const path=`${prepared.organization_id}/${prepared.branch_id}/sales-tracking/${prepared.report_id}/${attachmentId}.${extension}`;
+	   const signed=await salesTrackingPhotoStorage.createSignedUploadUrl(path,{upsert:false});
+	   if(signed.error||!signed.data?.signedUrl)throw new Error("Checklist persistence unavailable.");
+	   return{report_id:prepared.report_id,revision:Number(prepared.revision),attachment_id:attachmentId,signed_upload_url:signed.data.signedUrl,original_filename:filename};
+	  },
+		  async finalizeSalesTrackingPhotoUpload(input){
+	   const filename=salesTrackingPhotoFilename(input.originalFilename);
+	   if(!["image/jpeg","image/png","image/webp"].includes(input.mimeType)||input.sizeBytes<=0||input.sizeBytes>MAX_SALES_TRACKING_PHOTO_BYTES)throw new ChecklistInputError();
+	   const prepared=preparedSalesTrackingAttachment.parse(await rpc("prepare_sales_tracking_attachment_upload",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,target_report_id:input.reportId,expected_revision:input.expectedRevision,attachment_id:input.attachmentId,attachment_mime_type:input.mimeType,replacement_attachment_id:input.replacementAttachmentId??null}));
+	   const extension=input.mimeType==="image/jpeg"?"jpg":input.mimeType==="image/png"?"png":"webp",path=`${prepared.organization_id}/${prepared.branch_id}/sales-tracking/${prepared.report_id}/${input.attachmentId}.${extension}`;
+		   let mutation:z.infer<typeof salesTrackingAttachmentsMutation>;
+		   try{
+		    const downloaded=await salesTrackingPhotoStorage.download(path);
+		    if(downloaded.error||!downloaded.data)throw new ChecklistInputError();
+		    const bytes=Buffer.from(await downloaded.data.arrayBuffer());
+		    salesTrackingPhotoMime(bytes,input.mimeType);
+		    if(bytes.length!==input.sizeBytes)throw new ChecklistInputError();
+		    mutation=salesTrackingAttachmentsMutation.parse(await rpc("finalize_sales_tracking_attachment_v2",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_report_id:prepared.report_id,expected_revision:input.expectedRevision,attachment_id:input.attachmentId,attachment_metadata:{storage_path:path,original_filename:filename,mime_type:input.mimeType,size_bytes:bytes.length},replacement_attachment_id:input.replacementAttachmentId??null}));
+		   }catch(error){try{await salesTrackingPhotoStorage.remove([path]);}catch{}throw error;}
+		   if(mutation.old_storage_path)try{await salesTrackingPhotoStorage.remove([mutation.old_storage_path]);}catch{}
+		   return{report_id:prepared.report_id,revision:Number(prepared.revision),attachments:await safeSalesTrackingAttachments(mutation.attachments)};
+		  },
 	  async removeSalesTrackingPhoto(input){
-	   const mutation=salesTrackingAttachmentMutation.parse(await rpc("remove_sales_tracking_attachment",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_report_id:input.reportId,target_attachment_id:input.attachmentId,expected_revision:input.expectedRevision}));
+	   const mutation=salesTrackingAttachmentsMutation.parse(await rpc("remove_sales_tracking_attachment_v2",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_report_id:input.reportId,target_attachment_id:input.attachmentId,expected_revision:input.expectedRevision}));
 	   if(mutation.old_storage_path)await salesTrackingPhotoStorage.remove([mutation.old_storage_path]);
-	   return{attachment:null};
+	   return{attachments:await safeSalesTrackingAttachments(mutation.attachments)};
 	  },
 	  getFinancialClosingCurrentState:(actorUserId,branchId)=>rpc("get_financial_closing_current_state",{actor_user_id:actorUserId,target_branch_id:branchId}),
 	  saveFinancialClosingDraft:(input)=>rpc("save_financial_closing_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,report_items:input.items}),
@@ -860,14 +898,18 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
    throw new ChecklistInputError();
   },
   saveBranchDailyInventory:(input:SaveBranchDailyInventoryInput)=>dailyInventoryRpc("save_branch_daily_inventory",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate,expected_revision:input.expectedRevision,entries:input.entries}),
-  async listManagedSalesTrackingReports(input){
+	  async listManagedSalesTrackingReports(input){
    const reports=managedSalesTrackingReports.parse(await rpc("list_managed_sales_tracking_reports",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,from_date:input.dateFrom??null,to_date:input.dateTo??null}));
    if(!input.branchId)return reports;
    return {
     sales_rows:reports.sales_rows.filter((row)=>row.branch_id===input.branchId),
     cash_rows:reports.cash_rows.filter((row)=>row.branch_id===input.branchId),
    };
-  },
+	  },
+	  async getManagedSalesTrackingAttachments(input){
+	   const detail=z.object({report_id:z.uuid(),attachments:z.array(salesTrackingAttachmentInternal).max(3)}).strict().parse(await rpc("get_managed_sales_tracking_attachments",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,target_report_id:input.reportId}));
+	   return{report_id:detail.report_id,attachments:await safeSalesTrackingAttachments(detail.attachments)};
+	  },
   async getManagedSalesTrackingMonthlySummary(input){
    return managementSalesTrackingMonthlySummarySchema.parse(await rpc("get_managed_sales_tracking_monthly_summary",{
     actor_user_id:input.actorUserId,

@@ -26,6 +26,7 @@ let malformedManagedSalesTracking=false;
 let malformedMonthlySummary=false;
 let useProviderAliasShape=false;
 let requireOnlineBreakdownError=false;
+let managedAttachments:Array<Record<string,unknown>>=[];
 const replay=new Map<string,string>();
 let providers:Array<Record<string,unknown>>=[];
 
@@ -121,10 +122,18 @@ const persistence={
   if(input.branchId!==branch)throw new ChecklistAccessError();
   return{report_id:input.reportId??report,revision:input.expectedRevision,attachment:{id:photo,original_filename:input.originalFilename,mime_type:input.mimeType,size_bytes:input.bytes.length,created_at:"2026-08-08T10:00:00.000Z",signed_url:"https://signed.invalid/photo"}};
  },
+ async prepareSalesTrackingPhotoUpload(input:{actorUserId:string;branchId:string;businessDate:string;reportId:string|null;expectedRevision:number;mimeType:string;originalFilename:string;sizeBytes:number;replacementAttachmentId:string|null}){
+  calls.push({name:"sales-photo-intent",input});if(input.branchId!==branch)throw new ChecklistAccessError();
+  return{report_id:input.reportId??report,revision:input.expectedRevision,attachment_id:photo,signed_upload_url:"https://storage.invalid/object/upload/sign/exact-path?token=short-lived",original_filename:input.originalFilename};
+ },
+ async finalizeSalesTrackingPhotoUpload(input:{actorUserId:string;branchId:string;businessDate:string;reportId:string;expectedRevision:number;attachmentId:string;mimeType:string;originalFilename:string;sizeBytes:number;replacementAttachmentId:string|null}){
+  calls.push({name:"sales-photo-finalize",input});if(input.branchId!==branch)throw new ChecklistAccessError();
+  return{report_id:input.reportId,revision:input.expectedRevision,attachments:[{id:input.attachmentId,original_filename:input.originalFilename,mime_type:input.mimeType,size_bytes:input.sizeBytes,created_at:"2026-08-08T10:00:00.000Z",signed_url:"https://signed.invalid/photo",display_order:1}]};
+ },
  async removeSalesTrackingPhoto(input:{actorUserId:string;branchId:string;reportId:string;attachmentId:string;expectedRevision:number}){
   calls.push({name:"sales-photo-remove",input});
   if(input.branchId!==branch)throw new ChecklistAccessError();
-  return{attachment:null};
+  return{attachments:[]};
  },
  async saveSalesTrackingDraft(input:{actorUserId:string;branchId:string;businessDate?:string|null;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:{sales_rows:Array<Record<string,unknown>>;cash_rows:Array<{entry_date:string;denominations:Record<string,number>;remaining_cash:unknown;remarks:string}>}}){
   calls.push({name:"sales-draft",input});
@@ -179,7 +188,7 @@ const persistence={
   return {
     sales_rows:currentState==="submitted"?currentSalesRows.map((row,index)=>({
       ...base,row_id:`56000000-0000-4000-8000-00000000010${index}`,entry_date:row.entry_date,entry_period:row.entry_period,entered_by:row.entered_by_name,entered_at:row.entered_at,actual_cash:row.actual_cash,actual_credit:row.actual_credit,pos_cash:row.pos_cash,pos_credit:row.pos_credit,online_delivery:row.online_delivery,online_provider_breakdown:managerProviderBreakdown(row),
-      refund_total:row.refund_total??"0",actual_total:numeric(row.actual_cash)+numeric(row.actual_credit)+numeric(row.online_delivery),gross_sales:numeric(row.actual_cash)+numeric(row.actual_credit)+numeric(row.online_delivery),net_sales:numeric(row.actual_cash)+numeric(row.actual_credit)+numeric(row.online_delivery)-numeric(row.refund_total),evidence_filename:null,evidence_available:false,
+      refund_total:row.refund_total??"0",actual_total:numeric(row.actual_cash)+numeric(row.actual_credit)+numeric(row.online_delivery),gross_sales:numeric(row.actual_cash)+numeric(row.actual_credit)+numeric(row.online_delivery),net_sales:numeric(row.actual_cash)+numeric(row.actual_credit)+numeric(row.online_delivery)-numeric(row.refund_total),evidence_filename:managedAttachments[0]?.original_filename??null,evidence_filenames:managedAttachments.map((attachment)=>attachment.original_filename),evidence_count:managedAttachments.length,evidence_available:managedAttachments.length>0,
       pos_total:numeric(row.pos_cash)+numeric(row.pos_credit)+numeric(row.online_delivery),
       variance:numeric(row.actual_cash)+numeric(row.actual_credit)-numeric(row.pos_cash)-numeric(row.pos_credit),
       remarks:row.remarks,
@@ -189,6 +198,11 @@ const persistence={
       cash_total:Number(row.denom_1)+Number(row.denom_2)*2+Number(row.denom_5)*5+Number(row.denom_10)*10+Number(row.denom_20)*20+Number(row.denom_50)*50+Number(row.denom_100)*100+Number(row.denom_200)*200+Number(row.denom_500)*500,
     })):[],
   };
+ },
+ async getManagedSalesTrackingAttachments(input:{actorUserId:string;organizationId:string;reportId:string}){
+  calls.push({name:"managed-sales-tracking-attachments",input});
+  if(input.actorUserId!==manager||input.organizationId!==org)throw new ChecklistAccessError();
+  return{report_id:input.reportId,attachments:managedAttachments};
  },
  async getManagedSalesTrackingMonthlySummary(input:{actorUserId:string;organizationId:string;month:string;branchId?:string|null}){
   calls.push({name:"managed-sales-tracking-monthly",input});
@@ -253,7 +267,7 @@ async function submitSavedDay(idempotencyKey:string,expectedRevision=2){
 describe("Sales Tracking API integration",()=>{
  before(async()=>{server=createServer(createApp(config,deps()));await new Promise<void>((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));origin=`http://127.0.0.1:${(server.address()as AddressInfo).port}`;});
  after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
- beforeEach(()=>{calls.length=0;currentSalesRows=[];currentCashRows=[];currentPeriods=[];currentRevision=0;currentState="draft";submittedAt=null;submittedByUserId=null;submittedByNameSnapshot=null;malformedManagedSalesTracking=false;malformedMonthlySummary=false;useProviderAliasShape=false;requireOnlineBreakdownError=false;replay.clear();providers=[
+ beforeEach(()=>{calls.length=0;currentSalesRows=[];currentCashRows=[];currentPeriods=[];currentRevision=0;currentState="draft";submittedAt=null;submittedByUserId=null;submittedByNameSnapshot=null;malformedManagedSalesTracking=false;malformedMonthlySummary=false;useProviderAliasShape=false;requireOnlineBreakdownError=false;managedAttachments=[];replay.clear();providers=[
   {id:"57000000-0000-4000-8000-000000000001",organization_id:org,branch_id:branch,name:"Jahez",normalized_name:"jahez",default_provider_key:"jahez",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
   {id:"57000000-0000-4000-8000-000000000003",organization_id:org,branch_id:branch,name:"HungerStation",normalized_name:"hungerstation",default_provider_key:"hungerstation",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
   {id:"57000000-0000-4000-8000-000000000002",organization_id:org,branch_id:branch,name:"Ninja",normalized_name:"ninja",default_provider_key:"ninja",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
@@ -365,18 +379,14 @@ describe("Sales Tracking API integration",()=>{
   assert.equal((await request(path,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...draftPayload,sales_rows:[{...draftPayload.sales_rows[0],refund_total:"0.001"}]})})).status,400);
   assert.equal((await request(path,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...draftPayload,sales_rows:[{...draftPayload.sales_rows[0],refund_total:"99999.00"}]})})).status,400);
  });
- it("uploads and removes one optional Sales evidence photo through dedicated routes",async()=>{
-  const filename=Buffer.from("evidence.jpg").toString("base64url");
-  const upload=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/${report}/photo?business_date=2026-08-08&expected_revision=0`,"supervisor",{method:"POST",headers:{"Content-Type":"image/jpeg","X-Upload-Filename":filename},body:Buffer.from([0xff,0xd8,0xff,0xdb])});
-  assert.equal(upload.status,200);
-  const uploaded=await upload.json();
-  assert.equal(uploaded.attachment.id,photo);
-  assert.equal("storage_path"in uploaded.attachment,false);
-  assert.deepEqual(calls.at(-1),{name:"sales-photo-upload",input:{actorUserId:supervisor,branchId:branch,businessDate:"2026-08-08",reportId:report,expectedRevision:0,bytes:4,mimeType:"image/jpeg",originalFilename:"evidence.jpg"}});
+ it("prepares, finalizes, and removes one optional photo through the direct-upload lifecycle",async()=>{
+  const intent=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/photos/upload-intent`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({business_date:"2026-08-08",report_id:report,expected_revision:0,mime_type:"image/jpeg",original_filename:"mobile.jpg",size_bytes:2048,replacement_attachment_id:null})});
+  assert.equal(intent.status,200);const prepared=await intent.json();assert.equal(prepared.attachment_id,photo);assert.match(prepared.signed_upload_url,/exact-path/);assert.equal("storage_path"in prepared,false);
+  const finalized=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/${report}/photos/${photo}/finalize`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({business_date:"2026-08-08",expected_revision:0,mime_type:"image/jpeg",original_filename:"mobile.jpg",size_bytes:2048,replacement_attachment_id:null})});
+  assert.equal(finalized.status,200);const body=await finalized.json();assert.equal(body.attachments.length,1);assert.equal(body.attachments[0].display_order,1);assert.equal("storage_path"in body.attachments[0],false);
   const removed=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/${report}/photo/${photo}`,"supervisor",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_revision:0})});
-  assert.equal(removed.status,200);
-  assert.deepEqual(await removed.json(),{attachment:null});
-  assert.equal((await request(`/api/v1/supervisor/branches/${otherBranch}/checklists/sales_tracking/${report}/photo?business_date=2026-08-08&expected_revision=0`,"supervisor",{method:"POST",headers:{"Content-Type":"image/jpeg","X-Upload-Filename":filename},body:Buffer.from([0xff,0xd8,0xff,0xdb])})).status,403);
+  assert.equal(removed.status,200);assert.deepEqual(await removed.json(),{attachments:[]});
+  assert.equal((await request(`/api/v1/supervisor/branches/${otherBranch}/checklists/sales_tracking/photos/upload-intent`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({business_date:"2026-08-08",report_id:report,expected_revision:0,mime_type:"image/jpeg",original_filename:"cross.jpg",size_bytes:2048})})).status,403);
  });
 
  it("maps the required online provider breakdown input error to a safe 422 response",async()=>{
@@ -516,6 +526,20 @@ describe("Sales Tracking API integration",()=>{
  assert.deepEqual(body.cash_rows[0].denominations,{"1":8,"2":1,"5":24,"10":3,"20":2,"50":2,"100":0,"200":1,"500":1});
   assert.equal(body.cash_rows[0].cash_total,1000);
   assert.equal(calls.at(-1)?.name,"managed-sales-tracking");
+ });
+ it("loads safe evidence metadata only from the Manager detail route",async()=>{
+  managedAttachments=[
+   {id:"76000000-0000-4000-8000-000000000001",original_filename:"one.jpg",mime_type:"image/jpeg",size_bytes:100,created_at:"2026-08-08T10:01:00.000Z",signed_url:"https://signed.invalid/one",display_order:1},
+   {id:"76000000-0000-4000-8000-000000000002",original_filename:"two.png",mime_type:"image/png",size_bytes:200,created_at:"2026-08-08T10:02:00.000Z",signed_url:"https://signed.invalid/two",display_order:2},
+   {id:"76000000-0000-4000-8000-000000000003",original_filename:"three.webp",mime_type:"image/webp",size_bytes:300,created_at:"2026-08-08T10:03:00.000Z",signed_url:null,display_order:3},
+  ];
+  const detail=await request(`/api/v1/management/organizations/${org}/sales-tracking/${report}/attachments`,"manager");
+  const detailBody=await detail.json();
+  assert.equal(detail.status,200);
+  assert.deepEqual(detailBody.attachments.map((attachment:Record<string,unknown>)=>attachment.display_order),[1,2,3]);
+  assert.equal(detailBody.attachments[2].signed_url,null);
+  assert.equal(JSON.stringify(detailBody).includes("storage_path"),false);
+  assert.equal(calls.at(-1)?.name,"managed-sales-tracking-attachments");
  });
  it("returns read-only Manager online provider breakdown without changing aggregate totals",async()=>{
   providers.push({id:"57000000-0000-4000-8000-000000000099",organization_id:org,branch_id:branch,name:"Keeta",normalized_name:"keeta",default_provider_key:null,is_default:false,active:true,created_by:supervisor,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"});
