@@ -12,6 +12,7 @@ import { managementSalesTrackingMonthlySummarySchema } from "../lib/contracts/ma
 
 const supervisor="16000000-0000-4000-8000-000000000001",manager="16000000-0000-4000-8000-000000000002",otherManager="16000000-0000-4000-8000-000000000003";
 const branch="26000000-0000-4000-8000-000000000001",otherBranch="26000000-0000-4000-8000-000000000002",org="36000000-0000-4000-8000-000000000001";
+const report="56000000-0000-4000-8000-000000000001",photo="76000000-0000-4000-8000-000000000001";
 const calls:Array<{name:string;input:unknown}>=[];
 let currentSalesRows:Array<Record<string,unknown>>=[];
 let currentCashRows:Array<Record<string,unknown>>=[];
@@ -57,6 +58,8 @@ function managerProviderBreakdown(row:Record<string,unknown>){
 
 function current(){
   const sumSales=(field:string)=>currentSalesRows.reduce((total,row)=>total+numeric(row[field]),0);
+  const grossSales=sumSales("actual_cash")+sumSales("actual_credit")+sumSales("online_delivery");
+  const refundTotal=sumSales("refund_total");
   const cashTotal=currentCashRows.reduce((total,row)=>total+Number(row.denom_1)+Number(row.denom_2)*2+Number(row.denom_5)*5+Number(row.denom_10)*10+Number(row.denom_20)*20+Number(row.denom_50)*50+Number(row.denom_100)*100+Number(row.denom_200)*200+Number(row.denom_500)*500,0);
   return {
     report_id:currentRevision===0?null:"56000000-0000-4000-8000-000000000001",
@@ -67,14 +70,18 @@ function current(){
     submitted_at:submittedAt,
     submitted_by_user_id:submittedByUserId,
     submitted_by_name_snapshot:submittedByNameSnapshot,
+    attachment:null,
     periods:currentPeriods,
     sales_rows:currentSalesRows.map((row)=>({
       ...row,
+      refund_total:row.refund_total??"0",
       online_amounts:(Array.isArray(row.online_amounts)?row.online_amounts:[]).map((amount)=>({
         ...(amount as Record<string,unknown>),
         provider_name:providerFor((amount as Record<string,unknown>).provider_id)?.name??"Unknown",
       })),
       actual_total:numeric(row.actual_cash)+numeric(row.actual_credit)+numeric(row.online_delivery),
+      gross_sales:numeric(row.actual_cash)+numeric(row.actual_credit)+numeric(row.online_delivery),
+      net_sales:numeric(row.actual_cash)+numeric(row.actual_credit)+numeric(row.online_delivery)-numeric(row.refund_total),
       pos_total:numeric(row.pos_cash)+numeric(row.pos_credit)+numeric(row.online_delivery),
       variance:numeric(row.actual_cash)+numeric(row.actual_credit)-numeric(row.pos_cash)-numeric(row.pos_credit),
     })),
@@ -82,7 +89,7 @@ function current(){
       ...row,
       cash_total:Number(row.denom_1)+Number(row.denom_2)*2+Number(row.denom_5)*5+Number(row.denom_10)*10+Number(row.denom_20)*20+Number(row.denom_50)*50+Number(row.denom_100)*100+Number(row.denom_200)*200+Number(row.denom_500)*500,
     })),
-    totals:{actual_cash:sumSales("actual_cash"),actual_credit:sumSales("actual_credit"),pos_cash:sumSales("pos_cash"),pos_credit:sumSales("pos_credit"),online_delivery:sumSales("online_delivery"),actual_total:sumSales("actual_cash")+sumSales("actual_credit")+sumSales("online_delivery"),pos_total:sumSales("pos_cash")+sumSales("pos_credit")+sumSales("online_delivery"),variance:sumSales("actual_cash")+sumSales("actual_credit")-sumSales("pos_cash")-sumSales("pos_credit"),cash_total:cashTotal,remaining_cash:currentCashRows.reduce((total,row)=>total+numeric(row.remaining_cash),0)},
+    totals:{actual_cash:sumSales("actual_cash"),actual_credit:sumSales("actual_credit"),pos_cash:sumSales("pos_cash"),pos_credit:sumSales("pos_credit"),online_delivery:sumSales("online_delivery"),actual_total:grossSales,gross_sales:grossSales,refund_total:refundTotal,net_sales:grossSales-refundTotal,pos_total:sumSales("pos_cash")+sumSales("pos_credit")+sumSales("online_delivery"),variance:sumSales("actual_cash")+sumSales("actual_credit")-sumSales("pos_cash")-sumSales("pos_credit"),cash_total:cashTotal,remaining_cash:currentCashRows.reduce((total,row)=>total+numeric(row.remaining_cash),0)},
   };
 }
 
@@ -108,6 +115,16 @@ const persistence={
   const provider={id:"57000000-0000-4000-8000-000000000099",organization_id:org,branch_id:branch,name,normalized_name:normalized,default_provider_key:null,is_default:false,active:true,created_by:input.actorUserId,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"};
   providers.push(provider);
   return{provider};
+ },
+ async uploadSalesTrackingPhoto(input:{actorUserId:string;branchId:string;businessDate:string;reportId:string|null;expectedRevision:number;bytes:Buffer;mimeType:string;originalFilename:string}){
+  calls.push({name:"sales-photo-upload",input:{...input,bytes:input.bytes.length}});
+  if(input.branchId!==branch)throw new ChecklistAccessError();
+  return{report_id:input.reportId??report,revision:input.expectedRevision,attachment:{id:photo,original_filename:input.originalFilename,mime_type:input.mimeType,size_bytes:input.bytes.length,created_at:"2026-08-08T10:00:00.000Z",signed_url:"https://signed.invalid/photo"}};
+ },
+ async removeSalesTrackingPhoto(input:{actorUserId:string;branchId:string;reportId:string;attachmentId:string;expectedRevision:number}){
+  calls.push({name:"sales-photo-remove",input});
+  if(input.branchId!==branch)throw new ChecklistAccessError();
+  return{attachment:null};
  },
  async saveSalesTrackingDraft(input:{actorUserId:string;branchId:string;businessDate?:string|null;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:{sales_rows:Array<Record<string,unknown>>;cash_rows:Array<{entry_date:string;denominations:Record<string,number>;remaining_cash:unknown;remarks:string}>}}){
   calls.push({name:"sales-draft",input});
@@ -162,7 +179,7 @@ const persistence={
   return {
     sales_rows:currentState==="submitted"?currentSalesRows.map((row,index)=>({
       ...base,row_id:`56000000-0000-4000-8000-00000000010${index}`,entry_date:row.entry_date,entry_period:row.entry_period,entered_by:row.entered_by_name,entered_at:row.entered_at,actual_cash:row.actual_cash,actual_credit:row.actual_credit,pos_cash:row.pos_cash,pos_credit:row.pos_credit,online_delivery:row.online_delivery,online_provider_breakdown:managerProviderBreakdown(row),
-      actual_total:numeric(row.actual_cash)+numeric(row.actual_credit)+numeric(row.online_delivery),
+      refund_total:row.refund_total??"0",actual_total:numeric(row.actual_cash)+numeric(row.actual_credit)+numeric(row.online_delivery),gross_sales:numeric(row.actual_cash)+numeric(row.actual_credit)+numeric(row.online_delivery),net_sales:numeric(row.actual_cash)+numeric(row.actual_credit)+numeric(row.online_delivery)-numeric(row.refund_total),evidence_filename:null,evidence_available:false,
       pos_total:numeric(row.pos_cash)+numeric(row.pos_credit)+numeric(row.online_delivery),
       variance:numeric(row.actual_cash)+numeric(row.actual_credit)-numeric(row.pos_cash)-numeric(row.pos_credit),
       remarks:row.remarks,
@@ -180,7 +197,7 @@ const persistence={
   const empty=input.month==="2026-09";
   const metrics={
     submitted_report_count:empty?0:2,submitted_day_count:empty?0:1,sales_entry_count:empty?0:2,cash_entry_count:empty?0:1,
-    total_sales:empty?"0":"10498.00",total_cash_collected:empty?"0":"1000.00",total_variance:"0.00",
+    total_sales:empty?"0":"10498.00",gross_sales:empty?"0":"10498.00",refund_total:empty?"0":"0.00",net_sales:empty?"0":"10498.00",total_cash_collected:empty?"0":"1000.00",total_variance:"0.00",
     balanced_sales_report_count:empty?0:2,variance_sales_report_count:0,
     payment_breakdown:{actual_cash:empty?"0":"324.00",actual_credit:empty?"0":"7190.00",online_delivery:empty?"0":"2984.00",pos_cash:empty?"0":"324.00",pos_credit:empty?"0":"7190.00"},
     online_provider_breakdown:empty?[]:useProviderAliasShape?[{provider_id:"57000000-0000-4000-8000-000000000001",default_provider_key:"jahez",name:"Jahez",amount:1800},{provider_id:"57000000-0000-4000-8000-000000000003",default_provider_key:"hungerstation",name:"HungerStation",amount:"0"}]:[{provider_id:"57000000-0000-4000-8000-000000000001",provider_key:"jahez",provider_name:"Jahez",amount:"1800.00"},{provider_id:"57000000-0000-4000-8000-000000000003",provider_key:"hungerstation",provider_name:"HungerStation",amount:"1184.00"}],
@@ -275,7 +292,7 @@ describe("Sales Tracking API integration",()=>{
  it("returns empty current state for a Supervisor",async()=>{
   const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/current-state`,"supervisor");
   assert.equal(response.status,200);
-  assert.deepEqual(await response.json(),{current:{report_id:null,business_date:"2026-08-08",currency_code:"SAR",state:"draft",revision:0,submitted_at:null,submitted_by_user_id:null,submitted_by_name_snapshot:null,periods:[],sales_rows:[],cash_rows:[],totals:{actual_cash:0,actual_credit:0,pos_cash:0,pos_credit:0,online_delivery:0,actual_total:0,pos_total:0,variance:0,cash_total:0,remaining_cash:0}}});
+  assert.deepEqual(await response.json(),{current:{report_id:null,business_date:"2026-08-08",currency_code:"SAR",state:"draft",revision:0,submitted_at:null,submitted_by_user_id:null,submitted_by_name_snapshot:null,attachment:null,periods:[],sales_rows:[],cash_rows:[],totals:{actual_cash:0,actual_credit:0,pos_cash:0,pos_credit:0,online_delivery:0,actual_total:0,gross_sales:0,refund_total:0,net_sales:0,pos_total:0,variance:0,cash_total:0,remaining_cash:0}}});
  });
 
  it("passes an explicit Sales Tracking business date through current, draft, and submit",async()=>{
@@ -335,6 +352,31 @@ describe("Sales Tracking API integration",()=>{
   assert.equal(body.current.totals.actual_total,5249);
   assert.equal(body.current.totals.cash_total,1000);
   assert.deepEqual(body.current.cash_rows[0].denominations,{"1":8,"2":1,"5":24,"10":3,"20":2,"50":2,"100":0,"200":1,"500":1});
+ });
+ it("accepts refund without changing variance and rejects invalid refund amounts",async()=>{
+  const path=`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/draft`;
+  const response=await request(path,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...draftPayload,sales_rows:[{...draftPayload.sales_rows[0],refund_total:"49.50"}]})});
+  assert.equal(response.status,200);
+  const current=(await response.json()).current;
+  assert.equal(current.sales_rows[0].refund_total,"49.50");
+  assert.equal(current.sales_rows[0].gross_sales,5249);
+  assert.equal(current.sales_rows[0].net_sales,5199.5);
+  assert.equal(current.sales_rows[0].variance,0);
+  assert.equal((await request(path,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...draftPayload,sales_rows:[{...draftPayload.sales_rows[0],refund_total:"0.001"}]})})).status,400);
+  assert.equal((await request(path,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...draftPayload,sales_rows:[{...draftPayload.sales_rows[0],refund_total:"99999.00"}]})})).status,400);
+ });
+ it("uploads and removes one optional Sales evidence photo through dedicated routes",async()=>{
+  const filename=Buffer.from("evidence.jpg").toString("base64url");
+  const upload=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/${report}/photo?business_date=2026-08-08&expected_revision=0`,"supervisor",{method:"POST",headers:{"Content-Type":"image/jpeg","X-Upload-Filename":filename},body:Buffer.from([0xff,0xd8,0xff,0xdb])});
+  assert.equal(upload.status,200);
+  const uploaded=await upload.json();
+  assert.equal(uploaded.attachment.id,photo);
+  assert.equal("storage_path"in uploaded.attachment,false);
+  assert.deepEqual(calls.at(-1),{name:"sales-photo-upload",input:{actorUserId:supervisor,branchId:branch,businessDate:"2026-08-08",reportId:report,expectedRevision:0,bytes:4,mimeType:"image/jpeg",originalFilename:"evidence.jpg"}});
+  const removed=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/${report}/photo/${photo}`,"supervisor",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_revision:0})});
+  assert.equal(removed.status,200);
+  assert.deepEqual(await removed.json(),{attachment:null});
+  assert.equal((await request(`/api/v1/supervisor/branches/${otherBranch}/checklists/sales_tracking/${report}/photo?business_date=2026-08-08&expected_revision=0`,"supervisor",{method:"POST",headers:{"Content-Type":"image/jpeg","X-Upload-Filename":filename},body:Buffer.from([0xff,0xd8,0xff,0xdb])})).status,403);
  });
 
  it("maps the required online provider breakdown input error to a safe 422 response",async()=>{

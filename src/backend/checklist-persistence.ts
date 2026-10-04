@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
@@ -176,6 +176,8 @@ export type ChecklistPersistence = {
   createSalesTrackingOnlineOrderProvider?(input:{actorUserId:string;branchId:string;name:string}):Promise<unknown>;
   saveSalesTrackingDraft?(input:{actorUserId:string;branchId:string;businessDate?:string|null;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:SalesTrackingDraftPayload}):Promise<unknown>;
   submitSalesTracking?(input:{actorUserId:string;branchId:string;businessDate?:string|null;expectedRevision:number;idempotencyKey:string}):Promise<unknown>;
+  uploadSalesTrackingPhoto?(input:{actorUserId:string;branchId:string;businessDate:string;reportId?:string|null;expectedRevision:number;bytes:Buffer;mimeType:string;originalFilename:string}):Promise<unknown>;
+  removeSalesTrackingPhoto?(input:{actorUserId:string;branchId:string;reportId:string;attachmentId:string;expectedRevision:number}):Promise<unknown>;
   getFinancialClosingCurrentState?(actorUserId:string,branchId:string):Promise<unknown>;
   saveFinancialClosingDraft?(input:{actorUserId:string;branchId:string;expectedRevision:number;items:unknown[]}):Promise<unknown>;
   submitFinancialClosing?(input:{actorUserId:string;branchId:string;expectedRevision:number;items:unknown[]}):Promise<unknown>;
@@ -244,6 +246,7 @@ export type SalesTrackingDraftPayload = {
     pos_cash:string|number;
     pos_credit:string|number;
     online_delivery:string|number;
+    refund_total?:string|number;
     online_amounts?:Array<{provider_id:string;amount:string|number}>;
     remarks:string;
   }>;
@@ -328,10 +331,17 @@ const salesTrackingTotals=z.object({
   pos_credit:numericJson,
   online_delivery:numericJson,
   actual_total:numericJson,
+  gross_sales:numericJson,
+  refund_total:numericJson,
+  net_sales:numericJson,
   pos_total:numericJson,
   variance:numericJson,
   cash_total:numericJson,
   remaining_cash:numericJson,
+}).strict();
+const salesTrackingAttachmentInternal=z.object({
+  id:z.uuid(),storage_path:z.string().min(1),original_filename:z.string().min(1),
+  mime_type:z.enum(["image/jpeg","image/png","image/webp"]),size_bytes:z.union([z.number(),z.string()]),created_at:z.string(),
 }).strict();
 const salesTrackingCurrent=z.object({
   report_id:z.uuid().nullable(),
@@ -342,6 +352,7 @@ const salesTrackingCurrent=z.object({
   submitted_at:z.string().nullable(),
   submitted_by_user_id:z.uuid().nullable(),
   submitted_by_name_snapshot:z.string().nullable(),
+  attachment:salesTrackingAttachmentInternal.nullable(),
   periods:z.array(z.object({id:z.uuid(),entry_period:salesTrackingPeriod,entered_by_user_id:z.uuid(),entered_by_name:z.string(),entered_at:z.string()}).strict()).max(2),
   sales_rows:z.array(z.object({
     id:z.uuid().optional(),
@@ -355,9 +366,12 @@ const salesTrackingCurrent=z.object({
     pos_cash:numericJson,
     pos_credit:numericJson,
     online_delivery:numericJson,
+    refund_total:numericJson,
     online_amounts:z.array(z.object({id:z.uuid().optional(),provider_id:z.uuid(),provider_name:z.string(),amount:numericJson}).strict()).optional().default([]),
     remarks:z.string().max(2000).nullable().optional(),
     actual_total:numericJson.optional(),
+    gross_sales:numericJson.optional(),
+    net_sales:numericJson.optional(),
     pos_total:numericJson.optional(),
     variance:numericJson.optional(),
   }).strict()).max(31),
@@ -475,8 +489,13 @@ const managedSalesTrackingReports=z.object({
     pos_cash:numericJson,
     pos_credit:numericJson,
     online_delivery:numericJson,
+    refund_total:numericJson,
     online_provider_breakdown:z.array(managedSalesTrackingOnlineProviderAmount).optional().default([]),
     actual_total:numericJson,
+    gross_sales:numericJson,
+    net_sales:numericJson,
+    evidence_filename:z.string().nullable(),
+    evidence_available:z.boolean(),
     pos_total:numericJson,
     variance:numericJson,
     remarks:z.string().max(2000).nullable().optional(),
@@ -580,6 +599,7 @@ function salesTrackingRpcPayload(payload:SalesTrackingDraftPayload){
       pos_cash:row.pos_cash,
       pos_credit:row.pos_credit,
       online_delivery:row.online_delivery,
+      refund_total:row.refund_total??"0",
       ...(row.online_amounts?{online_amounts:row.online_amounts}:{}),
       remarks:row.remarks,
     })),
@@ -610,8 +630,31 @@ export function salesTrackingSubmitRpcArgs(actorUserId:string,branchId:string,ex
  return businessDate?{actor_user_id:actorUserId,target_branch_id:branchId,target_business_date:businessDate,expected_revision:expectedRevision,idempotency_key:idempotencyKey,request_hash:requestHash}:{actor_user_id:actorUserId,target_branch_id:branchId,expected_revision:expectedRevision,idempotency_key:idempotencyKey,request_hash:requestHash};
 }
 
+export const MAX_SALES_TRACKING_PHOTO_BYTES=5*1024*1024;
+const SALES_TRACKING_EVIDENCE_BUCKET="sales-tracking-evidence";
+const SALES_TRACKING_PHOTO_URL_SECONDS=5*60;
+const ensuredSalesTrackingReport=z.object({report_id:z.uuid(),organization_id:z.uuid(),branch_id:z.uuid(),business_date:dateOnly,revision:z.union([z.number(),z.string()])}).strict();
+const salesTrackingAttachmentMutation=z.object({attachment:salesTrackingAttachmentInternal.nullable(),old_storage_path:z.string().nullable()}).strict();
+
+export function salesTrackingPhotoMime(bytes:Buffer,declaredMime:string){
+ if(bytes.length===0||bytes.length>MAX_SALES_TRACKING_PHOTO_BYTES)throw new ChecklistInputError();
+ const jpeg=bytes.length>=3&&bytes[0]===0xff&&bytes[1]===0xd8&&bytes[2]===0xff;
+ const png=bytes.length>=8&&bytes.subarray(0,8).equals(Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]));
+ const webp=bytes.length>=12&&bytes.subarray(0,4).toString("ascii")==="RIFF"&&bytes.subarray(8,12).toString("ascii")==="WEBP";
+ const detected=jpeg?"image/jpeg":png?"image/png":webp?"image/webp":null;
+ if(!detected||detected!==declaredMime)throw new ChecklistInputError();
+ return {mimeType:detected,extension:detected==="image/jpeg"?"jpg":detected==="image/png"?"png":"webp"} as const;
+}
+
+function salesTrackingPhotoFilename(value:string){
+ const clean=value.trim().replace(/[\\/\u0000-\u001f\u007f]/gu,"_").slice(0,180);
+ if(!clean)throw new ChecklistInputError();
+ return clean;
+}
+
 export function createChecklistPersistence(url:string,secretKey:string):ChecklistPersistence{
  const client=createClient(url,secretKey,{auth:nonPersistentAuth});
+ const salesTrackingPhotoStorage=client.storage.from(SALES_TRACKING_EVIDENCE_BUCKET);
  async function rpc(name:string,args:Record<string,unknown>){
   const result=await client.rpc(name,args);
   if(result.error)throwChecklistRpcError(result.error.code,result.error.message);
@@ -656,6 +699,17 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
  async function coldStorageDraftRpc(input:Parameters<NonNullable<ChecklistPersistence["saveColdStorageDraft"]>>[0]){
   return runColdStorageDraftRpc(()=>client.rpc("save_cold_storage_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,equipment:input.equipment,readings:input.readings}),input.diagnostics);
  }
+ async function safeSalesTrackingAttachment(attachment:z.infer<typeof salesTrackingAttachmentInternal>|null){
+  if(!attachment)return null;
+  let signedUrl:string|null=null;
+  try{const signed=await salesTrackingPhotoStorage.createSignedUrl(attachment.storage_path,SALES_TRACKING_PHOTO_URL_SECONDS);signedUrl=signed.error?null:signed.data?.signedUrl??null;}catch{signedUrl=null;}
+  return{id:attachment.id,original_filename:attachment.original_filename,mime_type:attachment.mime_type,size_bytes:Number(attachment.size_bytes),created_at:attachment.created_at,signed_url:signedUrl};
+ }
+ async function safeSalesTrackingCurrent(value:unknown){
+  const current=salesTrackingCurrent.parse(value);
+  const {attachment,...rest}=current;
+  return{...rest,attachment:await safeSalesTrackingAttachment(attachment)};
+ }
  return {
   getOverview:(actorUserId,branchId)=>rpc("get_phase4a_supervisor_overview",{actor_user_id:actorUserId,target_branch_id:branchId}),
   async getManagementOverview(actorUserId,organizationId){
@@ -685,7 +739,7 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   getColdStorageCurrentState:(actorUserId,branchId)=>rpc("get_cold_storage_current_state",{actor_user_id:actorUserId,target_branch_id:branchId}),
   saveColdStorageDraft:coldStorageDraftRpc,
   submitColdStorageSlot:(input)=>rpc("submit_cold_storage_slot",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,slot:input.slot,idempotency_key:input.idempotencyKey,request_hash:checklistRequestHash({type:"cold_storage",slot:input.slot,equipment:input.equipment,readings:input.readings}),equipment:input.equipment,readings:input.readings}),
-  async getSalesTrackingCurrentState(actorUserId,branchId,businessDate){const args=businessDate?{actor_user_id:actorUserId,target_branch_id:branchId,target_business_date:businessDate}:{actor_user_id:actorUserId,target_branch_id:branchId};return salesTrackingCurrent.parse(await rpc("get_sales_tracking_current_state",args));},
+  async getSalesTrackingCurrentState(actorUserId,branchId,businessDate){const args=businessDate?{actor_user_id:actorUserId,target_branch_id:branchId,target_business_date:businessDate}:{actor_user_id:actorUserId,target_branch_id:branchId};return safeSalesTrackingCurrent(await rpc("get_sales_tracking_current_state",args));},
   async listSalesTrackingOnlineOrderProviders(actorUserId,branchId){
    return salesTrackingOnlineOrderProviders.parse(await rpc("list_sales_tracking_online_order_providers",{actor_user_id:actorUserId,target_branch_id:branchId}));
   },
@@ -693,10 +747,30 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
    return salesTrackingOnlineOrderProviderMutation.parse(await rpc("create_sales_tracking_online_order_provider",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,provider_name:input.name}));
   },
   async saveSalesTrackingDraft(input){
-   return salesTrackingCurrent.parse(await rpc("save_sales_tracking_draft",salesTrackingDraftRpcArgs(input.actorUserId,input.branchId,input.expectedRevision,input.entryPeriod,input.payload,input.businessDate)));
+   return safeSalesTrackingCurrent(await rpc("save_sales_tracking_draft",salesTrackingDraftRpcArgs(input.actorUserId,input.branchId,input.expectedRevision,input.entryPeriod,input.payload,input.businessDate)));
   },
 	  async submitSalesTracking(input){
-	   return salesTrackingCurrent.parse(await rpc("submit_sales_tracking",salesTrackingSubmitRpcArgs(input.actorUserId,input.branchId,input.expectedRevision,input.idempotencyKey,input.businessDate)));
+	   return safeSalesTrackingCurrent(await rpc("submit_sales_tracking",salesTrackingSubmitRpcArgs(input.actorUserId,input.branchId,input.expectedRevision,input.idempotencyKey,input.businessDate)));
+	  },
+	  async uploadSalesTrackingPhoto(input){
+	   const mime=salesTrackingPhotoMime(input.bytes,input.mimeType),filename=salesTrackingPhotoFilename(input.originalFilename);
+	   const ensuredRows=z.array(ensuredSalesTrackingReport).length(1).parse(await rpc("ensure_sales_tracking_draft_report",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_business_date:input.businessDate}));
+	   const ensured=ensuredRows[0];
+	   if(input.reportId&&input.reportId!==ensured.report_id)throw new ChecklistConflictError("PT409");
+	   if(Number(ensured.revision)!==input.expectedRevision)throw new ChecklistConflictError("PT409");
+	   const attachmentId=randomUUID(),path=`${ensured.organization_id}/${ensured.branch_id}/sales-tracking/${ensured.report_id}/${attachmentId}.${mime.extension}`;
+	   const uploaded=await salesTrackingPhotoStorage.upload(path,input.bytes,{contentType:mime.mimeType,upsert:false});
+	   if(uploaded.error)throw new Error("Checklist persistence unavailable.");
+	   let mutation:z.infer<typeof salesTrackingAttachmentMutation>;
+	   try{mutation=salesTrackingAttachmentMutation.parse(await rpc("finalize_sales_tracking_attachment",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_report_id:ensured.report_id,expected_revision:input.expectedRevision,attachment_id:attachmentId,attachment_metadata:{storage_path:path,original_filename:filename,mime_type:mime.mimeType,size_bytes:input.bytes.length}}));}
+	   catch(error){await salesTrackingPhotoStorage.remove([path]);throw error;}
+	   if(mutation.old_storage_path)await salesTrackingPhotoStorage.remove([mutation.old_storage_path]);
+	   return{report_id:ensured.report_id,revision:Number(ensured.revision),attachment:await safeSalesTrackingAttachment(mutation.attachment)};
+	  },
+	  async removeSalesTrackingPhoto(input){
+	   const mutation=salesTrackingAttachmentMutation.parse(await rpc("remove_sales_tracking_attachment",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_report_id:input.reportId,target_attachment_id:input.attachmentId,expected_revision:input.expectedRevision}));
+	   if(mutation.old_storage_path)await salesTrackingPhotoStorage.remove([mutation.old_storage_path]);
+	   return{attachment:null};
 	  },
 	  getFinancialClosingCurrentState:(actorUserId,branchId)=>rpc("get_financial_closing_current_state",{actor_user_id:actorUserId,target_branch_id:branchId}),
 	  saveFinancialClosingDraft:(input)=>rpc("save_financial_closing_draft",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,report_items:input.items}),

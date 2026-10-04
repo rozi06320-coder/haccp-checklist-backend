@@ -17,7 +17,7 @@ import {
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
 import { branchLocalDate, canonicalizeMaintenancePurchasePayload, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_PURCHASE_REQUEST_PRODUCT_PHOTO_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, purchaseRequestProductPhotoMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime, SupervisorPromotionConflictDiagnosticError, type MaintenanceIssuesStageTiming, type MaintenanceIssuesTimingDiagnostics } from "./operational";
-import { CatalogMappedIngredientError, ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ChecklistNotFoundError, ManagementOverviewUnavailableError, SalesTrackingOnlineProviderBreakdownRequiredError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
+import { CatalogMappedIngredientError, ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ChecklistNotFoundError, ManagementOverviewUnavailableError, MAX_SALES_TRACKING_PHOTO_BYTES, SalesTrackingOnlineProviderBreakdownRequiredError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
 import { MaintenancePushAccessError, MaintenancePushConflictError, MaintenancePushInputError, MaintenancePushUnavailableError } from "./maintenance-push";
@@ -1275,6 +1275,10 @@ const salesTrackingDecimalInputSchema=z.union([
   z.number().finite().nonnegative(),
   z.string().trim().max(40).regex(/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/),
 ]).transform(value=>typeof value==="number"?String(value):value);
+const salesTrackingRefundInputSchema=z.union([
+  z.number().finite().nonnegative().multipleOf(0.01),
+  z.string().trim().max(40).regex(/^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,2})?$/),
+]).optional().default("0").transform(value=>typeof value==="number"?value.toFixed(2):value);
 const salesTrackingTextSchema=z.string().max(2000).optional().nullable().transform(value=>value??"");
 const salesTrackingSalesRowInputSchema=z.object({
   entry_date:dateOnlySchema,
@@ -1283,6 +1287,7 @@ const salesTrackingSalesRowInputSchema=z.object({
   pos_cash:salesTrackingDecimalInputSchema,
   pos_credit:salesTrackingDecimalInputSchema,
   online_delivery:salesTrackingDecimalInputSchema,
+  refund_total:salesTrackingRefundInputSchema,
   online_amounts:z.array(z.object({
     provider_id:z.uuid(),
     amount:salesTrackingDecimalInputSchema,
@@ -1291,6 +1296,9 @@ const salesTrackingSalesRowInputSchema=z.object({
 }).strict().superRefine((value,context)=>{
   const providerIds=value.online_amounts.map((amount)=>amount.provider_id);
   if(new Set(providerIds).size!==providerIds.length)context.addIssue({code:"custom",path:["online_amounts"],message:"Duplicate provider IDs are not allowed."});
+  const online=value.online_amounts.length?value.online_amounts.reduce((total,amount)=>total+Number(amount.amount),0):Number(value.online_delivery);
+  const gross=Number(value.actual_cash)+Number(value.actual_credit)+online;
+  if(Number(value.refund_total)>gross)context.addIssue({code:"custom",path:["refund_total"],message:"Refund cannot exceed gross sales."});
 }).transform((value)=>value.online_amounts.length?{
   ...value,
   online_delivery:String(Math.round(value.online_amounts.reduce((total,amount)=>total+Number(amount.amount),0)*100)/100),
@@ -1313,7 +1321,10 @@ const salesTrackingCashRowInputSchema=z.object({
   remarks:salesTrackingTextSchema,
 }).strict();
 const salesTrackingPeriodSchema=z.enum(["middle_shift","closing_shift"]);
-const salesTrackingTotalsSchema=z.object({actual_cash:z.union([z.number(),z.string()]),actual_credit:z.union([z.number(),z.string()]),pos_cash:z.union([z.number(),z.string()]),pos_credit:z.union([z.number(),z.string()]),online_delivery:z.union([z.number(),z.string()]),actual_total:z.union([z.number(),z.string()]),pos_total:z.union([z.number(),z.string()]),variance:z.union([z.number(),z.string()]),cash_total:z.union([z.number(),z.string()]),remaining_cash:z.union([z.number(),z.string()])}).strict();
+const salesTrackingTotalsSchema=z.object({actual_cash:z.union([z.number(),z.string()]),actual_credit:z.union([z.number(),z.string()]),pos_cash:z.union([z.number(),z.string()]),pos_credit:z.union([z.number(),z.string()]),online_delivery:z.union([z.number(),z.string()]),actual_total:z.union([z.number(),z.string()]),gross_sales:z.union([z.number(),z.string()]),refund_total:z.union([z.number(),z.string()]),net_sales:z.union([z.number(),z.string()]),pos_total:z.union([z.number(),z.string()]),variance:z.union([z.number(),z.string()]),cash_total:z.union([z.number(),z.string()]),remaining_cash:z.union([z.number(),z.string()])}).strict();
+const salesTrackingPhotoResponseSchema=z.object({id:z.uuid(),original_filename:z.string(),mime_type:z.enum(["image/jpeg","image/png","image/webp"]),size_bytes:z.number().int().positive().max(MAX_SALES_TRACKING_PHOTO_BYTES),created_at:z.string(),signed_url:z.string().nullable()}).strict();
+const salesTrackingPhotoQuerySchema=z.object({business_date:dateOnlySchema,expected_revision:z.coerce.number().int().nonnegative()}).strict();
+const salesTrackingPhotoDeleteBodySchema=z.object({expected_revision:z.number().int().nonnegative()}).strict();
 const salesTrackingCurrentQuerySchema=z.object({business_date:dateOnlySchema.optional()}).strict();
 const salesTrackingBodySchema=z.object({
   business_date:dateOnlySchema.optional(),
@@ -1779,7 +1790,7 @@ const managedSalesTrackingOnlineProviderAmountSchema=z.object({provider_id:z.uui
 const managedSalesTrackingSchema=z.object({
   sales_rows:z.array(z.object({
     report_id:z.uuid(),row_id:z.uuid(),currency_code:z.enum(["SAR","AED"]).default("SAR"),business_date:dateOnlySchema,entry_date:dateOnlySchema,entry_period:salesTrackingPeriodSchema.nullable(),entered_by:z.string().nullable(),entered_at:z.string().nullable(),branch_id:z.uuid(),branch_name:z.string(),supervisor_user_id:z.uuid(),submitted_by:z.string().nullable(),supervisor_team_id:z.uuid(),supervisor_team_name:z.string(),submitted_at:z.string(),
-    actual_cash:z.union([z.number(),z.string()]),actual_credit:z.union([z.number(),z.string()]),pos_cash:z.union([z.number(),z.string()]),pos_credit:z.union([z.number(),z.string()]),online_delivery:z.union([z.number(),z.string()]),online_provider_breakdown:z.array(managedSalesTrackingOnlineProviderAmountSchema).optional().default([]),actual_total:z.union([z.number(),z.string()]),pos_total:z.union([z.number(),z.string()]),variance:z.union([z.number(),z.string()]),remarks:z.string().nullable().optional(),
+    actual_cash:z.union([z.number(),z.string()]),actual_credit:z.union([z.number(),z.string()]),pos_cash:z.union([z.number(),z.string()]),pos_credit:z.union([z.number(),z.string()]),online_delivery:z.union([z.number(),z.string()]),refund_total:z.union([z.number(),z.string()]),online_provider_breakdown:z.array(managedSalesTrackingOnlineProviderAmountSchema).optional().default([]),actual_total:z.union([z.number(),z.string()]),gross_sales:z.union([z.number(),z.string()]),net_sales:z.union([z.number(),z.string()]),evidence_filename:z.string().nullable(),evidence_available:z.boolean(),pos_total:z.union([z.number(),z.string()]),variance:z.union([z.number(),z.string()]),remarks:z.string().nullable().optional(),
   }).strict()).max(1000),
   cash_rows:z.array(z.object({
     report_id:z.uuid(),row_id:z.uuid(),currency_code:z.enum(["SAR","AED"]).default("SAR"),business_date:dateOnlySchema,entry_date:dateOnlySchema,entry_period:salesTrackingPeriodSchema.nullable(),entered_by:z.string().nullable(),entered_at:z.string().nullable(),branch_id:z.uuid(),branch_name:z.string(),supervisor_user_id:z.uuid(),submitted_by:z.string().nullable(),supervisor_team_id:z.uuid(),supervisor_team_name:z.string(),submitted_at:z.string(),
@@ -1879,6 +1890,7 @@ const salesTrackingCurrentSchema=z.object({
   submitted_at:z.string().nullable(),
   submitted_by_user_id:z.uuid().nullable(),
   submitted_by_name_snapshot:z.string().nullable(),
+  attachment:salesTrackingPhotoResponseSchema.nullable(),
   periods:z.array(z.object({id:z.uuid(),entry_period:salesTrackingPeriodSchema,entered_by_user_id:z.uuid(),entered_by_name:z.string(),entered_at:z.string()}).strict()).max(2),
   sales_rows:z.array(z.object({
     id:z.uuid().optional(),
@@ -1889,9 +1901,12 @@ const salesTrackingCurrentSchema=z.object({
     pos_cash:z.union([z.number(),z.string()]),
     pos_credit:z.union([z.number(),z.string()]),
     online_delivery:z.union([z.number(),z.string()]),
+    refund_total:z.union([z.number(),z.string()]),
     online_amounts:z.array(salesTrackingOnlineAmountSchema).optional().default([]),
     remarks:z.string().max(2000).nullable().optional(),
     actual_total:z.union([z.number(),z.string()]).optional(),
+    gross_sales:z.union([z.number(),z.string()]).optional(),
+    net_sales:z.union([z.number(),z.string()]).optional(),
     pos_total:z.union([z.number(),z.string()]).optional(),
     variance:z.union([z.number(),z.string()]).optional(),
   }).strict()).max(31),
@@ -2759,6 +2774,7 @@ export function createApp(
     response.once("finish",release);response.once("close",release);next();
   };
   const evidenceRawBody=express.raw({type:()=>true,limit:MAX_EVIDENCE_BYTES});
+  const salesTrackingPhotoRawBody=express.raw({type:()=>true,limit:MAX_SALES_TRACKING_PHOTO_BYTES});
   const brandingRawBody=express.raw({type:()=>true,limit:MAX_BRANDING_BYTES});
   const purchaseInvoiceRawBody=express.raw({type:()=>true,limit:MAX_PURCHASE_INVOICE_BYTES});
   const maintenanceReceiptRawBody=express.raw({type:()=>true,limit:MAX_PURCHASE_INVOICE_BYTES*MAX_MAINTENANCE_PURCHASE_PHOTOS*2});
@@ -7686,6 +7702,28 @@ export function createApp(
     if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.saveSalesTrackingDraft)throw new HttpError(403,"forbidden","Access is denied.");
     const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.saveSalesTrackingDraft({actorUserId:auth.userId,branchId:branch.data,businessDate:body.data.business_date??null,expectedRevision:body.data.expected_revision,entryPeriod:body.data.entry_period,payload:body.data}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
+  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+  const uploadSalesTrackingPhoto=async(request:Request,response:Response,next:NextFunction)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),report=z.uuid().optional().safeParse(request.params.reportId),query=salesTrackingPhotoQuerySchema.safeParse(request.query);
+    const mime=z.enum(["image/jpeg","image/png","image/webp"]).safeParse(String(request.header("content-type")??"").split(";")[0]?.trim().toLowerCase());
+    const filename=decodeUploadFilename(request.header("x-upload-filename"));
+    if(!branch.success||!report.success||!query.success||!mime.success||!filename||!Buffer.isBuffer(request.body))throw new HttpError(400,"bad_request","The photo request is invalid.");
+    if(request.body.length===0||request.body.length>MAX_SALES_TRACKING_PHOTO_BYTES)throw new HttpError(413,"payload_too_large","Image must be 5 MB or smaller.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.uploadSalesTrackingPhoto)throw new HttpError(403,"forbidden","Access is denied.");
+    const result=z.object({report_id:z.uuid(),revision:z.number().int().nonnegative(),attachment:salesTrackingPhotoResponseSchema}).strict().parse(await dependencies.checklistPersistence.uploadSalesTrackingPhoto({actorUserId:auth.userId,branchId:branch.data,businessDate:query.data.business_date,reportId:report.data??null,expectedRevision:query.data.expected_revision,bytes:request.body,mimeType:mime.data,originalFilename:filename}));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+  }catch(error){next(error instanceof HttpError?error:checklistError(error));}};
+  app.post("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/photo",protectedRateLimit,authenticate,salesTrackingPhotoRawBody,uploadSalesTrackingPhoto);
+  app.post("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/:reportId/photo",protectedRateLimit,authenticate,salesTrackingPhotoRawBody,uploadSalesTrackingPhoto);
+  app.delete("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/:reportId/photo/:photoId",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),report=z.uuid().safeParse(request.params.reportId),photo=z.uuid().safeParse(request.params.photoId),body=salesTrackingPhotoDeleteBodySchema.safeParse(request.body);
+    if(!branch.success||!report.success||!photo.success||!body.success)throw new HttpError(400,"bad_request","The photo request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.removeSalesTrackingPhoto)throw new HttpError(403,"forbidden","Access is denied.");
+    await dependencies.checklistPersistence.removeSalesTrackingPhoto({actorUserId:auth.userId,branchId:branch.data,reportId:report.data,attachmentId:photo.data,expectedRevision:body.data.expected_revision});
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json({attachment:null});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
   app.get("/api/v1/supervisor/branches/:branchId/inventory-items/current-state",protectedRateLimit,authenticate,async(request,response,next)=>{try{
