@@ -1,6 +1,13 @@
 begin;
 select no_plan();
 
+select ok(
+  has_function_privilege('service_role','public.archive_branch_catalog_product(uuid,uuid,uuid,timestamptz)','execute')
+  and not has_function_privilege('authenticated','public.archive_branch_catalog_product(uuid,uuid,uuid,timestamptz)','execute')
+  and not has_function_privilege('anon','public.archive_branch_catalog_product(uuid,uuid,uuid,timestamptz)','execute'),
+  'product archive RPC is service-role only'
+);
+
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated', id || '@daily-usage-catalog.invalid', '{}', '{}', now(), now()
 from unnest(array[
@@ -139,6 +146,91 @@ select results_eq(
     ) rows order by source$$,
   'successful archive leaves historical usage, inventory, and waste rows unchanged'
 );
+
+select lives_ok(
+  $$select public.save_branch_product_usage_mappings(
+    'c1500000-0000-4000-8000-000000000001',
+    'c3500000-0000-4000-8000-000000000001',
+    'c5500000-0000-4000-8000-000000000003',
+    '[{"inventory_item_id":"c4500000-0000-4000-8000-000000000004","quantity":2}]'::jsonb
+  )$$,
+  'historical Product C also has a current recipe before archive'
+);
+
+select throws_ok(
+  $$select public.archive_branch_catalog_product(
+    'c1500000-0000-4000-8000-000000000001',
+    'c3500000-0000-4000-8000-000000000001',
+    'c5500000-0000-4000-8000-000000000003',
+    '2000-01-01T00:00:00Z'
+  )$$,
+  '40001',
+  'catalog product changed',
+  'stale product timestamp is rejected'
+);
+
+select throws_ok(
+  $$select public.archive_branch_catalog_product(
+    'c1500000-0000-4000-8000-000000000002',
+    'c3500000-0000-4000-8000-000000000002',
+    'c5500000-0000-4000-8000-000000000003',
+    (select updated_at from public.branch_product_catalog_products where id='c5500000-0000-4000-8000-000000000003')
+  )$$,
+  'P0002',
+  'catalog product unavailable',
+  'cross-branch product ID is not visible to the archive RPC'
+);
+
+select lives_ok(
+  $$select public.archive_branch_catalog_product(
+    'c1500000-0000-4000-8000-000000000002',
+    'c3500000-0000-4000-8000-000000000002',
+    'c5500000-0000-4000-8000-000000000005',
+    (select updated_at from public.branch_product_catalog_products where id='c5500000-0000-4000-8000-000000000005')
+  )$$,
+  'last active product can be archived'
+);
+select is((select count(*)::int from public.branch_product_catalog_products where branch_id='c3500000-0000-4000-8000-000000000002' and is_active), 0, 'branch may have zero active products after archive');
+
+select lives_ok(
+  $$select public.archive_branch_catalog_product(
+    'c1500000-0000-4000-8000-000000000001',
+    'c3500000-0000-4000-8000-000000000001',
+    'c5500000-0000-4000-8000-000000000003',
+    (select updated_at from public.branch_product_catalog_products where id='c5500000-0000-4000-8000-000000000003')
+  )$$,
+  'active catalog product archives successfully'
+);
+select is((select is_active from public.branch_product_catalog_products where id='c5500000-0000-4000-8000-000000000003'), false, 'archive keeps product master and marks it inactive');
+select is((select count(*)::int from public.branch_product_usage_mappings where product_id='c5500000-0000-4000-8000-000000000003'), 0, 'archive removes only current recipe mappings');
+select is((select count(*)::int from public.branch_inventory_catalog_items where id='c4500000-0000-4000-8000-000000000004'), 1, 'archive preserves ingredient master');
+select is((select count(*)::int from public.branch_product_sales where id='c8500000-0000-4000-8000-000000000002'), 1, 'archive preserves historical product sale');
+select is((select count(*)::int from public.branch_product_sales_usage_snapshots where id='c8500000-0000-4000-8000-000000000003'), 1, 'archive preserves historical usage snapshot');
+
+select throws_ok(
+  $$select public.archive_branch_catalog_product(
+    'c1500000-0000-4000-8000-000000000001',
+    'c3500000-0000-4000-8000-000000000001',
+    'c5500000-0000-4000-8000-000000000003',
+    (select updated_at from public.branch_product_catalog_products where id='c5500000-0000-4000-8000-000000000003')
+  )$$,
+  '23505',
+  'catalog product already archived',
+  'repeated archive has deterministic conflict behavior'
+);
+
+select lives_ok(
+  $$select public.create_branch_catalog_product(
+    'c1500000-0000-4000-8000-000000000001',
+    'c3500000-0000-4000-8000-000000000001',
+    '{"name":"  Product   C ","inventory_behavior":"recipe","recipe_rows":[{"inventory_item_id":"c4500000-0000-4000-8000-000000000004","quantity":3}]}'::jsonb
+  )$$,
+  'adding the same normalized name restores the archived product'
+);
+select is((select count(*)::int from public.branch_product_catalog_products where branch_id='c3500000-0000-4000-8000-000000000001' and pg_catalog.lower(pg_catalog.regexp_replace(pg_catalog.btrim(name), '[[:space:]]+', ' ', 'g'))='product c'), 1, 'restore does not create a duplicate product UUID');
+select ok((select is_active and id='c5500000-0000-4000-8000-000000000003' from public.branch_product_catalog_products where id='c5500000-0000-4000-8000-000000000003'), 'restore reactivates the same product ID');
+select is((select quantity from public.branch_product_usage_mappings where product_id='c5500000-0000-4000-8000-000000000003' and inventory_item_id='c4500000-0000-4000-8000-000000000004'), 3::numeric, 'restore attaches fresh current mappings');
+select is((select count(*)::int from public.branch_product_sales_usage_snapshots where id='c8500000-0000-4000-8000-000000000003'), 1, 'restore leaves historical usage snapshot intact');
 
 select lives_ok(
   $$select public.reorder_branch_catalog_products(

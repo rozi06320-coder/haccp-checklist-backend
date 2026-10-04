@@ -5,6 +5,7 @@ import { describe, it } from "node:test";
 const migrationPath = new URL("../../supabase/migrations/20260909100000_product_inventory_recipe_catalogs.sql", import.meta.url);
 const identityMigrationPath = new URL("../../supabase/migrations/20260913120000_product_usage_mapping_inventory_identity.sql", import.meta.url);
 const orderArchiveMigrationPath = new URL("../../supabase/migrations/20260926150000_daily_usage_catalog_order_archive.sql", import.meta.url);
+const productArchiveRestoreMigrationPath = new URL("../../supabase/migrations/20261004120000_branch_catalog_product_archive_restore.sql", import.meta.url);
 
 describe("Product / Inventory / Recipe catalog persistence SQL boundary", () => {
   it("creates only branch-scoped catalog tables with RLS and no sales/waste/movement persistence", async () => {
@@ -182,5 +183,29 @@ describe("Product / Inventory / Recipe catalog persistence SQL boundary", () => 
     assert.match(migration, /grant execute on function public\.archive_branch_catalog_inventory_item\(uuid, uuid, uuid\) to service_role/);
     assert.match(migration, /revoke all on function public\.reorder_branch_catalog_products\(uuid, uuid, uuid\[\]\) from public, anon, authenticated/);
     assert.match(migration, /grant execute on function public\.reorder_branch_catalog_products\(uuid, uuid, uuid\[\]\) to service_role/);
+  });
+
+  it("archives catalog products and restores the same identity without touching history", async () => {
+    const migration = await readFile(productArchiveRestoreMigrationPath, "utf8");
+
+    assert.match(migration, /create or replace function public\.archive_branch_catalog_product\([\s\S]*expected_updated_at timestamptz/);
+    assert.match(migration, /private\.require_branch_catalog_scope\(actor_user_id, target_branch_id\)/);
+    assert.match(migration, /perform private\.lock_branch_catalog\(target_branch\.organization_id, target_branch\.id\)/);
+    assert.match(migration, /target_product\.updated_at <> expected_updated_at[\s\S]*errcode = '40001'/);
+    assert.match(migration, /delete from public\.branch_product_usage_mappings mapping[\s\S]*mapping\.product_id = target_product\.id/);
+    assert.match(migration, /set is_active = false,[\s\S]*display_order = null/);
+    assert.doesNotMatch(migration, /delete from public\.branch_product_catalog_products/i);
+    assert.doesNotMatch(migration, /delete from public\.branch_product_sales/i);
+    assert.doesNotMatch(migration, /delete from public\.branch_product_sales_usage_snapshots/i);
+    assert.doesNotMatch(migration, /delete from public\.branch_inventory_catalog_items/i);
+
+    assert.match(migration, /create or replace function public\.create_branch_catalog_product\(actor_user_id uuid, target_branch_id uuid, payload jsonb\)/);
+    assert.match(migration, /and not product\.is_active[\s\S]*regexp_replace[\s\S]*clean_name/);
+    assert.match(migration, /if coalesce\(cardinality\(archived_product_ids\), 0\) > 1[\s\S]*multiple archived products match this name/);
+    assert.match(migration, /where product\.id = archived_product_ids\[1\][\s\S]*for update/);
+    assert.match(migration, /set name = clean_name,[\s\S]*is_active = true/);
+    assert.match(migration, /return private\.branch_catalog_payload\(target_branch\.id\)/);
+    assert.match(migration, /revoke all on function public\.archive_branch_catalog_product\(uuid, uuid, uuid, timestamptz\) from public, anon, authenticated/);
+    assert.match(migration, /grant execute on function public\.archive_branch_catalog_product\(uuid, uuid, uuid, timestamptz\) to service_role/);
   });
 });

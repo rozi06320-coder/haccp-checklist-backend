@@ -53,6 +53,13 @@ const persistence = {
     mode = ((input as { payload: { inventoryBehavior: string } }).payload.inventoryBehavior === "standalone_stock") ? "standalone" : "recipe";
     return catalog();
   },
+  async archiveBranchCatalogProduct(input: unknown) {
+    calls.push({ name: "archive-product", input });
+    if (mode === "conflict") throw new ChecklistConflictError();
+    if (mode === "invalid") throw new ChecklistInputError();
+    if (mode === "access") throw new ChecklistAccessError();
+    return catalog();
+  },
   async createBranchCatalogInventoryItem(input: unknown) {
     calls.push({ name: "create-inventory", input });
     if (mode === "conflict") throw new ChecklistConflictError();
@@ -182,6 +189,24 @@ describe("Branch product and inventory catalog API", () => {
     assert.equal(result.inventory_items[0].name, "Bread");
     assert.equal(result.product_usage_mappings[0].product_id, productId);
     assert.deepEqual(calls.at(-1), { name: "create-product", input: { actorUserId: supervisor, branchId: branch, payload: { name: "Smoky Beef", inventoryBehavior: "recipe", unit: undefined, recipeRows: [{ ingredient: "Bread", quantity: 1, unit: "pcs" }] } } });
+  });
+
+  it("archives one branch product with optimistic concurrency and sanitized errors", async () => {
+    mode = "recipe";
+    const path = `/api/v1/supervisor/branches/${branch}/catalog/products/${productId}/archive`;
+    const body = { expected_updated_at: "2026-09-09T10:00:00.000Z" };
+    let response = await request(path, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls.at(-1), { name: "archive-product", input: { actorUserId: supervisor, branchId: branch, productId, expectedUpdatedAt: body.expected_updated_at } });
+
+    mode = "conflict";
+    response = await request(path, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).error.message, "Catalog data conflicts with an existing product or inventory item.");
+
+    mode = "recipe";
+    assert.equal((await request(path, "other-branch-mgr", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).status, 403);
+    assert.equal((await request(path, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })).status, 422);
   });
 
   it("creates standalone stock without a fake recipe and keeps non-stock product payload valid", async () => {

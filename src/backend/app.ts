@@ -1415,6 +1415,7 @@ const catalogUpdateInventoryItemBodySchema=z.object({name:normalizedNameSchema,u
 const catalogRecipeBodySchema=z.object({recipe_rows:z.array(catalogRecipeRowBodySchema).max(200)}).strict();
 const catalogMergeInventoryItemBodySchema=z.object({target_inventory_item_id:z.uuid()}).strict();
 const catalogProductOrderBodySchema=z.object({product_ids:z.array(z.uuid()).max(1000)}).strict();
+const catalogProductArchiveBodySchema=z.object({expected_updated_at:z.iso.datetime({offset:true})}).strict();
 const branchCatalogSchema=z.object({
   products:z.array(z.object({id:z.uuid(),branch_id:z.uuid(),name:z.string(),inventory_behavior:catalogProductBehaviorSchema,unit:catalogUnitSchema.nullable(),standalone_inventory_item_id:z.uuid().nullable(),display_order:z.number().int().positive().nullable().optional(),is_active:z.boolean(),created_at:z.string(),updated_at:z.string()}).strict()).max(1000),
   inventory_items:z.array(z.object({id:z.uuid(),branch_id:z.uuid(),name:z.string(),unit:catalogUnitSchema,kind:z.enum(["ingredient","standalone_stock"]),is_active:z.boolean(),created_at:z.string(),updated_at:z.string()}).strict()).max(2000),
@@ -7733,6 +7734,15 @@ export function createApp(
     if(context.must_change_password||!hasTargetBranchManagerAccess(context,branch.data)||!dependencies.checklistPersistence?.createBranchCatalogProduct)throw new HttpError(403,"forbidden","Access is denied.");
     const catalog=branchCatalogSchema.parse(await dependencies.checklistPersistence.createBranchCatalogProduct({actorUserId:auth.userId,branchId:branch.data,payload:{name:body.data.name,inventoryBehavior:body.data.inventory_behavior,unit:body.data.unit,recipeRows:body.data.recipe_rows}}));
     response.setHeader("Cache-Control","private, no-store");response.status(201).json(catalog);
+  }catch(error){next(error instanceof HttpError?error:catalogError(error));}});
+
+  app.patch("/api/v1/supervisor/branches/:branchId/catalog/products/:productId/archive",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),productId=branchIdSchema.safeParse(request.params.productId),body=catalogProductArchiveBodySchema.safeParse(request.body);
+    if(!branch.success||!productId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(422,"unprocessable_entity","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||!hasTargetBranchManagerAccess(context,branch.data)||!dependencies.checklistPersistence?.archiveBranchCatalogProduct)throw new HttpError(403,"forbidden","Access is denied.");
+    const catalog=branchCatalogSchema.parse(await dependencies.checklistPersistence.archiveBranchCatalogProduct({actorUserId:auth.userId,branchId:branch.data,productId:productId.data,expectedUpdatedAt:body.data.expected_updated_at}));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json(catalog);
   }catch(error){next(error instanceof HttpError?error:catalogError(error));}});
 
   app.post("/api/v1/supervisor/branches/:branchId/catalog/inventory-items",protectedRateLimit,authenticate,async(request,response,next)=>{try{

@@ -190,6 +190,7 @@ export type ChecklistPersistence = {
   deleteInventoryItemUsageItem?(input:{actorUserId:string;branchId:string;itemUsageId:string}):Promise<unknown>;
   listBranchCatalog?(actorUserId:string,branchId:string):Promise<unknown>;
   createBranchCatalogProduct?(input:{actorUserId:string;branchId:string;payload:BranchCatalogProductInput}):Promise<unknown>;
+  archiveBranchCatalogProduct?(input:{actorUserId:string;branchId:string;productId:string;expectedUpdatedAt:string}):Promise<unknown>;
   createBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;payload:BranchCatalogInventoryItemInput}):Promise<unknown>;
   updateBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;inventoryItemId:string;payload:BranchCatalogInventoryItemInput}):Promise<unknown>;
   mergeBranchCatalogInventoryItem?(input:{actorUserId:string;branchId:string;duplicateInventoryItemId:string;targetInventoryItemId:string}):Promise<unknown>;
@@ -726,6 +727,7 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   },
   listBranchCatalog:(actorUserId,branchId)=>rpc("list_branch_catalog",{actor_user_id:actorUserId,target_branch_id:branchId}),
   createBranchCatalogProduct:(input)=>rpc("create_branch_catalog_product",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,payload:{name:input.payload.name,inventory_behavior:input.payload.inventoryBehavior,unit:input.payload.unit??null,recipe_rows:input.payload.recipeRows??[]}}),
+  archiveBranchCatalogProduct:(input)=>catalogRpc("archive_branch_catalog_product",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_product_id:input.productId,expected_updated_at:input.expectedUpdatedAt}),
   createBranchCatalogInventoryItem:(input)=>rpc("create_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,payload:input.payload}),
   updateBranchCatalogInventoryItem:(input)=>rpc("update_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_inventory_item_id:input.inventoryItemId,payload:input.payload}),
   mergeBranchCatalogInventoryItem:(input)=>rpc("merge_branch_catalog_inventory_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,duplicate_inventory_item_id:input.duplicateInventoryItemId,target_inventory_item_id:input.targetInventoryItemId}),
