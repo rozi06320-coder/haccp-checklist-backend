@@ -162,7 +162,17 @@ function dependencies(calls: Array<Record<string, unknown>>): BackendDependencie
       async transferStaffBranch(input) {
         calls.push({ method: "branchTransfer", ...input });
         if (input.destinationTeamId === id.emptyHealthBranch) throw new OperationalHygieneSubmittedError();
-        return { staff_id: input.staffId, assignment_id: id.assignment, branch_id: input.destinationBranchId, operational_team_id: input.destinationTeamId };
+        return { staff_id: input.staffId, assignment_id: id.assignment,
+          move_status: input.scheduledTransferContract === "phase1" ? "scheduled" : "applied",
+          scheduled_transfer_id: input.scheduledTransferContract === "phase1" ? id.scheduledMove : null,
+          destination_branch_id: input.destinationBranchId, destination_team_id: input.destinationTeamId,
+          effective_business_date: "2026-08-01" };
+      },
+      async cancelScheduledStaffBranchTransfer(input) {
+        calls.push({ method: "cancelScheduledBranchTransfer", ...input });
+        return { staff_id: input.staffId, assignment_id: input.expectedAssignmentId, move_status: "cancelled",
+          scheduled_transfer_id: input.scheduledTransferId, destination_branch_id: id.destinationBranch,
+          destination_team_id: id.destinationTeam, effective_business_date: "2026-08-01" };
       },
       async leaveStaff(input) { calls.push({ method: "leave", ...input }); return { staff_id: input.staffId, assignment_id: id.assignment, employment_status: "inactive" }; },
       async removeStaff(input) {
@@ -941,7 +951,11 @@ describe("cross-branch staff transfer operational adapter", () => {
         staff_id: id.worker, assignment_id: id.assignment, branch_id: id.destinationBranch, operational_team_id: id.destinationTeam,
       });
       assert.deepEqual(requests, [
+        { path: "/rest/v1/rpc/apply_due_operational_staff_team_moves", body: { target_branch_id: id.branch, target_organization_id: null } },
+        { path: "/rest/v1/rpc/apply_due_operational_staff_branch_transfers", body: { target_branch_id: id.branch, target_organization_id: null } },
         { path: "/rest/v1/rpc/list_operational_staff_transfer_destinations", body: { actor_user_id: id.supervisor, p_source_branch_id: id.branch, p_operational_staff_id: id.worker, p_expected_assignment_id: id.assignment } },
+        { path: "/rest/v1/rpc/apply_due_operational_staff_team_moves", body: { target_branch_id: id.branch, target_organization_id: null } },
+        { path: "/rest/v1/rpc/apply_due_operational_staff_branch_transfers", body: { target_branch_id: id.branch, target_organization_id: null } },
         { path: "/rest/v1/rpc/transfer_operational_staff_branch", body: { actor_user_id: id.supervisor, p_organization_id: id.organization, p_source_branch_id: id.branch, p_operational_staff_id: id.worker, p_expected_assignment_id: id.assignment, p_destination_branch_id: id.destinationBranch, p_destination_team_id: id.destinationTeam } },
       ]);
     } finally {
@@ -963,17 +977,21 @@ describe("cross-branch staff transfer operational adapter", () => {
       assert.deepEqual(await admin.removeStaff?.({ actorUserId: id.supervisor, branchId: id.branch, staffId: id.worker, expectedAssignmentId: id.assignment, reasonCode: "added_by_mistake", reasonNote: "Created twice" }), {
         staff_id: id.worker, assignment_id: id.assignment, employment_status: "inactive", reason_code: "added_by_mistake",
       });
-      assert.deepEqual(requests, [{
-        path: "/rest/v1/rpc/remove_operational_team_staff",
-        body: {
-          actor_user_id: id.supervisor,
-          target_branch_id: id.branch,
-          target_staff_id: id.worker,
-          expected_assignment_id: id.assignment,
-          removal_reason: "added_by_mistake",
-          removal_note: "Created twice",
+      assert.deepEqual(requests, [
+        { path: "/rest/v1/rpc/apply_due_operational_staff_team_moves", body: { target_branch_id: id.branch, target_organization_id: null } },
+        { path: "/rest/v1/rpc/apply_due_operational_staff_branch_transfers", body: { target_branch_id: id.branch, target_organization_id: null } },
+        {
+          path: "/rest/v1/rpc/remove_operational_team_staff",
+          body: {
+            actor_user_id: id.supervisor,
+            target_branch_id: id.branch,
+            target_staff_id: id.worker,
+            expected_assignment_id: id.assignment,
+            removal_reason: "added_by_mistake",
+            removal_note: "Created twice",
+          },
         },
-      }]);
+      ]);
     } finally {
       await new Promise<void>((resolve, reject) => rpc.close((error) => error ? reject(error) : resolve()));
     }
@@ -1820,7 +1838,27 @@ describe("Phase 3A operational API", () => {
     assert.deepEqual(calls.at(-1), {
       method: "branchTransfer", actorUserId: id.supervisor, organizationId: id.organization, sourceBranchId: id.branch,
       staffId: id.worker, expectedAssignmentId: id.assignment, destinationBranchId: id.destinationBranch, destinationTeamId: id.destinationTeam,
+      scheduledTransferContract: undefined,
     });
+  });
+  it("schedules and cancels a compatible cross-branch transfer", async () => {
+    const scheduled = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/branch-transfer`, {
+      method: "POST", headers: headers("supervisor"),
+      body: JSON.stringify({ expected_assignment_id: id.assignment, destination_branch_id: id.destinationBranch,
+        destination_team_id: id.destinationTeam, scheduled_transfer_contract: "phase1" }),
+    });
+    assert.equal(scheduled.status, 200);
+    assert.equal((await scheduled.json() as { move_status: string }).move_status, "scheduled");
+    assert.equal((calls.at(-1) as { scheduledTransferContract?: string }).scheduledTransferContract, "phase1");
+
+    const cancelled = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/scheduled-branch-transfers/${id.scheduledMove}/cancel`, {
+      method: "POST", headers: headers("supervisor"), body: JSON.stringify({ expected_assignment_id: id.assignment }),
+    });
+    assert.equal(cancelled.status, 200);
+    assert.equal((await cancelled.json() as { move_status: string }).move_status, "cancelled");
+    assert.deepEqual(calls.at(-1), { method: "cancelScheduledBranchTransfer", actorUserId: id.supervisor,
+      sourceBranchId: id.branch, staffId: id.worker, expectedAssignmentId: id.assignment,
+      scheduledTransferId: id.scheduledMove });
   });
   it("returns a sanitized Hygiene-submitted error for blocked cross-branch transfers", async () => {
     const response = await fetch(`${baseUrl}/api/v1/supervisor/branches/${id.branch}/operational-staff/${id.worker}/branch-transfer`, {

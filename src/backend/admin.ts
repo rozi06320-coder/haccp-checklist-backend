@@ -815,9 +815,17 @@ export function createManagementAdmin(
       target_branch_id: null,
       target_organization_id: organizationId,
     });
-    if (!error) return;
-    if (error.code === "PGRST202" || /could not find the function|schema cache/i.test(error.message)) return;
-    throw new AdminOperationError();
+    if (error && error.code !== "PGRST202" && !/could not find the function|schema cache/i.test(error.message)) {
+      throw new AdminOperationError();
+    }
+    const { error: branchTransferError } = await admin.rpc("apply_due_operational_staff_branch_transfers", {
+      target_branch_id: null,
+      target_organization_id: organizationId,
+    });
+    if (branchTransferError && branchTransferError.code !== "PGRST202"
+      && !/could not find the function|schema cache/i.test(branchTransferError.message)) {
+      throw new AdminOperationError();
+    }
   }
   return {
     async listOrganizationsForInternalAdmin(actorUserId) {

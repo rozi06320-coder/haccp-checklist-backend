@@ -166,6 +166,7 @@ const branchTransferBodySchema = z.object({
   expected_assignment_id: z.uuid(),
   destination_branch_id: z.uuid(),
   destination_team_id: z.uuid(),
+  scheduled_transfer_contract: z.literal("phase1").optional(),
 }).strict();
 const leaveOperationalStaffBodySchema = z.object({ expected_assignment_id: z.uuid() }).strict();
 const operationalStaffRemovalReasonSchema = z.enum(["duplicate", "added_by_mistake", "wrong_employee_data", "left_company", "other"]);
@@ -6414,6 +6415,7 @@ export function createApp(
           expectedAssignmentId: body.data.expected_assignment_id,
           destinationBranchId: body.data.destination_branch_id,
           destinationTeamId: body.data.destination_team_id,
+          scheduledTransferContract: body.data.scheduled_transfer_contract,
         }));
       } catch (error) {
         next(error instanceof HttpError ? error : error instanceof OperationalHygieneSubmittedError
@@ -6425,6 +6427,39 @@ export function createApp(
               : error instanceof OperationalInputError
                 ? new HttpError(400, "bad_request", "The request is invalid.")
                 : new HttpError(503, "service_unavailable", "Unable to transfer this employee."));
+      }
+    });
+
+  app.post("/api/v1/supervisor/branches/:branchId/operational-staff/:staffId/scheduled-branch-transfers/:transferId/cancel", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const staffId = staffIdSchema.safeParse(request.params.staffId);
+        const transferId = z.uuid().safeParse(request.params.transferId);
+        const body = cancelScheduledTeamMoveBodySchema.safeParse(request.body);
+        if (!branchId.success || !staffId.success || !transferId.success || !body.success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || !dependencies.operationalAdmin?.cancelScheduledStaffBranchTransfer) {
+          throw new HttpError(403, "forbidden", "Access is denied.");
+        }
+        response.status(200).json(await dependencies.operationalAdmin.cancelScheduledStaffBranchTransfer({
+          actorUserId: auth.userId,
+          sourceBranchId: branchId.data,
+          staffId: staffId.data,
+          expectedAssignmentId: body.data.expected_assignment_id,
+          scheduledTransferId: transferId.data,
+        }));
+      } catch (error) {
+        next(error instanceof HttpError ? error : error instanceof OperationalConflictError
+          ? new HttpError(409, "conflict", "This scheduled transfer can no longer be cancelled.")
+          : error instanceof OperationalAccessError
+            ? new HttpError(403, "forbidden", "Access is denied.")
+            : error instanceof OperationalInputError
+              ? new HttpError(422, "unprocessable_entity", "The cancellation request is invalid.")
+              : new HttpError(503, "service_unavailable", "Unable to cancel this scheduled transfer right now."));
       }
     });
 

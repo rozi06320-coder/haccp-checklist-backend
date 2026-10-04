@@ -174,8 +174,26 @@ const staffTransferDestinationRow = z.object({
 const branchTransferRow = z.object({
   staff_id: uuid,
   assignment_id: uuid,
-  branch_id: uuid,
-  operational_team_id: uuid,
+  move_status: z.enum(["applied", "scheduled"]),
+  scheduled_transfer_id: uuid.nullable(),
+  destination_branch_id: uuid,
+  destination_team_id: uuid,
+  effective_business_date: z.string(),
+}).strict();
+const scheduledBranchTransferRow = z.object({
+  scheduled_transfer_id: uuid,
+  operational_staff_id: uuid,
+  source_assignment_id: uuid,
+  destination_branch_id: uuid,
+  destination_branch_name: z.string().min(1).max(160),
+  destination_operational_team_id: uuid,
+  destination_team_name: z.string().min(1).max(120),
+  effective_business_date: z.string(),
+  move_status: z.enum(["pending", "blocked"]),
+  blocked_reason: z.enum([
+    "source_assignment_changed", "employee_inactive", "destination_branch_inactive",
+    "destination_team_inactive", "hygiene_already_submitted", "scope_invalid",
+  ]).nullable(),
 }).strict();
 const scheduledTeamMoveRow = z.object({
   scheduled_move_id: uuid,
@@ -679,7 +697,8 @@ export type OperationalAdmin = {
   moveStaff?(input: { actorUserId: string; branchId: string; staffId: string; expectedAssignmentId: string; operationalTeamId: string; scheduledMoveContract?: "phase1" }): Promise<unknown>;
   cancelScheduledStaffMove?(input: { actorUserId: string; branchId: string; staffId: string; expectedAssignmentId: string; scheduledMoveId: string }): Promise<unknown>;
   listStaffTransferDestinations?(input: { actorUserId: string; sourceBranchId: string; staffId: string; expectedAssignmentId: string }): Promise<{ destinations: Array<z.infer<typeof staffTransferDestinationRow>> }>;
-  transferStaffBranch?(input: { actorUserId: string; organizationId: string; sourceBranchId: string; staffId: string; expectedAssignmentId: string; destinationBranchId: string; destinationTeamId: string }): Promise<unknown>;
+  transferStaffBranch?(input: { actorUserId: string; organizationId: string; sourceBranchId: string; staffId: string; expectedAssignmentId: string; destinationBranchId: string; destinationTeamId: string; scheduledTransferContract?: "phase1" }): Promise<unknown>;
+  cancelScheduledStaffBranchTransfer?(input: { actorUserId: string; sourceBranchId: string; staffId: string; expectedAssignmentId: string; scheduledTransferId: string }): Promise<unknown>;
   leaveStaff?(input: { actorUserId: string; branchId: string; staffId: string; expectedAssignmentId: string }): Promise<unknown>;
   removeStaff?(input: { actorUserId: string; branchId: string; staffId: string; expectedAssignmentId: string; reasonCode: z.infer<typeof staffRemovalReason>; reasonNote?: string | null }): Promise<unknown>;
   listHealthCards(actorUserId: string, branchId: string): Promise<unknown>;
@@ -1041,6 +1060,14 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   async function applyDueScheduledTeamMoves(scope: { branchId?: string; organizationId?: string }) {
     try {
       await rpc("apply_due_operational_staff_team_moves", {
+        target_branch_id: scope.branchId ?? null,
+        target_organization_id: scope.organizationId ?? null,
+      });
+    } catch (error) {
+      if (!(error instanceof RpcSignatureMissingError)) throw error;
+    }
+    try {
+      await rpc("apply_due_operational_staff_branch_transfers", {
         target_branch_id: scope.branchId ?? null,
         target_organization_id: scope.organizationId ?? null,
       });
@@ -1803,6 +1830,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       return rows[0].timezone;
     },
     async getSupervisorTeam(actorUserId, branchId, date) {
+      await applyDueScheduledTeamMoves({ branchId });
       const rows = z.array(teamRow).max(501).parse(await rpc("get_supervisor_operational_team", {
         actor_user_id: actorUserId, target_branch_id: branchId, requested_date: date,
       }));
@@ -1854,10 +1882,19 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         teams.set(row.team_id, team);
       }
       let scheduledMoves: Array<z.infer<typeof scheduledTeamMoveRow>> = [];
+      let scheduledBranchTransfers: Array<z.infer<typeof scheduledBranchTransferRow>> = [];
       let moveContext: Array<z.infer<typeof teamMoveContextRow>> = [];
       try {
         scheduledMoves = z.array(scheduledTeamMoveRow).max(500).parse(await rpc(
           "list_operational_staff_scheduled_team_moves",
+          { actor_user_id: actorUserId, target_branch_id: branchId },
+        ));
+      } catch (error) {
+        if (!(error instanceof RpcSignatureMissingError)) throw error;
+      }
+      try {
+        scheduledBranchTransfers = z.array(scheduledBranchTransferRow).max(500).parse(await rpc(
+          "list_operational_staff_scheduled_branch_transfers",
           { actor_user_id: actorUserId, target_branch_id: branchId },
         ));
       } catch (error) {
@@ -1872,6 +1909,9 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         if (!(error instanceof RpcSignatureMissingError)) throw error;
       }
       const scheduledByStaff = new Map(scheduledMoves.map((move) => [move.operational_staff_id, move]));
+      const scheduledBranchTransferByStaff = new Map(
+        scheduledBranchTransfers.map((transfer) => [transfer.operational_staff_id, transfer]),
+      );
       const submittedTeams = new Set(moveContext.filter((row) => row.hygiene_submitted_today).map((row) => row.operational_team_id));
       const recordedStaff = new Set(moveContext.flatMap((row) => row.recorded_staff_id === null ? [] : [row.recorded_staff_id]));
       for (const team of teams.values()) {
@@ -1879,14 +1919,32 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         team.staff = team.staff.map((value) => {
           const staff = value as { id: string };
           const move = scheduledByStaff.get(staff.id);
+          const branchTransfer = scheduledBranchTransferByStaff.get(staff.id);
           const enriched = {
             ...staff,
             hygiene_recorded_today: recordedStaff.has(staff.id),
+          };
+          if (branchTransfer) return {
+            ...enriched,
+            scheduledMove: {
+              id: branchTransfer.scheduled_transfer_id,
+              kind: "branch_transfer" as const,
+              destinationBranchId: branchTransfer.destination_branch_id,
+              destinationBranchName: branchTransfer.destination_branch_name,
+              destinationTeamId: branchTransfer.destination_operational_team_id,
+              destinationTeamName: branchTransfer.destination_team_name,
+              effectiveBusinessDate: branchTransfer.effective_business_date,
+              status: branchTransfer.move_status === "pending" ? "scheduled" as const : "blocked" as const,
+              blockedReason: branchTransfer.blocked_reason,
+            },
           };
           return move ? {
             ...enriched,
             scheduledMove: {
               id: move.scheduled_move_id,
+              kind: "team_move" as const,
+              destinationBranchId: branchId,
+              destinationBranchName: null,
               destinationTeamId: move.destination_operational_team_id,
               destinationTeamName: move.destination_team_name,
               effectiveBusinessDate: move.effective_business_date,
@@ -2033,7 +2091,10 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     },
     async transferStaffBranch(input) {
       await applyDueScheduledTeamMoves({ branchId: input.sourceBranchId });
-      const rows = z.array(branchTransferRow).length(1).parse(await rpc("transfer_operational_staff_branch", {
+      const functionName = input.scheduledTransferContract === "phase1"
+        ? "request_operational_staff_branch_transfer"
+        : "transfer_operational_staff_branch";
+      const payload = {
         actor_user_id: input.actorUserId,
         p_organization_id: input.organizationId,
         p_source_branch_id: input.sourceBranchId,
@@ -2041,8 +2102,34 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         p_expected_assignment_id: input.expectedAssignmentId,
         p_destination_branch_id: input.destinationBranchId,
         p_destination_team_id: input.destinationTeamId,
-      }));
-      return rows[0];
+      };
+      if (input.scheduledTransferContract === "phase1") {
+        try {
+          return z.array(branchTransferRow).length(1).parse(await rpc(functionName, {
+            ...payload,
+            allow_schedule: true,
+          }))[0];
+        } catch (error) {
+          if (error instanceof RpcSignatureMissingError) throw new AdminOperationError();
+          throw error;
+        }
+      }
+      const legacy = z.array(z.object({
+        staff_id: uuid, assignment_id: uuid, branch_id: uuid, operational_team_id: uuid,
+      }).strict()).length(1).parse(await rpc(functionName, payload))[0];
+      return legacy;
+    },
+    async cancelScheduledStaffBranchTransfer(input) {
+      return z.array(branchTransferRow.extend({ move_status: z.literal("cancelled") })).length(1).parse(await rpc(
+        "cancel_operational_staff_scheduled_branch_transfer",
+        {
+          actor_user_id: input.actorUserId,
+          target_source_branch_id: input.sourceBranchId,
+          target_staff_id: input.staffId,
+          target_scheduled_transfer_id: input.scheduledTransferId,
+          expected_assignment_id: input.expectedAssignmentId,
+        },
+      ))[0];
     },
     async leaveStaff(input) {
       await applyDueScheduledTeamMoves({ branchId: input.branchId });
