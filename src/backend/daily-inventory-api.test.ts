@@ -21,7 +21,6 @@ const branch = "27000000-0000-4000-8000-000000000001";
 const org = "37000000-0000-4000-8000-000000000001";
 const inventoryItemId = "47000000-0000-4000-8000-000000000001";
 const reportId = "87000000-0000-4000-8000-000000000001";
-const entryId = "97000000-0000-4000-8000-000000000001";
 
 const calls: Array<{ name: string; input: unknown }> = [];
 let mode:
@@ -47,19 +46,24 @@ function mockSingleDailyInventory(businessDate = "2026-09-12", revision = 0) {
       revision > 0
         ? [
             {
-              id: entryId,
+              id: null,
               inventory_item_id: inventoryItemId,
               inventory_item_name_snapshot: "Beef Patty",
               inventory_item_unit_snapshot: "pcs",
+              baseline_effective_date: "2026-09-01",
               manual_opening_quantity: null,
               opening_quantity: 10,
               is_opening_manual: false,
               receiving_quantity: 5,
               transfer_in_quantity: 0,
               transfer_out_quantity: 0,
-              actual_closing_quantity: 15,
-              created_at: "2026-09-12T08:00:00.000Z",
-              updated_at: "2026-09-12T08:00:00.000Z",
+              sales_usage_quantity: 5,
+              wastage_quantity: 0,
+              expected_closing_quantity: 10,
+              actual_closing_quantity: null,
+              variance_quantity: null,
+              created_at: null,
+              updated_at: null,
             },
           ]
         : [],
@@ -278,6 +282,9 @@ describe("Supervisor Daily Inventory API", () => {
     assert.equal(body.entries.length, 1);
     assert.equal(body.entries[0].inventory_item_id, inventoryItemId);
     assert.equal(body.entries[0].receiving_quantity, 5);
+    assert.equal(body.entries[0].sales_usage_quantity, 5);
+    assert.equal(body.entries[0].actual_closing_quantity, null);
+    assert.equal(body.entries[0].expected_closing_quantity, 10);
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0], {
       name: "getBranchDailyInventory",

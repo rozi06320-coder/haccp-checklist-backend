@@ -1594,19 +1594,24 @@ const dailyInventoryBodySchema=z.object({
 const dailyInventoryQuantityResponseSchema=z.union([z.number(),z.string()]).transform(Number).pipe(z.number());
 const dailyInventoryNullableQuantityResponseSchema=z.union([z.number(),z.string()]).transform(Number).pipe(z.number()).nullable();
 const dailyInventoryEntryResponseSchema=z.object({
-  id:z.uuid(),
+  id:z.uuid().nullable(),
   inventory_item_id:z.uuid(),
   inventory_item_name_snapshot:z.string(),
   inventory_item_unit_snapshot:z.string(),
+  baseline_effective_date:dateOnlySchema.nullable().optional(),
   manual_opening_quantity:dailyInventoryNullableQuantityResponseSchema,
   opening_quantity:dailyInventoryNullableQuantityResponseSchema,
   is_opening_manual:z.boolean(),
   receiving_quantity:dailyInventoryQuantityResponseSchema,
   transfer_in_quantity:dailyInventoryQuantityResponseSchema,
   transfer_out_quantity:dailyInventoryQuantityResponseSchema,
+  sales_usage_quantity:dailyInventoryQuantityResponseSchema.optional(),
+  wastage_quantity:dailyInventoryQuantityResponseSchema.optional(),
+  expected_closing_quantity:dailyInventoryNullableQuantityResponseSchema.optional(),
   actual_closing_quantity:dailyInventoryNullableQuantityResponseSchema,
-  created_at:z.string(),
-  updated_at:z.string(),
+  variance_quantity:dailyInventoryNullableQuantityResponseSchema.optional(),
+  created_at:z.string().nullable(),
+  updated_at:z.string().nullable(),
 }).strict();
 const dailyInventorySingleReportResponseSchema=z.object({
   report_id:z.uuid().nullable(),
@@ -1704,8 +1709,8 @@ const managerDailyInventoryReconciliationRowSchema=z.object({
   actual_closing_quantity:dailyInventoryNullableQuantityResponseSchema,
   variance_quantity:dailyInventoryNullableQuantityResponseSchema,
   report_revision:z.number().int().nonnegative(),
-  report_created_at:z.string(),
-  report_updated_at:z.string(),
+  report_created_at:z.string().nullable(),
+  report_updated_at:z.string().nullable(),
   created_by_user_id:z.uuid().nullable().optional(),
 });
 const managerDailyInventoryReconciliationResponseSchema=z.object({
