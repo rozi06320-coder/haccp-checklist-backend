@@ -351,7 +351,7 @@ const purchaseLogResponseRowSchema = z.object({
 const purchaseLogListResponseSchema = z.object({ purchase_logs: z.array(purchaseLogResponseRowSchema) }).strict();
 const purchaseLogMutationResponseSchema = z.object({ purchase_log: purchaseLogResponseRowSchema }).strict();
 const purchaseRequestCategorySchema = z.enum(["stationary", "kitchen", "other"]);
-const purchaseRequestStatusSchema = z.enum(["submitted", "processing", "purchased"]);
+const purchaseRequestStatusSchema = z.enum(["submitted", "processing", "purchased", "received", "cancelled"]);
 const purchaseRequestItemBodySchema = z.object({
   name: normalizedNameSchema,
   quantity: z.union([z.number(), z.string()]).transform(Number).pipe(z.number().positive()),

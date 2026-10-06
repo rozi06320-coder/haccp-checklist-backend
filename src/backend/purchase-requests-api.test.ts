@@ -5,7 +5,7 @@ import { after, before, beforeEach, describe, it } from "node:test";
 import { createApp } from "./app";
 import type { BackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
-import { OperationalAccessError, OperationalInputError } from "./operational";
+import { OperationalAccessError, OperationalConflictError, OperationalInputError } from "./operational";
 
 const supervisor = "17000000-0000-4000-8000-000000000001";
 const purchaser = "17000000-0000-4000-8000-000000000002";
@@ -66,7 +66,7 @@ const purchaseLog = {
   revision: 1,
 };
 
-function deps(options: { transitionError?: boolean } = {}): BackendDependencies {
+function deps(options: { transitionError?: boolean; photoConflict?: boolean } = {}): BackendDependencies {
   return {
     async checkReadiness() { return true; },
     authVerifier: { async verify(token) {
@@ -107,11 +107,13 @@ function deps(options: { transitionError?: boolean } = {}): BackendDependencies 
       async uploadSupervisorPurchaseRequestProductPhoto(input) {
         calls.push({ name: "upload-product-photo", input: { ...input, photo: { ...input.photo, bytes: input.photo.bytes.toString("hex") } } });
         if (input.branchId !== branch || input.requestId !== requestId || input.itemId !== purchaseRequest.items[0].id) throw new OperationalAccessError();
+        if (options.photoConflict) throw new OperationalConflictError();
         return { product_photo: { original_filename: input.photo.originalName, mime_type: input.photo.mimeType, size_bytes: input.photo.bytes.length, uploaded_at: "2026-09-21T09:00:00.000Z", url: "https://example.test/product-photo.jpg" } };
       },
       async removeSupervisorPurchaseRequestProductPhoto(input) {
         calls.push({ name: "remove-product-photo", input });
         if (input.branchId !== branch || input.requestId !== requestId || input.itemId !== purchaseRequest.items[0].id) throw new OperationalAccessError();
+        if (options.photoConflict) throw new OperationalConflictError();
         return { product_photo: null };
       },
       async listPurchasingPurchaseRequests(input) {
@@ -278,6 +280,17 @@ describe("Purchase Request API", () => {
     assert.equal(calls.length, 0);
   });
 
+  it("rejects product photos larger than 5 MiB before mutation", async () => {
+    const multipart = multipartPhotoBody({ name: "large.jpg", type: "image/jpeg", bytes: Buffer.alloc(5 * 1024 * 1024 + 1, 1) });
+    const response = await request(`/api/v1/supervisor/branches/${branch}/purchase-requests/${requestId}/items/${purchaseRequest.items[0].id}/product-photo`, "supervisor", {
+      method: "POST",
+      headers: { "Content-Type": multipart.contentType },
+      body: multipart.body,
+    });
+    assert.equal(response.status, 413);
+    assert.equal(calls.length, 0);
+  });
+
   it("lets a Supervisor remove a product photo", async () => {
     const response = await request(`/api/v1/supervisor/branches/${branch}/purchase-requests/${requestId}/items/${purchaseRequest.items[0].id}/product-photo`, "supervisor", { method: "DELETE" });
     assert.equal(response.status, 200);
@@ -411,6 +424,27 @@ describe("Purchase Request API", () => {
     const response = await request(`/api/v1/purchasing/organizations/${otherOrganization}/purchase-requests/${requestId}/items/${purchaseRequest.items[0].id}/product-photo/read-url`, "purchasing");
     assert.equal(response.status, 403);
     assert.equal(calls.length, before);
+  });
+
+  it("maps locked product photo add and remove mutations to safe HTTP 409 responses", async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    server = createServer(createApp(config, deps({ photoConflict: true })));
+    await new Promise<void>((resolve, reject) => server.listen(0, "127.0.0.1", resolve).once("error", reject));
+    origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const multipart = multipartPhotoBody({ name: "gloves.jpg", type: "image/jpeg", bytes: Buffer.from([0xff, 0xd8, 0xff, 0x00, 0xff, 0xd9]) });
+    const path = `/api/v1/supervisor/branches/${branch}/purchase-requests/${requestId}/items/${purchaseRequest.items[0].id}/product-photo`;
+    const upload = await request(path, "supervisor", { method: "POST", headers: { "Content-Type": multipart.contentType }, body: multipart.body });
+    assert.equal(upload.status, 409);
+    const uploadBody = await upload.json();
+    assert.equal(uploadBody.error.code, "conflict");
+    assert.equal(uploadBody.error.message, "The purchase request conflicts with current workflow state.");
+    assert.equal(typeof uploadBody.error.requestId, "string");
+    const remove = await request(path, "supervisor", { method: "DELETE" });
+    assert.equal(remove.status, 409);
+    const removeBody = await remove.json();
+    assert.equal(removeBody.error.code, "conflict");
+    assert.equal(removeBody.error.message, "The purchase request conflicts with current workflow state.");
+    assert.equal(typeof removeBody.error.requestId, "string");
   });
 
   it("returns a safe failure when the RPC rejects an invalid status jump", async () => {

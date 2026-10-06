@@ -1247,6 +1247,83 @@ describe("Purchase Request attachment lifecycle",()=>{
     }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
   });
 
+  it("cleans up a newly uploaded product photo when the locked-status DB set fails",async()=>{
+    const removed:Array<Record<string,unknown>>=[];
+    let uploadedPath="";
+    const rpc=createServer(async(request,response)=>{
+      const body=await readJsonBody(request);
+      response.setHeader("content-type","application/json");
+      if(request.method==="POST"&&request.url==="/rest/v1/rpc/authorize_supervisor_purchase_request_item_product_photo"){
+        response.end(JSON.stringify([{organization_id:id.organization,branch_id:id.branch,request_id:requestId,item_id:itemId}]));
+        return;
+      }
+      if(request.method==="POST"&&request.url?.startsWith("/storage/v1/object/purchase-request-product-photos/")){
+        response.end(JSON.stringify({Key:"uploaded"}));
+        return;
+      }
+      if(request.method==="POST"&&request.url==="/rest/v1/rpc/set_supervisor_purchase_request_item_product_photo"){
+        uploadedPath=String(body.photo_metadata&&typeof body.photo_metadata==="object"?(body.photo_metadata as Record<string,unknown>).storage_path:"");
+        response.statusCode=400;
+        response.end(JSON.stringify({code:"55000",message:"purchase request product photo is locked"}));
+        return;
+      }
+      if(request.method==="DELETE"&&request.url==="/storage/v1/object/purchase-request-product-photos"){
+        removed.push(body);
+        response.end(JSON.stringify([]));
+        return;
+      }
+      response.statusCode=404;
+      response.end(JSON.stringify({message:"unexpected"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await assert.rejects(
+        ()=>admin.uploadSupervisorPurchaseRequestProductPhoto?.({actorUserId:id.supervisor,branchId:id.branch,requestId,itemId,photo:{bytes:jpegBytes,mimeType:"image/jpeg",originalName:"locked.jpg"}}),
+        OperationalConflictError,
+      );
+      assert.match(uploadedPath,new RegExp(`^${id.organization}/${id.branch}/purchase-requests/${requestId}/items/${itemId}/`));
+      assert.deepEqual(removed,[{prefixes:[uploadedPath]}]);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("clears product photo metadata before cleanup and tolerates an orphaned old object",async()=>{
+    const oldPath=`${id.organization}/${id.branch}/purchase-requests/${requestId}/items/${itemId}/old.jpg`;
+    const order:string[]=[];
+    const warnings:unknown[][]=[];
+    const originalWarn=console.warn;
+    console.warn=(...values:unknown[])=>warnings.push(values);
+    const rpc=createServer(async(request,response)=>{
+      const body=await readJsonBody(request);
+      response.setHeader("content-type","application/json");
+      if(request.method==="POST"&&request.url==="/rest/v1/rpc/clear_supervisor_purchase_request_item_product_photo"){
+        order.push("db-clear");
+        response.end(JSON.stringify({product_photo:null,old_storage_path:oldPath}));
+        return;
+      }
+      if(request.method==="DELETE"&&request.url==="/storage/v1/object/purchase-request-product-photos"){
+        order.push("storage-cleanup");
+        assert.deepEqual(body,{prefixes:[oldPath]});
+        response.statusCode=500;
+        response.end(JSON.stringify({message:"cleanup failed"}));
+        return;
+      }
+      response.statusCode=404;
+      response.end(JSON.stringify({message:"unexpected"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      const result=await admin.removeSupervisorPurchaseRequestProductPhoto?.({actorUserId:id.supervisor,branchId:id.branch,requestId,itemId});
+      assert.deepEqual(result,{product_photo:null});
+      assert.deepEqual(order,["db-clear","storage-cleanup"]);
+      assert.match(String(warnings[0]?.[0]),/PURCHASE_REQUEST_PRODUCT_PHOTO_CLEANUP_FAILED/u);
+    }finally{
+      console.warn=originalWarn;
+      await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));
+    }
+  });
+
   it("replaces attachments after DB save and deletes only removed old storage objects",async()=>{
     const calls:Array<{method:string;url:string;body:Record<string,unknown>}>=[],removed:Array<Record<string,unknown>>=[];
     const rpc=createServer(async(request,response)=>{

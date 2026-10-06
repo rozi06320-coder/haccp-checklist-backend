@@ -8,6 +8,7 @@ const detailsMigrationPath = path.join(process.cwd(), "supabase/migrations/20260
 const financialDocumentsMigrationPath = path.join(process.cwd(), "supabase/migrations/20260923120000_purchasing_purchase_request_financial_documents.sql");
 const linkMigrationPath = path.join(process.cwd(), "supabase/migrations/20260924120000_central_purchasing_purchase_log_link.sql");
 const productPhotosMigrationPath = path.join(process.cwd(), "supabase/migrations/20260927130000_purchase_request_product_photos.sql");
+const productPhotoLifecycleMigrationPath = path.join(process.cwd(), "supabase/migrations/20261006140000_purchase_request_product_photo_lifecycle.sql");
 
 describe("Purchase Request migration contract", () => {
   it("creates a separate request and item domain with no Purchase Log or expense coupling", async () => {
@@ -114,5 +115,22 @@ describe("Purchase Request migration contract", () => {
     assert.match(sql, /grant execute on function public\.set_supervisor_purchase_request_item_product_photo\(uuid, uuid, uuid, uuid, jsonb\) to service_role/i);
     assert.doesNotMatch(sql, /alter table public\.purchase_request_item_attachments/i);
     assert.doesNotMatch(sql, /application\/pdf/i);
+  });
+
+  it("locks product photo mutations to submitted and processing requests", async () => {
+    const sql = await readFile(productPhotoLifecycleMigrationPath, "utf8");
+    for (const signature of [
+      "set_supervisor_purchase_request_item_product_photo(uuid, uuid, uuid, uuid, jsonb)",
+      "clear_supervisor_purchase_request_item_product_photo(uuid, uuid, uuid, uuid)",
+    ]) {
+      assert.match(sql, new RegExp(`public\\.${signature.replace(/[()]/gu, "\\$&")}`, "i"));
+    }
+    assert.equal((sql.match(/from public\.purchase_requests[\s\S]*?for update;/giu) ?? []).length, 2);
+    assert.equal((sql.match(/status not in \('submitted','processing'\)/giu) ?? []).length, 2);
+    assert.equal((sql.match(/errcode = '55000'/giu) ?? []).length, 2);
+    assert.match(sql, /security definer/iu);
+    assert.match(sql, /set search_path = ''/iu);
+    assert.match(sql, /grant execute on function public\.set_supervisor_purchase_request_item_product_photo/iu);
+    assert.match(sql, /grant execute on function public\.clear_supervisor_purchase_request_item_product_photo/iu);
   });
 });
