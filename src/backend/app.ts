@@ -2357,6 +2357,12 @@ function operationalPurchaseRequestError(error: unknown) {
   return new HttpError(503, "service_unavailable", "Purchase Requests are temporarily unavailable.");
 }
 
+function operationalPurchasingAttachmentError(error: unknown) {
+  if (error instanceof OperationalAttachmentNotFoundError) return new HttpError(404, "not_found", "The attachment is unavailable.");
+  if (error instanceof OperationalAccessError) return new HttpError(403, "forbidden", "Access is denied.");
+  return new HttpError(503, "service_unavailable", "The attachment preview is temporarily unavailable.");
+}
+
 function purchaseRequestDetailsForOperation(items: z.infer<typeof purchaseRequestDetailItemBodySchema>[]) {
   return items.map((item) => {
     const { attachments: rawAttachments, ...detail } = item;
@@ -4610,6 +4616,63 @@ export function createApp(
         response.status(200).json(result);
       } catch (error) {
         next(error instanceof HttpError ? error : error instanceof OperationalAccessError ? new HttpError(403, "forbidden", "Access is denied.") : new HttpError(503, "service_unavailable", "Purchase Logs are temporarily unavailable."));
+      }
+    });
+  app.get("/api/v1/purchasing/organizations/:organizationId/purchase-logs/:purchaseLogId/receipt/read-url", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const purchaseLogId = z.uuid().safeParse(request.params.purchaseLogId);
+        if (!organizationId.success || !purchaseLogId.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        const hasPurchasingAccess = (context.purchasing_organizations ?? []).some((organization) => organization.id === organizationId.data);
+        if (context.must_change_password || !hasPurchasingAccess || !dependencies.operationalAdmin?.createPurchasingPurchaseLogReceiptReadUrl) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = receiptReadUrlResponseSchema.parse(await dependencies.operationalAdmin.createPurchasingPurchaseLogReceiptReadUrl({ actorUserId: auth.userId, organizationId: organizationId.data, purchaseLogId: purchaseLogId.data }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchasingAttachmentError(error));
+      }
+    });
+  app.get("/api/v1/purchasing/organizations/:organizationId/purchase-requests/:requestId/items/:itemId/product-photo/read-url", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const requestId = z.uuid().safeParse(request.params.requestId);
+        const itemId = z.uuid().safeParse(request.params.itemId);
+        if (!organizationId.success || !requestId.success || !itemId.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        const hasPurchasingAccess = (context.purchasing_organizations ?? []).some((organization) => organization.id === organizationId.data);
+        if (context.must_change_password || !hasPurchasingAccess || !dependencies.operationalAdmin?.createPurchasingPurchaseRequestProductPhotoReadUrl) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = receiptReadUrlResponseSchema.parse(await dependencies.operationalAdmin.createPurchasingPurchaseRequestProductPhotoReadUrl({ actorUserId: auth.userId, organizationId: organizationId.data, requestId: requestId.data, itemId: itemId.data }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchasingAttachmentError(error));
+      }
+    });
+  app.get("/api/v1/purchasing/organizations/:organizationId/purchase-requests/:requestId/items/:itemId/attachments/:attachmentId/read-url", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const requestId = z.uuid().safeParse(request.params.requestId);
+        const itemId = z.uuid().safeParse(request.params.itemId);
+        const attachmentId = z.uuid().safeParse(request.params.attachmentId);
+        if (!organizationId.success || !requestId.success || !itemId.success || !attachmentId.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        const hasPurchasingAccess = (context.purchasing_organizations ?? []).some((organization) => organization.id === organizationId.data);
+        if (context.must_change_password || !hasPurchasingAccess || !dependencies.operationalAdmin?.createPurchasingPurchaseRequestAttachmentReadUrl) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = receiptReadUrlResponseSchema.parse(await dependencies.operationalAdmin.createPurchasingPurchaseRequestAttachmentReadUrl({ actorUserId: auth.userId, organizationId: organizationId.data, requestId: requestId.data, itemId: itemId.data, attachmentId: attachmentId.data }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchasingAttachmentError(error));
       }
     });
   app.get(

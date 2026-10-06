@@ -18,6 +18,7 @@ const otherOrganization = "37000000-0000-4000-8000-000000000002";
 const requestId = "47000000-0000-4000-8000-000000000001";
 const createIdempotencyKey = "47000000-0000-4000-8000-000000000099";
 const purchaseLogId = "67000000-0000-4000-8000-000000000001";
+const attachmentId = "77000000-0000-4000-8000-000000000001";
 
 const config: BackendConfig = { nodeEnv: "test", host: "127.0.0.1", port: 1, trustProxy: false, supabase: { url: "http://127.0.0.1", publishableKey: "test", secretKey: "test" }, dailyAuditGrantSecret: "test-placeholder-long-enough-for-tests" };
 let server: Server;
@@ -171,6 +172,18 @@ function deps(options: { transitionError?: boolean } = {}): BackendDependencies 
         calls.push({ name: "list-purchasing-purchase-logs", input });
         if (input.organizationId !== organization) throw new OperationalAccessError();
         return { purchase_logs: [purchaseLog] };
+      },
+      async createPurchasingPurchaseLogReceiptReadUrl(input) {
+        calls.push({ name: "purchase-log-preview", input });
+        return { signed_url: "https://signed.example.invalid/purchase-log", expires_in: 300, original_name: "invoice.jpg" };
+      },
+      async createPurchasingPurchaseRequestProductPhotoReadUrl(input) {
+        calls.push({ name: "product-photo-preview", input });
+        return { signed_url: "https://signed.example.invalid/product-photo", expires_in: 300, original_name: "product.jpg" };
+      },
+      async createPurchasingPurchaseRequestAttachmentReadUrl(input) {
+        calls.push({ name: "request-attachment-preview", input });
+        return { signed_url: "https://signed.example.invalid/attachment", expires_in: 300, original_name: "receipt.pdf" };
       },
       async createPurchaseLog(input) {
         calls.push({ name: "create-purchase-log", input });
@@ -373,6 +386,31 @@ describe("Purchase Request API", () => {
     assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-logs`, "manager")).status, 403);
     assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-logs`, "supervisor")).status, 403);
     assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-logs`, "inactive-purchasing")).status, 403);
+  });
+
+  it("issues five-minute Purchasing preview URLs without exposing storage paths", async () => {
+    const routes = [
+      `/api/v1/purchasing/organizations/${organization}/purchase-logs/${purchaseLogId}/receipt/read-url`,
+      `/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/items/${purchaseRequest.items[0].id}/product-photo/read-url`,
+      `/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/items/${purchaseRequest.items[0].id}/attachments/${attachmentId}/read-url`,
+    ];
+    for (const path of routes) {
+      const response = await request(path, "purchasing");
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("cache-control"), "private, no-store");
+      const body = await response.json() as Record<string, unknown>;
+      assert.equal(body.expires_in, 300);
+      assert.equal(typeof body.signed_url, "string");
+      assert.equal("storage_path" in body, false);
+    }
+    assert.deepEqual(calls.slice(-3).map((call) => call.name), ["purchase-log-preview", "product-photo-preview", "request-attachment-preview"]);
+  });
+
+  it("denies cross-organization Purchasing preview URL requests before storage signing", async () => {
+    const before = calls.length;
+    const response = await request(`/api/v1/purchasing/organizations/${otherOrganization}/purchase-requests/${requestId}/items/${purchaseRequest.items[0].id}/product-photo/read-url`, "purchasing");
+    assert.equal(response.status, 403);
+    assert.equal(calls.length, before);
   });
 
   it("returns a safe failure when the RPC rejects an invalid status jump", async () => {

@@ -373,6 +373,13 @@ const purchaseRequestAttachmentReadRow = z.object({
   storage_path: z.string().min(1),
   original_filename: optionalStaffText,
 }).strict();
+const purchasingProductPhotoReadRow = z.object({
+  product_photo_storage_path: z.string().min(1).nullable(),
+  product_photo_original_name: optionalStaffText,
+}).strict();
+const purchasingAttachmentReadRow = purchaseRequestAttachmentReadRow.extend({
+  mime_type: optionalStaffText,
+}).strict();
 const supplierReceivingPhotoRow = z.object({
   branch_id: uuid,
   photo_storage_path: optionalStaffText,
@@ -776,6 +783,9 @@ export type OperationalAdmin = {
     dateTo?: string;
     search?: string;
   }): Promise<unknown>;
+  createPurchasingPurchaseLogReceiptReadUrl?(input: { actorUserId: string; organizationId: string; purchaseLogId: string }): Promise<unknown>;
+  createPurchasingPurchaseRequestProductPhotoReadUrl?(input: { actorUserId: string; organizationId: string; requestId: string; itemId: string }): Promise<unknown>;
+  createPurchasingPurchaseRequestAttachmentReadUrl?(input: { actorUserId: string; organizationId: string; requestId: string; itemId: string; attachmentId: string }): Promise<unknown>;
   createPurchaseLogReceiptReadUrl?(input: { actorUserId: string; purchaseLogId: string }): Promise<unknown>;
   createManagedPurchaseLogReceiptReadUrl?(input: { actorUserId: string; organizationId: string; purchaseLogId: string }): Promise<unknown>;
   createPurchaseLog(input: {
@@ -2338,6 +2348,81 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         date_to_filter: input.dateTo ?? null,
         search_filter: input.search ?? null,
       })) };
+    },
+    async createPurchasingPurchaseLogReceiptReadUrl(input) {
+      const result = await client.from("branch_purchase_logs")
+        .select("organization_id,branch_id,invoice_storage_path,invoice_original_name,source_type,source_purchase_request_item_id")
+        .eq("id", input.purchaseLogId)
+        .eq("organization_id", input.organizationId)
+        .maybeSingle();
+      if (result.error) throw new AdminOperationError();
+      const row = result.data ? managedPurchaseLogReceiptRow.parse(result.data) : null;
+      if (!row) throw new OperationalAttachmentNotFoundError();
+      if (!row.invoice_storage_path && row.source_type === "central_purchasing" && row.source_purchase_request_item_id) {
+        const attachment = await client.from("purchase_request_item_attachments")
+          .select("storage_path,original_filename")
+          .eq("purchase_request_item_id", row.source_purchase_request_item_id)
+          .order("position", { ascending: true })
+          .limit(1)
+          .maybeSingle();
+        if (attachment.error) throw new AdminOperationError();
+        const sourceAttachment = attachment.data ? purchaseRequestAttachmentReadRow.parse(attachment.data) : null;
+        if (!sourceAttachment) throw new OperationalAttachmentNotFoundError();
+        const signedUrl = await signPurchaseRequestAttachment(sourceAttachment.storage_path);
+        if (!signedUrl) throw new AdminOperationError();
+        return { signed_url: signedUrl, expires_in: PURCHASE_INVOICE_SIGNED_URL_SECONDS, original_name: sourceAttachment.original_filename };
+      }
+      if (!row.invoice_storage_path) throw new OperationalAttachmentNotFoundError();
+      const signedUrl = await signPurchaseInvoice(row.invoice_storage_path);
+      if (!signedUrl) throw new AdminOperationError();
+      return { signed_url: signedUrl, expires_in: PURCHASE_INVOICE_SIGNED_URL_SECONDS, original_name: row.invoice_original_name };
+    },
+    async createPurchasingPurchaseRequestProductPhotoReadUrl(input) {
+      const request = await client.from("purchase_requests")
+        .select("id")
+        .eq("id", input.requestId)
+        .eq("organization_id", input.organizationId)
+        .maybeSingle();
+      if (request.error) throw new AdminOperationError();
+      if (!request.data) throw new OperationalAttachmentNotFoundError();
+      const result = await client.from("purchase_request_items")
+        .select("product_photo_storage_path,product_photo_original_name")
+        .eq("id", input.itemId)
+        .eq("purchase_request_id", input.requestId)
+        .maybeSingle();
+      if (result.error) throw new AdminOperationError();
+      const row = result.data ? purchasingProductPhotoReadRow.parse(result.data) : null;
+      if (!row?.product_photo_storage_path) throw new OperationalAttachmentNotFoundError();
+      const signedUrl = await signPurchaseRequestProductPhoto(row.product_photo_storage_path);
+      if (!signedUrl) throw new AdminOperationError();
+      return { signed_url: signedUrl, expires_in: PURCHASE_REQUEST_PRODUCT_PHOTO_SIGNED_URL_SECONDS, original_name: row.product_photo_original_name };
+    },
+    async createPurchasingPurchaseRequestAttachmentReadUrl(input) {
+      const request = await client.from("purchase_requests")
+        .select("id")
+        .eq("id", input.requestId)
+        .eq("organization_id", input.organizationId)
+        .maybeSingle();
+      if (request.error) throw new AdminOperationError();
+      if (!request.data) throw new OperationalAttachmentNotFoundError();
+      const item = await client.from("purchase_request_items")
+        .select("id")
+        .eq("id", input.itemId)
+        .eq("purchase_request_id", input.requestId)
+        .maybeSingle();
+      if (item.error) throw new AdminOperationError();
+      if (!item.data) throw new OperationalAttachmentNotFoundError();
+      const result = await client.from("purchase_request_item_attachments")
+        .select("storage_path,original_filename,mime_type")
+        .eq("id", input.attachmentId)
+        .eq("purchase_request_item_id", input.itemId)
+        .maybeSingle();
+      if (result.error) throw new AdminOperationError();
+      const row = result.data ? purchasingAttachmentReadRow.parse(result.data) : null;
+      if (!row) throw new OperationalAttachmentNotFoundError();
+      const signedUrl = await signPurchaseRequestAttachment(row.storage_path);
+      if (!signedUrl) throw new AdminOperationError();
+      return { signed_url: signedUrl, expires_in: PURCHASE_INVOICE_SIGNED_URL_SECONDS, original_name: row.original_filename };
     },
     async createPurchaseLogReceiptReadUrl(input) {
       const result = await client.from("branch_purchase_logs")
