@@ -9,6 +9,7 @@ const financialDocumentsMigrationPath = path.join(process.cwd(), "supabase/migra
 const linkMigrationPath = path.join(process.cwd(), "supabase/migrations/20260924120000_central_purchasing_purchase_log_link.sql");
 const productPhotosMigrationPath = path.join(process.cwd(), "supabase/migrations/20260927130000_purchase_request_product_photos.sql");
 const productPhotoLifecycleMigrationPath = path.join(process.cwd(), "supabase/migrations/20261006140000_purchase_request_product_photo_lifecycle.sql");
+const productPhotoAuthorizationAliasesMigrationPath = path.join(process.cwd(), "supabase/migrations/20261006160000_purchase_request_product_photo_authorization_aliases.sql");
 
 describe("Purchase Request migration contract", () => {
   it("creates a separate request and item domain with no Purchase Log or expense coupling", async () => {
@@ -132,5 +133,20 @@ describe("Purchase Request migration contract", () => {
     assert.match(sql, /set search_path = ''/iu);
     assert.match(sql, /grant execute on function public\.set_supervisor_purchase_request_item_product_photo/iu);
     assert.match(sql, /grant execute on function public\.clear_supervisor_purchase_request_item_product_photo/iu);
+  });
+
+  it("qualifies product photo authorization columns without changing its access contract", async () => {
+    const sql = await readFile(productPhotoAuthorizationAliasesMigrationPath, "utf8");
+    assert.equal((sql.match(/create or replace function public\.authorize_supervisor_purchase_request_item_product_photo/giu) ?? []).length, 1);
+    assert.match(sql, /returns table\(organization_id uuid, branch_id uuid, request_id uuid, item_id uuid\)/iu);
+    assert.match(sql, /stable[\s\S]*security definer[\s\S]*set search_path = ''/iu);
+    assert.match(sql, /from private\.purchase_request_actor_branch_scope\(actor_user_id, target_branch_id\) as scope_row/iu);
+    assert.match(sql, /select scope_row\.organization_id, scope_row\.branch_id/iu);
+    assert.match(sql, /from public\.purchase_requests as pr[\s\S]*where pr\.id = target_request_id[\s\S]*and pr\.branch_id = target_branch_id[\s\S]*and pr\.organization_id = v_scope\.organization_id/iu);
+    assert.match(sql, /from public\.purchase_request_items as pri[\s\S]*where pri\.id = target_item_id[\s\S]*and pri\.purchase_request_id = target_request_id/iu);
+    assert.match(sql, /revoke all on function public\.authorize_supervisor_purchase_request_item_product_photo\(uuid, uuid, uuid, uuid\) from public, anon, authenticated/iu);
+    assert.match(sql, /grant execute on function public\.authorize_supervisor_purchase_request_item_product_photo\(uuid, uuid, uuid, uuid\) to service_role/iu);
+    assert.doesNotMatch(sql, /drop function|alter function[\s\S]*owner to/iu);
+    assert.doesNotMatch(sql, /set_supervisor_purchase_request_item_product_photo|clear_supervisor_purchase_request_item_product_photo|product_photo_storage_path/iu);
   });
 });
