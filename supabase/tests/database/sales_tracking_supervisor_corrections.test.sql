@@ -1,5 +1,5 @@
 begin;
-select plan(47);
+select plan(50);
 
 select has_table('public','sales_tracking_report_cases','Sales Tracking cases exist');
 select has_column('public','sales_tracking_reports','case_id','Reports belong to a logical case');
@@ -22,10 +22,19 @@ insert into public.branches(id,organization_id,name,code,timezone,country_code)v
 insert into public.branch_memberships(branch_id,user_id,role)values('3e000000-0000-4000-8000-000000000001','1e000000-0000-4000-8000-000000000001','branch_manager');
 insert into public.organization_memberships(organization_id,user_id,role)values('2e000000-0000-4000-8000-000000000001','1e000000-0000-4000-8000-000000000002','organization_manager');
 
+insert into public.sales_tracking_report_cases(id,organization_id,branch_id,business_date)
+values('4e000000-0000-4000-8000-000000000001','2e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000002',private.phase4a_business_date('Asia/Riyadh')-1);
+insert into public.sales_tracking_reports(id,organization_id,branch_id,supervisor_user_id,supervisor_team_id,business_date,state,branch_name_snapshot,supervisor_name_snapshot,supervisor_team_name_snapshot,updated_at,case_id,version_number)
+values('7e000000-0000-4000-8000-000000000001','2e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000002','1e000000-0000-4000-8000-000000000001',null,private.phase4a_business_date('Asia/Riyadh')-1,'draft','Other Branch','Correction Supervisor','Modern branch access','2000-01-01 00:00:00+00','4e000000-0000-4000-8000-000000000001',1);
+select is((select updated_at from public.sales_tracking_reports where id='7e000000-0000-4000-8000-000000000001'),'2000-01-01 00:00:00+00'::timestamptz,'Explicit historical updated_at is retained on insert');
+update public.sales_tracking_reports set supervisor_name_snapshot='Timestamp Trigger Check'where id='7e000000-0000-4000-8000-000000000001';
+select ok((select updated_at>'2000-01-01 00:00:00+00'::timestamptz from public.sales_tracking_reports where id='7e000000-0000-4000-8000-000000000001'),'Ordinary permitted update still advances updated_at');
+
 select lives_ok(format($$select public.save_sales_tracking_draft('1e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000001','%s',0,'middle_shift','[{"entry_date":"%s","actual_cash":"10","actual_credit":"0","pos_cash":"10","pos_credit":"0","online_delivery":"0"}]','[{"entry_date":"%s","remaining_cash":"1","denom_1":1}]')$$,private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh')),'Original Middle period saves');
 select lives_ok(format($$select public.save_sales_tracking_draft('1e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000001','%s',1,'closing_shift','[{"entry_date":"%s","actual_cash":"20","actual_credit":"0","pos_cash":"20","pos_credit":"0","online_delivery":"0","refund_total":"2"}]','[{"entry_date":"%s","remaining_cash":"2","denom_1":2}]')$$,private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh')),'Original Closing period saves');
 select lives_ok(format($$select public.submit_sales_tracking('1e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000001','%s',2,'5e000000-0000-4000-8000-000000000001',repeat('a',64))$$,private.phase4a_business_date('Asia/Riyadh')),'Original report submits');
 select is((select t.tgenabled::text from pg_catalog.pg_trigger t join pg_catalog.pg_class c on c.oid=t.tgrelid join pg_catalog.pg_namespace n on n.oid=c.relnamespace where n.nspname='public'and c.relname='sales_tracking_reports'and t.tgname='sales_tracking_reports_submitted_immutable'and not t.tgisinternal),'O','Submitted immutability trigger is enabled after migration');
+select is((select t.tgenabled::text from pg_catalog.pg_trigger t join pg_catalog.pg_class c on c.oid=t.tgrelid join pg_catalog.pg_namespace n on n.oid=c.relnamespace where n.nspname='public'and c.relname='sales_tracking_reports'and t.tgname='sales_tracking_reports_set_updated_at'and not t.tgisinternal),'O','Updated-at trigger is enabled after migration');
 select throws_ok($$update public.sales_tracking_reports set version_number=2 where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=1$$,'55000','submitted sales tracking report is immutable','Submitted version identity cannot be changed after migration');
 select lives_ok($$select public.set_managed_sales_tracking_review_status('1e000000-0000-4000-8000-000000000002','2e000000-0000-4000-8000-000000000001',(select id from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=1),0,'needs_review')$$,'Manager marks Needs Review');
 

@@ -38,8 +38,11 @@ begin
  if exists(select 1 from public.sales_tracking_reports r where r.case_id is not null or r.version_number is not null or r.supersedes_report_id is not null or r.correction_created_by_user_id is not null or r.correction_created_at is not null)then
   raise exception'sales tracking version metadata is already populated'using errcode='55000';
  end if;
- if not exists(select 1 from pg_catalog.pg_trigger t join pg_catalog.pg_class c on c.oid=t.tgrelid join pg_catalog.pg_namespace n on n.oid=c.relnamespace where n.nspname='public'and c.relname='sales_tracking_reports'and t.tgname='sales_tracking_reports_submitted_immutable'and not t.tgisinternal and t.tgenabled<>'D')then
+ if not exists(select 1 from pg_catalog.pg_trigger t join pg_catalog.pg_class c on c.oid=t.tgrelid join pg_catalog.pg_namespace n on n.oid=c.relnamespace where n.nspname='public'and c.relname='sales_tracking_reports'and t.tgname='sales_tracking_reports_submitted_immutable'and not t.tgisinternal and t.tgenabled='O')then
   raise exception'sales tracking submitted immutability trigger is not enabled'using errcode='55000';
+ end if;
+ if not exists(select 1 from pg_catalog.pg_trigger t join pg_catalog.pg_class c on c.oid=t.tgrelid join pg_catalog.pg_namespace n on n.oid=c.relnamespace where n.nspname='public'and c.relname='sales_tracking_reports'and t.tgname='sales_tracking_reports_set_updated_at'and not t.tgisinternal and t.tgenabled='O')then
+  raise exception'sales tracking updated-at trigger is not enabled'using errcode='55000';
  end if;
 end$$;
 
@@ -60,25 +63,34 @@ begin
 end$$;
 
 create temporary table sales_tracking_report_version_backfill_guard on commit drop as
-select r.id,r.state,pg_catalog.to_jsonb(r)-array['case_id','version_number','supersedes_report_id','correction_created_by_user_id','correction_created_at']::text[] as preserved_row
+select r.id,r.state,r.updated_at as preserved_updated_at,pg_catalog.to_jsonb(r)-array['case_id','version_number','supersedes_report_id','correction_created_by_user_id','correction_created_at']::text[] as preserved_row
 from public.sales_tracking_reports r;
 
--- This is the sole trigger suspension in the migration. It brackets only the
--- version-identity metadata backfill; all financial and child triggers remain enabled.
+-- These are the only trigger suspensions in the migration. They bracket only the
+-- version-identity metadata backfill, preserving historical updated_at exactly;
+-- all currency, financial, child, and unrelated triggers remain enabled.
 alter table public.sales_tracking_reports disable trigger sales_tracking_reports_submitted_immutable;
+alter table public.sales_tracking_reports disable trigger sales_tracking_reports_set_updated_at;
 update public.sales_tracking_reports r
 set case_id=c.id,version_number=1
 from public.sales_tracking_report_cases c
 where c.organization_id=r.organization_id and c.branch_id=r.branch_id and c.business_date=r.business_date;
+alter table public.sales_tracking_reports enable trigger sales_tracking_reports_set_updated_at;
 alter table public.sales_tracking_reports enable trigger sales_tracking_reports_submitted_immutable;
 
 do $$
 begin
- if not exists(select 1 from pg_catalog.pg_trigger t join pg_catalog.pg_class c on c.oid=t.tgrelid join pg_catalog.pg_namespace n on n.oid=c.relnamespace where n.nspname='public'and c.relname='sales_tracking_reports'and t.tgname='sales_tracking_reports_submitted_immutable'and not t.tgisinternal and t.tgenabled<>'D')then
+ if not exists(select 1 from pg_catalog.pg_trigger t join pg_catalog.pg_class c on c.oid=t.tgrelid join pg_catalog.pg_namespace n on n.oid=c.relnamespace where n.nspname='public'and c.relname='sales_tracking_reports'and t.tgname='sales_tracking_reports_submitted_immutable'and not t.tgisinternal and t.tgenabled='O')then
   raise exception'sales tracking submitted immutability trigger was not restored'using errcode='55000';
+ end if;
+ if not exists(select 1 from pg_catalog.pg_trigger t join pg_catalog.pg_class c on c.oid=t.tgrelid join pg_catalog.pg_namespace n on n.oid=c.relnamespace where n.nspname='public'and c.relname='sales_tracking_reports'and t.tgname='sales_tracking_reports_set_updated_at'and not t.tgisinternal and t.tgenabled='O')then
+  raise exception'sales tracking updated-at trigger was not restored'using errcode='55000';
  end if;
  if exists(select 1 from public.sales_tracking_reports r where r.case_id is null or r.version_number<>1 or r.supersedes_report_id is not null or r.correction_created_by_user_id is not null or r.correction_created_at is not null)then
   raise exception'invalid sales tracking version metadata backfill'using errcode='55000';
+ end if;
+ if exists(select 1 from public.sales_tracking_reports r join sales_tracking_report_version_backfill_guard g on g.id=r.id where r.updated_at is distinct from g.preserved_updated_at)then
+  raise exception'sales tracking backfill changed historical updated_at'using errcode='55000';
  end if;
  if exists(select 1 from public.sales_tracking_reports r join sales_tracking_report_version_backfill_guard g on g.id=r.id where r.state<>g.state or(pg_catalog.to_jsonb(r)-array['case_id','version_number','supersedes_report_id','correction_created_by_user_id','correction_created_at']::text[])is distinct from g.preserved_row)then
   raise exception'sales tracking backfill changed protected report data'using errcode='55000';

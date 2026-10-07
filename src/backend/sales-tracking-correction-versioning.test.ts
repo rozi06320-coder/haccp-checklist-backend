@@ -6,6 +6,17 @@ import path from "node:path";
 const migrationPath=path.resolve("supabase/migrations/20261007140000_sales_tracking_supervisor_corrections.sql");
 
 describe("Sales Tracking correction versioning migration",()=>{
+ it("isolates updated_at as the protected field changed by the metadata backfill trigger",async()=>{
+  const sql=await readFile(migrationPath,"utf8");
+  const foundation=await readFile(path.resolve("supabase/migrations/20260727000000_identity_tenant_foundation.sql"),"utf8");
+  const phaseOne=await readFile(path.resolve("supabase/migrations/20260808060000_sales_tracking_phase1_persistence.sql"),"utf8");
+  const currency=await readFile(path.resolve("supabase/migrations/20260905110000_branch_country_sales_currency.sql"),"utf8");
+  assert.match(foundation,/create function private\.set_updated_at\(\)[\s\S]*new\.updated_at = now\(\)/);
+  assert.match(phaseOne,/create trigger sales_tracking_reports_set_updated_at\s+before update on public\.sales_tracking_reports/);
+  assert.match(currency,/create trigger sales_tracking_reports_currency_immutable\s+before update of currency_code on public\.sales_tracking_reports/);
+  assert.match(sql,/update public\.sales_tracking_reports r\s+set case_id=c\.id,version_number=1/);
+ });
+
  it("creates one logical case and immutable report versions",async()=>{
   const sql=await readFile(migrationPath,"utf8");
   assert.match(sql,/create table public\.sales_tracking_report_cases/);
@@ -15,20 +26,32 @@ describe("Sales Tracking correction versioning migration",()=>{
   assert.match(sql,/sales_tracking_reports_one_draft_per_case_uidx/);
  });
 
- it("temporarily suspends only submitted immutability for the guarded version backfill",async()=>{
+ it("temporarily suspends only submitted immutability and updated-at mutation for the guarded version backfill",async()=>{
   const sql=await readFile(migrationPath,"utf8");
   const snapshot=sql.indexOf("create temporary table sales_tracking_report_version_backfill_guard");
-  const disable=sql.indexOf("disable trigger sales_tracking_reports_submitted_immutable");
+  const disableImmutable=sql.indexOf("disable trigger sales_tracking_reports_submitted_immutable");
+  const disableUpdatedAt=sql.indexOf("disable trigger sales_tracking_reports_set_updated_at");
   const backfill=sql.indexOf("set case_id=c.id,version_number=1");
-  const enable=sql.indexOf("enable trigger sales_tracking_reports_submitted_immutable");
+  const enableUpdatedAt=sql.indexOf("enable trigger sales_tracking_reports_set_updated_at");
+  const enableImmutable=sql.indexOf("enable trigger sales_tracking_reports_submitted_immutable");
   const finalTrigger=sql.indexOf("create or replace function private.prevent_submitted_sales_tracking_report_mutation");
-  assert.ok(snapshot>0&&snapshot<disable&&disable<backfill&&backfill<enable&&enable<finalTrigger);
+  const snapshotDefinition=sql.slice(snapshot,disableImmutable);
+  assert.ok(snapshot>0&&snapshot<disableImmutable&&disableImmutable<disableUpdatedAt&&disableUpdatedAt<backfill&&backfill<enableUpdatedAt&&enableUpdatedAt<enableImmutable&&enableImmutable<finalTrigger);
   assert.equal(sql.match(/disable trigger sales_tracking_reports_submitted_immutable/g)?.length,1);
+  assert.equal(sql.match(/disable trigger sales_tracking_reports_set_updated_at/g)?.length,1);
+  assert.equal(sql.match(/disable trigger /g)?.length,2);
   assert.doesNotMatch(sql,/disable trigger (?:all|user)/i);
   assert.match(sql,/expected sales tracking branch\/day uniqueness is missing/);
   assert.match(sql,/sales tracking report does not map to exactly one case/);
+  assert.match(sql,/r\.updated_at as preserved_updated_at/);
+  assert.match(sql,/r\.updated_at is distinct from g\.preserved_updated_at/);
+  assert.match(sql,/sales tracking backfill changed historical updated_at/);
   assert.match(sql,/sales tracking backfill changed protected report data/);
   assert.match(sql,/sales tracking submitted immutability trigger was not restored/);
+  assert.match(sql,/sales tracking updated-at trigger was not restored/);
+  assert.match(sql,/t\.tgname='sales_tracking_reports_submitted_immutable'and not t\.tgisinternal and t\.tgenabled='O'/);
+  assert.match(sql,/t\.tgname='sales_tracking_reports_set_updated_at'and not t\.tgisinternal and t\.tgenabled='O'/);
+  assert.doesNotMatch(snapshotDefinition,/'updated_at'/);
   assert.match(sql,/r\.case_id is null or r\.version_number<>1/);
  });
 
