@@ -1899,8 +1899,10 @@ const salesTrackingCurrentSchema=z.object({
   submitted_by_user_id:z.uuid().nullable(),
   submitted_by_name_snapshot:z.string().nullable(),
   review_status:z.enum(["none","needs_review","reviewed"]),review_revision:z.number().int().nonnegative(),reviewed_at:z.string().nullable(),reviewed_by_user_id:z.uuid().nullable(),reviewed_by:z.string().nullable(),
+  case_id:z.uuid().optional(),version_number:z.number().int().positive().optional(),is_correction_draft:z.boolean().optional(),supersedes_report_id:z.uuid().nullable().optional(),
   attachment:salesTrackingPhotoResponseSchema.nullable(),
   attachments:z.array(salesTrackingPhotoResponseSchema).max(3).optional(),
+  source_attachments:z.array(salesTrackingPhotoResponseSchema).max(3).optional(),
   periods:z.array(z.object({id:z.uuid(),entry_period:salesTrackingPeriodSchema,entered_by_user_id:z.uuid(),entered_by_name:z.string(),entered_at:z.string()}).strict()).max(2),
   sales_rows:z.array(z.object({
     id:z.uuid().optional(),
@@ -7748,6 +7750,33 @@ export function createApp(
     if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.getSalesTrackingCurrentState)throw new HttpError(403,"forbidden","Access is denied.");
     const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.getSalesTrackingCurrentState(auth.userId,branch.data,query.data.business_date??null));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
+  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+  app.post("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/:reportId/correction",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),report=z.uuid().safeParse(request.params.reportId),body=z.object({expected_review_revision:z.number().int().nonnegative()}).strict().safeParse(request.body);
+    if(!branch.success||!report.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.startSalesTrackingCorrection)throw new HttpError(403,"forbidden","Access is denied.");
+    const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.startSalesTrackingCorrection({actorUserId:auth.userId,branchId:branch.data,reportId:report.data,expectedReviewRevision:body.data.expected_review_revision}));
+    response.setHeader("Cache-Control","private, no-store");response.status(201).json({current});
+  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+  app.put("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/:reportId/correction/draft",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),report=z.uuid().safeParse(request.params.reportId),body=salesTrackingBodySchema.safeParse(request.body);
+    if(!branch.success||!report.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.saveSalesTrackingCorrection)throw new HttpError(403,"forbidden","Access is denied.");
+    const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.saveSalesTrackingCorrection({actorUserId:auth.userId,branchId:branch.data,reportId:report.data,expectedRevision:body.data.expected_revision,entryPeriod:body.data.entry_period,payload:body.data}));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
+  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+  app.post("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/:reportId/correction/submit",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),report=z.uuid().safeParse(request.params.reportId),key=idempotencySchema.safeParse(request.header("Idempotency-Key")),body=z.object({expected_revision:z.number().int().nonnegative()}).strict().safeParse(request.body);
+    if(!branch.success||!report.success||!key.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.submitSalesTrackingCorrection)throw new HttpError(403,"forbidden","Access is denied.");
+    const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.submitSalesTrackingCorrection({actorUserId:auth.userId,branchId:branch.data,reportId:report.data,expectedRevision:body.data.expected_revision,idempotencyKey:key.data}));
+    response.setHeader("Cache-Control","private, no-store");response.status(201).json({current});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
   app.get("/api/v1/supervisor/branches/:branchId/checklists/sales_tracking/online-order-providers",protectedRateLimit,authenticate,async(request,response,next)=>{try{

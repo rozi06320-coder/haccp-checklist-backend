@@ -172,6 +172,9 @@ export type ChecklistPersistence = {
   saveColdStorageDraft?(input:{actorUserId:string;branchId:string;expectedRevision:number;equipment:unknown[];readings:unknown[];diagnostics?:ColdStorageDraftDiagnostics}):Promise<unknown>;
   submitColdStorageSlot?(input:{actorUserId:string;branchId:string;expectedRevision:number;slot:string;idempotencyKey:string;equipment:unknown[];readings:unknown[]}):Promise<unknown>;
   getSalesTrackingCurrentState?(actorUserId:string,branchId:string,businessDate?:string|null):Promise<unknown>;
+  startSalesTrackingCorrection?(input:{actorUserId:string;branchId:string;reportId:string;expectedReviewRevision:number}):Promise<unknown>;
+  saveSalesTrackingCorrection?(input:{actorUserId:string;branchId:string;reportId:string;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:SalesTrackingDraftPayload}):Promise<unknown>;
+  submitSalesTrackingCorrection?(input:{actorUserId:string;branchId:string;reportId:string;expectedRevision:number;idempotencyKey:string}):Promise<unknown>;
   listSalesTrackingOnlineOrderProviders?(actorUserId:string,branchId:string):Promise<unknown>;
   createSalesTrackingOnlineOrderProvider?(input:{actorUserId:string;branchId:string;name:string}):Promise<unknown>;
   saveSalesTrackingDraft?(input:{actorUserId:string;branchId:string;businessDate?:string|null;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:SalesTrackingDraftPayload}):Promise<unknown>;
@@ -361,8 +364,13 @@ const salesTrackingCurrent=z.object({
   reviewed_at:z.string().nullable(),
   reviewed_by_user_id:z.uuid().nullable(),
   reviewed_by:z.string().nullable(),
+  case_id:z.uuid().optional(),
+  version_number:z.number().int().positive().optional(),
+  is_correction_draft:z.boolean().optional(),
+  supersedes_report_id:z.uuid().nullable().optional(),
   attachment:salesTrackingAttachmentInternal.nullable(),
   attachments:z.array(salesTrackingAttachmentInternal).max(3).optional(),
+  source_attachments:z.array(salesTrackingAttachmentInternal).max(3).optional(),
   periods:z.array(z.object({id:z.uuid(),entry_period:salesTrackingPeriod,entered_by_user_id:z.uuid(),entered_by_name:z.string(),entered_at:z.string()}).strict()).max(2),
   sales_rows:z.array(z.object({
     id:z.uuid().optional(),
@@ -724,9 +732,10 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
  async function safeSalesTrackingAttachments(attachments:z.infer<typeof salesTrackingAttachmentInternal>[]){return Promise.all(attachments.map((attachment)=>safeSalesTrackingAttachment(attachment))) as Promise<Array<NonNullable<Awaited<ReturnType<typeof safeSalesTrackingAttachment>>>>>;}
  async function safeSalesTrackingCurrent(value:unknown){
   const current=salesTrackingCurrent.parse(value);
-  const {attachment,attachments,...rest}=current;
+  const {attachment,attachments,source_attachments,...rest}=current;
   const safeAttachments=await safeSalesTrackingAttachments(attachments??(attachment?[attachment]:[]));
-  return{...rest,attachment:safeAttachments[0]??null,attachments:safeAttachments};
+  const safeSourceAttachments=await safeSalesTrackingAttachments(source_attachments??[]);
+  return{...rest,attachment:safeAttachments[0]??null,attachments:safeAttachments,source_attachments:safeSourceAttachments};
  }
  return {
   getOverview:(actorUserId,branchId)=>rpc("get_phase4a_supervisor_overview",{actor_user_id:actorUserId,target_branch_id:branchId}),
@@ -758,6 +767,9 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   saveColdStorageDraft:coldStorageDraftRpc,
   submitColdStorageSlot:(input)=>rpc("submit_cold_storage_slot",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,slot:input.slot,idempotency_key:input.idempotencyKey,request_hash:checklistRequestHash({type:"cold_storage",slot:input.slot,equipment:input.equipment,readings:input.readings}),equipment:input.equipment,readings:input.readings}),
   async getSalesTrackingCurrentState(actorUserId,branchId,businessDate){const args=businessDate?{actor_user_id:actorUserId,target_branch_id:branchId,target_business_date:businessDate}:{actor_user_id:actorUserId,target_branch_id:branchId};return safeSalesTrackingCurrent(await rpc("get_sales_tracking_current_state",args));},
+  async startSalesTrackingCorrection(input){return safeSalesTrackingCurrent(await rpc("start_sales_tracking_correction",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_report_id:input.reportId,expected_review_revision:input.expectedReviewRevision}));},
+  async saveSalesTrackingCorrection(input){return safeSalesTrackingCurrent(await rpc("save_sales_tracking_correction",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_report_id:input.reportId,expected_revision:input.expectedRevision,entry_period:input.entryPeriod,sales_rows:input.payload.sales_rows,cash_rows:input.payload.cash_rows}));},
+  async submitSalesTrackingCorrection(input){return safeSalesTrackingCurrent(await rpc("submit_sales_tracking_correction",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_report_id:input.reportId,expected_revision:input.expectedRevision,idempotency_key:input.idempotencyKey,request_hash:checklistRequestHash({type:"sales_tracking_correction",branch_id:input.branchId,report_id:input.reportId,expected_revision:input.expectedRevision})}));},
   async listSalesTrackingOnlineOrderProviders(actorUserId,branchId){
    return salesTrackingOnlineOrderProviders.parse(await rpc("list_sales_tracking_online_order_providers",{actor_user_id:actorUserId,target_branch_id:branchId}));
   },

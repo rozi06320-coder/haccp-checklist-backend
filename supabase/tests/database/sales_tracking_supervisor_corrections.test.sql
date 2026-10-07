@@ -1,0 +1,53 @@
+begin;
+select plan(33);
+
+select has_table('public','sales_tracking_report_cases','Sales Tracking cases exist');
+select has_column('public','sales_tracking_reports','case_id','Reports belong to a logical case');
+select has_column('public','sales_tracking_reports','version_number','Reports have immutable version numbers');
+select has_column('public','sales_tracking_reports','supersedes_report_id','Correction provenance is retained');
+select has_function('public','start_sales_tracking_correction',array['uuid','uuid','uuid','bigint'],'Start Correction RPC exists');
+select has_function('public','save_sales_tracking_correction',array['uuid','uuid','uuid','bigint','text','jsonb','jsonb'],'Correction save RPC exists');
+select has_function('public','submit_sales_tracking_correction',array['uuid','uuid','uuid','bigint','uuid','text'],'Correction submit RPC exists');
+select ok(has_function_privilege('service_role','public.start_sales_tracking_correction(uuid,uuid,uuid,bigint)','execute'),'Service role can start corrections');
+select ok(not has_function_privilege('authenticated','public.start_sales_tracking_correction(uuid,uuid,uuid,bigint)','execute'),'Browser cannot call correction RPC directly');
+
+insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at) values
+ ('00000000-0000-0000-0000-000000000000','1e000000-0000-4000-8000-000000000001','authenticated','authenticated','correction-supervisor@example.invalid','{}','{}',now(),now()),
+ ('00000000-0000-0000-0000-000000000000','1e000000-0000-4000-8000-000000000002','authenticated','authenticated','correction-manager@example.invalid','{}','{}',now(),now());
+update public.profiles set full_name=case id when '1e000000-0000-4000-8000-000000000001' then 'Correction Supervisor' else 'Correction Manager' end,must_change_password=false where id::text like '1e000000-%';
+insert into public.organizations(id,name,slug)values('2e000000-0000-4000-8000-000000000001','Correction Org','correction-org');
+insert into public.branches(id,organization_id,name,code,timezone,country_code)values
+ ('3e000000-0000-4000-8000-000000000001','2e000000-0000-4000-8000-000000000001','Correction Branch','COR','Asia/Riyadh','SA'),
+ ('3e000000-0000-4000-8000-000000000002','2e000000-0000-4000-8000-000000000001','Other Branch','OTH','Asia/Riyadh','SA');
+insert into public.branch_memberships(branch_id,user_id,role)values('3e000000-0000-4000-8000-000000000001','1e000000-0000-4000-8000-000000000001','branch_manager');
+insert into public.organization_memberships(organization_id,user_id,role)values('2e000000-0000-4000-8000-000000000001','1e000000-0000-4000-8000-000000000002','organization_manager');
+
+select lives_ok(format($$select public.save_sales_tracking_draft('1e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000001','%s',0,'middle_shift','[{"entry_date":"%s","actual_cash":"10","actual_credit":"0","pos_cash":"10","pos_credit":"0","online_delivery":"0"}]','[{"entry_date":"%s","remaining_cash":"1","denom_1":1}]')$$,private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh')),'Original Middle period saves');
+select lives_ok(format($$select public.save_sales_tracking_draft('1e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000001','%s',1,'closing_shift','[{"entry_date":"%s","actual_cash":"20","actual_credit":"0","pos_cash":"20","pos_credit":"0","online_delivery":"0","refund_total":"2"}]','[{"entry_date":"%s","remaining_cash":"2","denom_1":2}]')$$,private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh')),'Original Closing period saves');
+select lives_ok(format($$select public.submit_sales_tracking('1e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000001','%s',2,'5e000000-0000-4000-8000-000000000001',repeat('a',64))$$,private.phase4a_business_date('Asia/Riyadh')),'Original report submits');
+select lives_ok($$select public.set_managed_sales_tracking_review_status('1e000000-0000-4000-8000-000000000002','2e000000-0000-4000-8000-000000000001',(select id from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=1),0,'needs_review')$$,'Manager marks Needs Review');
+
+select throws_ok($$select public.start_sales_tracking_correction('1e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000002',(select id from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=1),1)$$,'42501','sales tracking correction denied','Wrong branch is denied');
+select lives_ok($$select public.start_sales_tracking_correction('1e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000001',(select id from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=1),1)$$,'Supervisor starts correction');
+select is((select count(*)from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'),2::bigint,'Correction creates a second report version');
+select is((select state from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=1),'submitted','Original remains submitted while correction is open');
+select is((select state from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=2),'draft','Correction is a draft');
+select is((select sum(actual_cash)from public.sales_tracking_sales_rows where report_id=(select id from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=2)),30::numeric,'Copied financial values match original');
+select is((select sum(remaining_cash)from public.sales_tracking_cash_rows where report_id=(select id from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=2)),3::numeric,'Cash denominations and remaining cash are copied');
+select throws_ok($$select public.start_sales_tracking_correction('1e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000001',(select id from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=1),1)$$,'PT409','sales tracking correction already open','Second open correction is rejected');
+select throws_ok($$select public.set_managed_sales_tracking_review_status('1e000000-0000-4000-8000-000000000002','2e000000-0000-4000-8000-000000000001',(select id from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=1),1,'reviewed')$$,'PT409','sales tracking correction is open','Manager cannot race an open correction');
+
+select lives_ok(format($$select public.save_sales_tracking_correction('1e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000001',(select id from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=2),1,'closing_shift','[{"entry_date":"%s","actual_cash":"40","actual_credit":"0","pos_cash":"40","pos_credit":"0","online_delivery":"0","refund_total":"4"}]','[{"entry_date":"%s","remaining_cash":"4","denom_1":4}]')$$,private.phase4a_business_date('Asia/Riyadh'),private.phase4a_business_date('Asia/Riyadh')),'Correction edits copied Closing period');
+select is((select sum(actual_cash)from public.sales_tracking_sales_rows where report_id=(select id from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=1)),30::numeric,'Original financial values remain unchanged');
+select lives_ok($$select public.submit_sales_tracking_correction('1e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000001',(select id from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=2),2,'5e000000-0000-4000-8000-000000000002',repeat('b',64))$$,'Correction submits');
+select is((select state from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=1),'superseded','Original becomes immutable historical version');
+select is((select state from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=2),'submitted','Correction becomes submitted authority');
+select is((select authoritative_report_id from public.sales_tracking_report_cases where branch_id='3e000000-0000-4000-8000-000000000001'),(select id from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=2),'Case authority switches atomically');
+select is((select count(*)from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and state='submitted'),1::bigint,'Reporting sees one submitted version');
+select is((select review_status from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=2),'reviewed','Correction submission resolves review');
+select is((select review_revision from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=2),2::bigint,'Workflow review revision increments');
+select lives_ok($$select public.submit_sales_tracking_correction('1e000000-0000-4000-8000-000000000001','3e000000-0000-4000-8000-000000000001',(select id from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=2),2,'5e000000-0000-4000-8000-000000000002',repeat('b',64))$$,'Correction submit replay returns same authority');
+select lives_ok($$select public.set_managed_sales_tracking_review_status('1e000000-0000-4000-8000-000000000002','2e000000-0000-4000-8000-000000000001',(select id from public.sales_tracking_reports where branch_id='3e000000-0000-4000-8000-000000000001'and version_number=2),2,'needs_review')$$,'Manager can start another review cycle');
+
+select * from finish();
+rollback;
