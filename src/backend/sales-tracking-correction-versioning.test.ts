@@ -15,6 +15,23 @@ describe("Sales Tracking correction versioning migration",()=>{
   assert.match(sql,/sales_tracking_reports_one_draft_per_case_uidx/);
  });
 
+ it("temporarily suspends only submitted immutability for the guarded version backfill",async()=>{
+  const sql=await readFile(migrationPath,"utf8");
+  const snapshot=sql.indexOf("create temporary table sales_tracking_report_version_backfill_guard");
+  const disable=sql.indexOf("disable trigger sales_tracking_reports_submitted_immutable");
+  const backfill=sql.indexOf("set case_id=c.id,version_number=1");
+  const enable=sql.indexOf("enable trigger sales_tracking_reports_submitted_immutable");
+  const finalTrigger=sql.indexOf("create or replace function private.prevent_submitted_sales_tracking_report_mutation");
+  assert.ok(snapshot>0&&snapshot<disable&&disable<backfill&&backfill<enable&&enable<finalTrigger);
+  assert.equal(sql.match(/disable trigger sales_tracking_reports_submitted_immutable/g)?.length,1);
+  assert.doesNotMatch(sql,/disable trigger (?:all|user)/i);
+  assert.match(sql,/expected sales tracking branch\/day uniqueness is missing/);
+  assert.match(sql,/sales tracking report does not map to exactly one case/);
+  assert.match(sql,/sales tracking backfill changed protected report data/);
+  assert.match(sql,/sales tracking submitted immutability trigger was not restored/);
+  assert.match(sql,/r\.case_id is null or r\.version_number<>1/);
+ });
+
  it("starts one copied correction without mutating source rows or evidence",async()=>{
   const sql=await readFile(migrationPath,"utf8");
   const start=sql.slice(sql.indexOf("create function public.start_sales_tracking_correction"),sql.indexOf("create function public.save_sales_tracking_correction"));

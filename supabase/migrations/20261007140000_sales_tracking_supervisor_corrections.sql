@@ -22,18 +22,87 @@ alter table public.sales_tracking_reports
   add column correction_created_by_user_id uuid references public.profiles(id) on delete restrict,
   add column correction_created_at timestamptz;
 
+-- The old branch/day identity must still be intact while existing reports are
+-- mapped one-to-one onto cases. Abort rather than infer through dirty data.
+do $$
+begin
+ if pg_catalog.to_regclass('public.sales_tracking_reports_branch_day_key') is null then
+  raise exception'expected sales tracking branch/day uniqueness is missing'using errcode='55000';
+ end if;
+ if exists(select 1 from public.sales_tracking_reports r group by r.organization_id,r.branch_id,r.business_date having count(*)<>1)then
+  raise exception'duplicate sales tracking branch/day reports block version backfill'using errcode='55000';
+ end if;
+ if exists(select 1 from public.sales_tracking_reports r where r.state not in('draft','submitted'))then
+  raise exception'unexpected sales tracking state blocks version backfill'using errcode='55000';
+ end if;
+ if exists(select 1 from public.sales_tracking_reports r where r.case_id is not null or r.version_number is not null or r.supersedes_report_id is not null or r.correction_created_by_user_id is not null or r.correction_created_at is not null)then
+  raise exception'sales tracking version metadata is already populated'using errcode='55000';
+ end if;
+ if not exists(select 1 from pg_catalog.pg_trigger t join pg_catalog.pg_class c on c.oid=t.tgrelid join pg_catalog.pg_namespace n on n.oid=c.relnamespace where n.nspname='public'and c.relname='sales_tracking_reports'and t.tgname='sales_tracking_reports_submitted_immutable'and not t.tgisinternal and t.tgenabled<>'D')then
+  raise exception'sales tracking submitted immutability trigger is not enabled'using errcode='55000';
+ end if;
+end$$;
+
 insert into public.sales_tracking_report_cases(organization_id,branch_id,business_date)
 select distinct r.organization_id,r.branch_id,r.business_date from public.sales_tracking_reports r;
 
+do $$
+begin
+ if exists(select 1 from public.sales_tracking_report_cases c group by c.organization_id,c.branch_id,c.business_date having count(*)<>1)then
+  raise exception'duplicate sales tracking cases block version backfill'using errcode='55000';
+ end if;
+ if(select count(*)from public.sales_tracking_report_cases)<>(select count(*)from public.sales_tracking_reports)then
+  raise exception'sales tracking case/report cardinality mismatch'using errcode='55000';
+ end if;
+ if exists(select 1 from public.sales_tracking_reports r where(select count(*)from public.sales_tracking_report_cases c where c.organization_id=r.organization_id and c.branch_id=r.branch_id and c.business_date=r.business_date)<>1)then
+  raise exception'sales tracking report does not map to exactly one case'using errcode='55000';
+ end if;
+end$$;
+
+create temporary table sales_tracking_report_version_backfill_guard on commit drop as
+select r.id,r.state,pg_catalog.to_jsonb(r)-array['case_id','version_number','supersedes_report_id','correction_created_by_user_id','correction_created_at']::text[] as preserved_row
+from public.sales_tracking_reports r;
+
+-- This is the sole trigger suspension in the migration. It brackets only the
+-- version-identity metadata backfill; all financial and child triggers remain enabled.
+alter table public.sales_tracking_reports disable trigger sales_tracking_reports_submitted_immutable;
 update public.sales_tracking_reports r
 set case_id=c.id,version_number=1
 from public.sales_tracking_report_cases c
 where c.organization_id=r.organization_id and c.branch_id=r.branch_id and c.business_date=r.business_date;
+alter table public.sales_tracking_reports enable trigger sales_tracking_reports_submitted_immutable;
+
+do $$
+begin
+ if not exists(select 1 from pg_catalog.pg_trigger t join pg_catalog.pg_class c on c.oid=t.tgrelid join pg_catalog.pg_namespace n on n.oid=c.relnamespace where n.nspname='public'and c.relname='sales_tracking_reports'and t.tgname='sales_tracking_reports_submitted_immutable'and not t.tgisinternal and t.tgenabled<>'D')then
+  raise exception'sales tracking submitted immutability trigger was not restored'using errcode='55000';
+ end if;
+ if exists(select 1 from public.sales_tracking_reports r where r.case_id is null or r.version_number<>1 or r.supersedes_report_id is not null or r.correction_created_by_user_id is not null or r.correction_created_at is not null)then
+  raise exception'invalid sales tracking version metadata backfill'using errcode='55000';
+ end if;
+ if exists(select 1 from public.sales_tracking_reports r join sales_tracking_report_version_backfill_guard g on g.id=r.id where r.state<>g.state or(pg_catalog.to_jsonb(r)-array['case_id','version_number','supersedes_report_id','correction_created_by_user_id','correction_created_at']::text[])is distinct from g.preserved_row)then
+  raise exception'sales tracking backfill changed protected report data'using errcode='55000';
+ end if;
+ if(select count(*)from sales_tracking_report_version_backfill_guard)<>(select count(*)from public.sales_tracking_reports)then
+  raise exception'sales tracking report count changed during version backfill'using errcode='55000';
+ end if;
+end$$;
 
 update public.sales_tracking_report_cases c
 set authoritative_report_id=r.id
 from public.sales_tracking_reports r
 where r.case_id=c.id and r.state='submitted';
+
+do $$
+begin
+ if exists(
+  select 1 from public.sales_tracking_report_cases c
+  where not(
+   (c.authoritative_report_id is not null and c.open_correction_report_id is null and exists(select 1 from public.sales_tracking_reports r where r.id=c.authoritative_report_id and r.case_id=c.id and r.state='submitted'and r.version_number=1))
+   or(c.authoritative_report_id is null and c.open_correction_report_id is null and(select count(*)from public.sales_tracking_reports r where r.case_id=c.id and r.state='draft'and r.version_number=1)=1)
+  )
+ )then raise exception'invalid sales tracking case authority backfill'using errcode='55000';end if;
+end$$;
 
 alter table public.sales_tracking_reports
   alter column case_id set not null,
