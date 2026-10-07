@@ -465,11 +465,13 @@ describe("Sales Tracking API integration",()=>{
   assert.equal(response.status,422);
   assert.doesNotMatch(JSON.stringify(await response.json()),/Supabase|database|periods incomplete/i);
  });
- it("submits a Closing-only day and keeps it immutable",async()=>{
+ it("submits a dated Closing-only day and keeps it immutable",async()=>{
   const draftPath=`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/draft`;
-  assert.equal((await request(draftPath,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...closingPayload,expected_revision:0})})).status,200);
-  const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/submit`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":"66000000-0000-4000-8000-000000000097"},body:JSON.stringify({expected_revision:1})});
+  const businessDate="2026-08-07";
+  assert.equal((await request(draftPath,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...closingPayload,business_date:businessDate,expected_revision:0,sales_rows:closingPayload.sales_rows.map((row)=>({...row,entry_date:businessDate})),cash_rows:closingPayload.cash_rows.map((row)=>({...row,entry_date:businessDate}))})})).status,200);
+  const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/submit`,"supervisor",{method:"POST",headers:{"Content-Type":"application/json","Idempotency-Key":"66000000-0000-4000-8000-000000000097"},body:JSON.stringify({business_date:businessDate,expected_revision:1})});
   assert.equal(response.status,201);
+  assert.equal((calls.at(-1)?.input as {businessDate?:string|null}).businessDate,businessDate);
   const body=await response.json();
   assert.deepEqual(body.current.periods.map((period:Record<string,unknown>)=>period.entry_period),["closing_shift"]);
   assert.equal((await request(draftPath,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...draftPayload,expected_revision:2})})).status,409);
