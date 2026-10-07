@@ -22,6 +22,7 @@ let currentState:"draft"|"submitted"="draft";
 let submittedAt:string|null=null;
 let submittedByUserId:string|null=null;
 let submittedByNameSnapshot:string|null=null;
+let currentAttachment:Record<string,unknown>|null=null;
 let malformedManagedSalesTracking=false;
 let malformedMonthlySummary=false;
 let useProviderAliasShape=false;
@@ -73,7 +74,8 @@ function current(){
     submitted_by_user_id:submittedByUserId,
     submitted_by_name_snapshot:submittedByNameSnapshot,
     review_status:reviewStatus,review_revision:reviewRevision,reviewed_at:reviewStatus==="none"?null:"2026-08-08T13:00:00.000Z",reviewed_by_user_id:reviewStatus==="none"?null:manager,reviewed_by:reviewStatus==="none"?null:"Manager",
-    attachment:null,
+    is_correction_draft:false,
+    attachment:currentAttachment,
     periods:currentPeriods,
     sales_rows:currentSalesRows.map((row)=>({
       ...row,
@@ -277,7 +279,7 @@ async function submitSavedDay(idempotencyKey:string,expectedRevision=2){
 describe("Sales Tracking API integration",()=>{
  before(async()=>{server=createServer(createApp(config,deps()));await new Promise<void>((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));origin=`http://127.0.0.1:${(server.address()as AddressInfo).port}`;});
  after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
- beforeEach(()=>{calls.length=0;currentSalesRows=[];currentCashRows=[];currentPeriods=[];currentRevision=0;currentState="draft";submittedAt=null;submittedByUserId=null;submittedByNameSnapshot=null;reviewStatus="none";reviewRevision=0;malformedManagedSalesTracking=false;malformedMonthlySummary=false;useProviderAliasShape=false;requireOnlineBreakdownError=false;managedAttachments=[];replay.clear();providers=[
+ beforeEach(()=>{calls.length=0;currentSalesRows=[];currentCashRows=[];currentPeriods=[];currentRevision=0;currentState="draft";submittedAt=null;submittedByUserId=null;submittedByNameSnapshot=null;currentAttachment=null;reviewStatus="none";reviewRevision=0;malformedManagedSalesTracking=false;malformedMonthlySummary=false;useProviderAliasShape=false;requireOnlineBreakdownError=false;managedAttachments=[];replay.clear();providers=[
   {id:"57000000-0000-4000-8000-000000000001",organization_id:org,branch_id:branch,name:"Jahez",normalized_name:"jahez",default_provider_key:"jahez",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
   {id:"57000000-0000-4000-8000-000000000003",organization_id:org,branch_id:branch,name:"HungerStation",normalized_name:"hungerstation",default_provider_key:"hungerstation",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
   {id:"57000000-0000-4000-8000-000000000002",organization_id:org,branch_id:branch,name:"Ninja",normalized_name:"ninja",default_provider_key:"ninja",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
@@ -316,7 +318,17 @@ describe("Sales Tracking API integration",()=>{
  it("returns empty current state for a Supervisor",async()=>{
   const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/current-state`,"supervisor");
   assert.equal(response.status,200);
-  assert.deepEqual(await response.json(),{current:{report_id:null,business_date:"2026-08-08",currency_code:"SAR",state:"draft",revision:0,submitted_at:null,submitted_by_user_id:null,submitted_by_name_snapshot:null,review_status:"none",review_revision:0,reviewed_at:null,reviewed_by_user_id:null,reviewed_by:null,attachment:null,periods:[],sales_rows:[],cash_rows:[],totals:{actual_cash:0,actual_credit:0,pos_cash:0,pos_credit:0,online_delivery:0,actual_total:0,gross_sales:0,refund_total:0,net_sales:0,pos_total:0,variance:0,cash_total:0,remaining_cash:0}}});
+  assert.deepEqual(await response.json(),{current:{report_id:null,business_date:"2026-08-08",currency_code:"SAR",state:"draft",revision:0,submitted_at:null,submitted_by_user_id:null,submitted_by_name_snapshot:null,review_status:"none",review_revision:0,reviewed_at:null,reviewed_by_user_id:null,reviewed_by:null,is_correction_draft:false,attachment:null,periods:[],sales_rows:[],cash_rows:[],totals:{actual_cash:0,actual_credit:0,pos_cash:0,pos_credit:0,online_delivery:0,actual_total:0,gross_sales:0,refund_total:0,net_sales:0,pos_total:0,variance:0,cash_total:0,remaining_cash:0}}});
+ });
+
+ it("returns an ordinary draft with signed attachment metadata and no storage path",async()=>{
+  currentAttachment={id:photo,original_filename:"Sales report.jpeg",mime_type:"image/jpeg",size_bytes:253393,created_at:"2026-10-07T21:24:47.613432+00:00",display_order:1,signed_url:null};
+  const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/current-state`,"supervisor");
+  assert.equal(response.status,200);
+  const body=await response.json();
+  assert.equal(body.current.is_correction_draft,false);
+  assert.equal(body.current.attachment.original_filename,"Sales report.jpeg");
+  assert.equal("storage_path" in body.current.attachment,false);
  });
 
  it("passes an explicit Sales Tracking business date through current, draft, and submit",async()=>{
