@@ -47,6 +47,27 @@ describe("Sales Tracking correction versioning migration",()=>{
   assert.match(sql,/if case_row\.open_correction_report_id is not null then raise sqlstate'PT409'/);
  });
 
+ it("makes every retained normal mutation overload case-aware",async()=>{
+  const sql=await readFile(migrationPath,"utf8");
+  const compatibility=sql.slice(sql.indexOf("-- Normal Sales Tracking mutations"),sql.indexOf("revoke all on function public.start_sales_tracking_correction"));
+  assert.match(compatibility,/private\.lock_normal_sales_tracking_case/);
+  assert.match(compatibility,/create or replace function public\.ensure_sales_tracking_draft_report/);
+  assert.match(compatibility,/create or replace function public\.save_sales_tracking_draft\(\s*actor_user_id uuid,target_branch_id uuid,target_business_date date/);
+  assert.match(compatibility,/create or replace function public\.submit_sales_tracking\(actor_user_id uuid,target_branch_id uuid,target_business_date date/);
+  assert.match(compatibility,/create or replace function public\.prepare_sales_tracking_attachment_upload/);
+  assert.match(compatibility,/case_row\.authoritative_report_id is not null/);
+  assert.match(compatibility,/case_row\.open_correction_report_id is not null/);
+  assert.doesNotMatch(compatibility,/select\*into s from public\.sales_tracking_reports [a-z]+ where [^;]*organization_id[^;]*branch_id[^;]*business_date[^;]*for update/);
+ });
+
+ it("keeps null-report evidence preparation on an ordinary draft only",async()=>{
+  const sql=await readFile(migrationPath,"utf8");
+  const prepare=sql.slice(sql.lastIndexOf("create or replace function public.prepare_sales_tracking_attachment_upload"),sql.indexOf("revoke all on function public.ensure_sales_tracking_draft_report"));
+  assert.match(prepare,/target_report_id is null then select e\.report_id into target_report_id from public\.ensure_sales_tracking_draft_report/);
+  assert.match(prepare,/if s\.state<>'draft'/);
+  assert.doesNotMatch(prepare,/where r\.organization_id=c\.organization_id and r\.branch_id=c\.branch_id and r\.business_date=target_business_date for update/);
+ });
+
  it("wires start, correction save, and correction submit through protected API routes",async()=>{
   const app=await readFile(path.resolve("src/backend/app.ts"),"utf8");
   const persistence=await readFile(path.resolve("src/backend/checklist-persistence.ts"),"utf8");

@@ -289,6 +289,207 @@ begin
  return pg_catalog.jsonb_build_object('report_id',report.id,'review_status',target_review_status,'review_revision',report.review_revision+1,'reviewed_at',(select r.reviewed_at from public.sales_tracking_reports r where r.id=report.id),'reviewed_by_user_id',actor_user_id,'reviewed_by',actor_name);
 end$$;
 
+-- Normal Sales Tracking mutations must resolve the logical case rather than
+-- relying on the pre-versioning branch/day uniqueness of physical reports.
+create function private.lock_normal_sales_tracking_case(
+ target_organization_id uuid,target_branch_id uuid,target_business_date date,create_if_missing boolean)
+returns public.sales_tracking_report_cases language plpgsql security definer set search_path='' as $$
+declare case_row public.sales_tracking_report_cases%rowtype;
+begin
+ select c.* into case_row from public.sales_tracking_report_cases c
+ where c.organization_id=target_organization_id and c.branch_id=target_branch_id and c.business_date=target_business_date
+ for update;
+ if case_row.id is null and create_if_missing then
+  insert into public.sales_tracking_report_cases(organization_id,branch_id,business_date)
+  values(target_organization_id,target_branch_id,target_business_date)returning*into case_row;
+ end if;
+ if case_row.id is not null and case_row.open_correction_report_id is not null then
+  raise sqlstate'PT409'using message='sales tracking correction is open';
+ end if;
+ if case_row.authoritative_report_id is not null and not exists(
+  select 1 from public.sales_tracking_reports r where r.id=case_row.authoritative_report_id
+   and r.case_id=case_row.id and r.organization_id=target_organization_id and r.branch_id=target_branch_id
+   and r.business_date=target_business_date and r.state='submitted'
+ )then raise exception'invalid sales tracking case authority'using errcode='55000';end if;
+ return case_row;
+end$$;
+revoke all on function private.lock_normal_sales_tracking_case(uuid,uuid,date,boolean)from public,anon,authenticated,service_role;
+
+create or replace function public.ensure_sales_tracking_draft_report(actor_user_id uuid,target_branch_id uuid,target_business_date date)
+returns table(report_id uuid,organization_id uuid,branch_id uuid,business_date date,revision bigint)
+language plpgsql security definer set search_path='' as $$
+declare c record;case_row public.sales_tracking_report_cases%rowtype;s public.sales_tracking_reports%rowtype;v_currency text;
+begin
+ select*into strict c from private.phase2_branch_context(actor_user_id,target_branch_id);
+ if target_business_date is null or target_business_date>c.business_date then raise exception'invalid sales tracking business date'using errcode='22023';end if;
+ perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(c.organization_id::text||':'||c.branch_id::text||':'||target_business_date::text||':sales_tracking',0));
+ case_row:=private.lock_normal_sales_tracking_case(c.organization_id,c.branch_id,target_business_date,true);
+ if case_row.authoritative_report_id is not null then raise exception'sales tracking already submitted'using errcode='23505';end if;
+ select r.*into s from public.sales_tracking_reports r where r.case_id=case_row.id and r.state='draft'for update;
+ if s.id is null then
+  if exists(select 1 from public.sales_tracking_reports r where r.case_id=case_row.id)then raise exception'invalid sales tracking case state'using errcode='55000';end if;
+  select case b.country_code when'AE'then'AED'else'SAR'end into v_currency from public.branches b where b.id=c.branch_id and b.organization_id=c.organization_id;
+  insert into public.sales_tracking_reports(organization_id,branch_id,supervisor_user_id,supervisor_team_id,business_date,state,
+   branch_name_snapshot,supervisor_name_snapshot,supervisor_team_name_snapshot,branch_revision,updated_by_user_id,currency_code,case_id,version_number)
+  values(c.organization_id,c.branch_id,actor_user_id,c.legacy_team_id,target_business_date,'draft',c.branch_name,c.actor_name,c.actor_name||' Team',0,actor_user_id,v_currency,case_row.id,1)returning*into s;
+ end if;
+ return query select s.id,s.organization_id,s.branch_id,s.business_date,s.branch_revision;
+exception when no_data_found or too_many_rows then raise exception'sales tracking photo denied'using errcode='42501';end$$;
+
+create or replace function public.save_sales_tracking_draft(
+ actor_user_id uuid,target_branch_id uuid,target_business_date date,expected_revision bigint,entry_period text,sales_rows jsonb,cash_rows jsonb)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare c record;s public.sales_tracking_reports%rowtype;p public.sales_tracking_period_entries%rowtype;v jsonb;provider_amounts jsonb;provider_total numeric;sales_row public.sales_tracking_sales_rows%rowtype;resolved_report_id uuid;
+begin
+ if entry_period not in('middle_shift','closing_shift')then raise exception'invalid sales tracking period'using errcode='22023';end if;
+ select*into strict c from private.phase2_branch_context(actor_user_id,target_branch_id);
+ if target_business_date is null then raise exception'sales tracking business date required'using errcode='22004';end if;
+ if target_business_date>c.business_date then raise exception'sales tracking future business date denied'using errcode='22023';end if;
+ perform private.validate_sales_tracking_sales_rows(sales_rows);perform private.validate_sales_tracking_cash_rows(cash_rows);
+ perform private.validate_sales_tracking_entry_dates(sales_rows,target_business_date);perform private.validate_sales_tracking_entry_dates(cash_rows,target_business_date);
+ if pg_catalog.jsonb_array_length(sales_rows)<>1 or pg_catalog.jsonb_array_length(cash_rows)<>1 then raise exception'invalid sales tracking period rows'using errcode='22023';end if;
+ select value into strict v from pg_catalog.jsonb_array_elements(sales_rows);provider_amounts:=coalesce(v->'online_amounts','[]'::jsonb);
+ if pg_catalog.jsonb_typeof(provider_amounts)<>'array'then raise exception'invalid sales tracking online amounts'using errcode='22023';end if;
+ if private.sales_tracking_numeric_field(v,'online_delivery')>0 and pg_catalog.jsonb_array_length(provider_amounts)=0 then raise exception'online provider breakdown required'using errcode='22023';end if;
+ if exists(select 1 from pg_catalog.jsonb_array_elements(provider_amounts)e(a)where pg_catalog.jsonb_typeof(a->'provider_id')<>'string'or(a->>'provider_id')!~*'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')then raise exception'invalid sales tracking online provider'using errcode='22023';end if;
+ if(select count(*)<>count(distinct a->>'provider_id')from pg_catalog.jsonb_array_elements(provider_amounts)e(a))then raise exception'duplicate sales tracking online provider'using errcode='22023';end if;
+ if exists(select 1 from pg_catalog.jsonb_array_elements(provider_amounts)e(a)left join public.sales_tracking_online_order_providers o on o.id=(a->>'provider_id')::uuid and o.organization_id=c.organization_id and o.branch_id=c.branch_id and o.active where o.id is null)then raise exception'invalid sales tracking online provider scope'using errcode='22023';end if;
+ select coalesce(sum(private.sales_tracking_numeric_field(a,'amount')),0)into provider_total from pg_catalog.jsonb_array_elements(provider_amounts)e(a);
+ if provider_total<>private.sales_tracking_numeric_field(v,'online_delivery')then raise exception'sales tracking online provider total mismatch'using errcode='23514';end if;
+ select e.report_id into strict resolved_report_id from public.ensure_sales_tracking_draft_report(actor_user_id,target_branch_id,target_business_date)e;
+ select r.*into strict s from public.sales_tracking_reports r where r.id=resolved_report_id and r.state='draft'for update;
+ if coalesce(expected_revision,-1)<>s.branch_revision then raise sqlstate'PT409'using message='sales tracking changed';end if;
+ if exists(select 1 from public.sales_tracking_period_entries x where x.report_id=s.id and x.entry_period=save_sales_tracking_draft.entry_period)then raise exception'sales tracking period already saved'using errcode='23505';end if;
+ insert into public.sales_tracking_period_entries(report_id,entry_period,entered_by_user_id,entered_by_name_snapshot)values(s.id,entry_period,actor_user_id,c.actor_name)returning*into p;
+ insert into public.sales_tracking_sales_rows(report_id,period_entry_id,entry_date,actual_cash,actual_credit,pos_cash,pos_credit,online_delivery,refund_total,remarks)
+ values(s.id,p.id,private.sales_tracking_date_field(v,'entry_date'),private.sales_tracking_numeric_field(v,'actual_cash'),private.sales_tracking_numeric_field(v,'actual_credit'),private.sales_tracking_numeric_field(v,'pos_cash'),private.sales_tracking_numeric_field(v,'pos_credit'),provider_total,private.sales_tracking_refund_field(v),nullif(pg_catalog.btrim(coalesce(v->>'remarks','')),'') )returning*into sales_row;
+ insert into public.sales_tracking_online_amounts(sales_row_id,provider_id,amount)select sales_row.id,(a->>'provider_id')::uuid,private.sales_tracking_numeric_field(a,'amount')from pg_catalog.jsonb_array_elements(provider_amounts)e(a);
+ insert into public.sales_tracking_cash_rows(report_id,period_entry_id,entry_date,denom_1,denom_2,denom_5,denom_10,denom_20,denom_50,denom_100,denom_200,denom_500,remaining_cash,remarks)
+ select s.id,p.id,private.sales_tracking_date_field(x,'entry_date'),private.sales_tracking_integer_field(x,'denom_1'),private.sales_tracking_integer_field(x,'denom_2'),private.sales_tracking_integer_field(x,'denom_5'),private.sales_tracking_integer_field(x,'denom_10'),private.sales_tracking_integer_field(x,'denom_20'),private.sales_tracking_integer_field(x,'denom_50'),private.sales_tracking_integer_field(x,'denom_100'),private.sales_tracking_integer_field(x,'denom_200'),private.sales_tracking_integer_field(x,'denom_500'),private.sales_tracking_numeric_field(x,'remaining_cash'),nullif(pg_catalog.btrim(coalesce(x->>'remarks','')),'')from pg_catalog.jsonb_array_elements(cash_rows)e(x);
+ update public.sales_tracking_reports r set branch_revision=r.branch_revision+1,updated_by_user_id=actor_user_id where r.id=s.id;
+ return public.get_sales_tracking_current_state(actor_user_id,target_branch_id,target_business_date);
+exception when no_data_found or too_many_rows then raise exception'sales tracking draft denied'using errcode='42501';end$$;
+
+create or replace function public.submit_sales_tracking(actor_user_id uuid,target_branch_id uuid,target_business_date date,expected_revision bigint,idempotency_key uuid,request_hash text)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare c record;s public.sales_tracking_reports%rowtype;case_row public.sales_tracking_report_cases%rowtype;prior public.sales_tracking_submission_idempotency%rowtype;
+begin
+ if request_hash!~'^[0-9a-f]{64}$'then raise exception'invalid sales tracking request hash'using errcode='22023';end if;
+ select*into strict c from private.phase2_branch_context(actor_user_id,target_branch_id);
+ if target_business_date is null then raise exception'sales tracking business date required'using errcode='22004';end if;
+ if target_business_date>c.business_date then raise exception'sales tracking future business date denied'using errcode='22023';end if;
+ perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(c.organization_id::text||':'||c.branch_id::text||':'||target_business_date::text||':sales_tracking',0));
+ select*into prior from public.sales_tracking_submission_idempotency x where x.actor_user_id=submit_sales_tracking.actor_user_id and x.idempotency_key=submit_sales_tracking.idempotency_key;
+ if prior.actor_user_id is not null then
+  if prior.request_hash<>request_hash then raise exception'sales tracking idempotency conflict'using errcode='23505';end if;
+  perform 1 from public.sales_tracking_reports x where x.id=prior.report_id and x.organization_id=c.organization_id and x.branch_id=c.branch_id and x.business_date=target_business_date and x.state='submitted';
+  if not found then raise exception'sales tracking submit denied'using errcode='42501';end if;
+  return public.get_sales_tracking_current_state(actor_user_id,target_branch_id,target_business_date);
+ end if;
+ case_row:=private.lock_normal_sales_tracking_case(c.organization_id,c.branch_id,target_business_date,false);
+ if case_row.id is null then raise sqlstate'PT409'using message='sales tracking changed';end if;
+ if case_row.authoritative_report_id is not null then raise exception'sales tracking already submitted'using errcode='23505';end if;
+ select r.*into s from public.sales_tracking_reports r where r.case_id=case_row.id and r.state='draft'for update;
+ if s.id is null or coalesce(expected_revision,-1)<>s.branch_revision then raise sqlstate'PT409'using message='sales tracking changed';end if;
+ if(select count(*)from public.sales_tracking_period_entries p where p.report_id=s.id)<>2 then raise exception'sales tracking periods incomplete'using errcode='22023';end if;
+ update public.sales_tracking_reports r set state='submitted',submitted_at=pg_catalog.now(),branch_revision=r.branch_revision+1,updated_by_user_id=actor_user_id,submitted_by_user_id=actor_user_id,submitted_by_name_snapshot=c.actor_name where r.id=s.id returning*into s;
+ insert into public.sales_tracking_submission_idempotency(actor_user_id,idempotency_key,request_hash,report_id)values(actor_user_id,idempotency_key,request_hash,s.id);
+ return public.get_sales_tracking_current_state(actor_user_id,target_branch_id,target_business_date);
+exception when no_data_found or too_many_rows then raise exception'sales tracking submit denied'using errcode='42501';end$$;
+
+create or replace function public.save_sales_tracking_draft(actor_user_id uuid,target_branch_id uuid,expected_revision bigint,entry_period text,sales_rows jsonb,cash_rows jsonb)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare c record;case_row public.sales_tracking_report_cases%rowtype;s public.sales_tracking_reports%rowtype;p public.sales_tracking_period_entries%rowtype;v jsonb;provider_amounts jsonb;provider_total numeric;sales_row public.sales_tracking_sales_rows%rowtype;
+begin
+ if entry_period not in('middle_shift','closing_shift')then raise exception'invalid sales tracking period'using errcode='22023';end if;
+ select*into strict c from private.phase2_branch_context(actor_user_id,target_branch_id);
+ perform private.validate_sales_tracking_sales_rows(sales_rows);perform private.validate_sales_tracking_cash_rows(cash_rows);
+ perform private.validate_sales_tracking_entry_dates(sales_rows,c.business_date);perform private.validate_sales_tracking_entry_dates(cash_rows,c.business_date);
+ if pg_catalog.jsonb_array_length(sales_rows)<>1 or pg_catalog.jsonb_array_length(cash_rows)<>1 then raise exception'invalid sales tracking period rows'using errcode='22023';end if;
+ select value into strict v from pg_catalog.jsonb_array_elements(sales_rows);provider_amounts:=coalesce(v->'online_amounts','[]'::jsonb);
+ if pg_catalog.jsonb_typeof(provider_amounts)<>'array'then raise exception'invalid sales tracking online amounts'using errcode='22023';end if;
+ if exists(select 1 from pg_catalog.jsonb_array_elements(provider_amounts)e(a)where pg_catalog.jsonb_typeof(a->'provider_id')<>'string'or(a->>'provider_id')!~*'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')then raise exception'invalid sales tracking online provider'using errcode='22023';end if;
+ if(select count(*)<>count(distinct a->>'provider_id')from pg_catalog.jsonb_array_elements(provider_amounts)e(a))then raise exception'duplicate sales tracking online provider'using errcode='22023';end if;
+ if exists(select 1 from pg_catalog.jsonb_array_elements(provider_amounts)e(a)left join public.sales_tracking_online_order_providers provider on provider.id=(a->>'provider_id')::uuid and provider.organization_id=c.organization_id and provider.branch_id=c.branch_id and provider.active where provider.id is null)then raise exception'invalid sales tracking online provider scope'using errcode='22023';end if;
+ if pg_catalog.jsonb_array_length(provider_amounts)>0 then select coalesce(sum(private.sales_tracking_numeric_field(a,'amount')),0)into provider_total from pg_catalog.jsonb_array_elements(provider_amounts)e(a);else provider_total:=private.sales_tracking_numeric_field(v,'online_delivery');end if;
+ perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(c.organization_id::text||':'||c.branch_id::text||':'||c.business_date::text||':sales_tracking',0));
+ case_row:=private.lock_normal_sales_tracking_case(c.organization_id,c.branch_id,c.business_date,true);
+ if case_row.authoritative_report_id is not null then raise exception'sales tracking already submitted'using errcode='23505';end if;
+ select r.*into s from public.sales_tracking_reports r where r.case_id=case_row.id and r.state='draft'for update;
+ if(s.id is null and coalesce(expected_revision,0)<>0)or(s.id is not null and coalesce(expected_revision,-1)<>s.branch_revision)then raise sqlstate'PT409'using message='sales tracking changed';end if;
+ if s.id is not null and entry_period='middle_shift'and exists(select 1 from public.sales_tracking_period_entries x where x.report_id=s.id and x.entry_period='closing_shift')then raise exception'sales tracking closing period already saved'using errcode='23505';end if;
+ if s.id is null then
+  if exists(select 1 from public.sales_tracking_reports r where r.case_id=case_row.id)then raise exception'invalid sales tracking case state'using errcode='55000';end if;
+  insert into public.sales_tracking_reports(organization_id,branch_id,supervisor_user_id,supervisor_team_id,business_date,state,branch_name_snapshot,supervisor_name_snapshot,supervisor_team_name_snapshot,branch_revision,updated_by_user_id,case_id,version_number)
+  values(c.organization_id,c.branch_id,actor_user_id,c.legacy_team_id,c.business_date,'draft',c.branch_name,c.actor_name,c.actor_name||' Team',1,actor_user_id,case_row.id,1)returning*into s;
+ else
+  if exists(select 1 from public.sales_tracking_period_entries x where x.report_id=s.id and x.entry_period=save_sales_tracking_draft.entry_period)then raise exception'sales tracking period already saved'using errcode='23505';end if;
+  update public.sales_tracking_reports r set branch_revision=r.branch_revision+1,updated_by_user_id=actor_user_id where r.id=s.id returning*into s;
+ end if;
+ insert into public.sales_tracking_period_entries(report_id,entry_period,entered_by_user_id,entered_by_name_snapshot)values(s.id,entry_period,actor_user_id,c.actor_name)returning*into p;
+ insert into public.sales_tracking_sales_rows(report_id,period_entry_id,entry_date,actual_cash,actual_credit,pos_cash,pos_credit,online_delivery,remarks)
+ values(s.id,p.id,private.sales_tracking_date_field(v,'entry_date'),private.sales_tracking_numeric_field(v,'actual_cash'),private.sales_tracking_numeric_field(v,'actual_credit'),private.sales_tracking_numeric_field(v,'pos_cash'),private.sales_tracking_numeric_field(v,'pos_credit'),provider_total,nullif(pg_catalog.btrim(coalesce(v->>'remarks','')),''))returning*into sales_row;
+ insert into public.sales_tracking_online_amounts(sales_row_id,provider_id,amount)select sales_row.id,(a->>'provider_id')::uuid,private.sales_tracking_numeric_field(a,'amount')from pg_catalog.jsonb_array_elements(provider_amounts)e(a);
+ insert into public.sales_tracking_cash_rows(report_id,period_entry_id,entry_date,denom_1,denom_2,denom_5,denom_10,denom_20,denom_50,denom_100,denom_200,denom_500,remaining_cash,remarks)
+ select s.id,p.id,private.sales_tracking_date_field(x,'entry_date'),private.sales_tracking_integer_field(x,'denom_1'),private.sales_tracking_integer_field(x,'denom_2'),private.sales_tracking_integer_field(x,'denom_5'),private.sales_tracking_integer_field(x,'denom_10'),private.sales_tracking_integer_field(x,'denom_20'),private.sales_tracking_integer_field(x,'denom_50'),private.sales_tracking_integer_field(x,'denom_100'),private.sales_tracking_integer_field(x,'denom_200'),private.sales_tracking_integer_field(x,'denom_500'),private.sales_tracking_numeric_field(x,'remaining_cash'),nullif(pg_catalog.btrim(coalesce(x->>'remarks','')),'')from pg_catalog.jsonb_array_elements(cash_rows)e(x);
+ return public.get_sales_tracking_current_state(actor_user_id,target_branch_id,c.business_date);
+exception when no_data_found or too_many_rows then raise exception'sales tracking draft denied'using errcode='42501';end$$;
+
+create or replace function public.submit_sales_tracking(actor_user_id uuid,target_branch_id uuid,expected_revision bigint,idempotency_key uuid,request_hash text)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare c record;case_row public.sales_tracking_report_cases%rowtype;s public.sales_tracking_reports%rowtype;prior public.sales_tracking_submission_idempotency%rowtype;period_count bigint;closing_count bigint;invalid_period_count bigint;
+begin
+ if request_hash!~'^[0-9a-f]{64}$'then raise exception'invalid sales tracking request hash'using errcode='22023';end if;
+ select*into strict c from private.phase2_branch_context(actor_user_id,target_branch_id);
+ perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(c.organization_id::text||':'||c.branch_id::text||':'||c.business_date::text||':sales_tracking',0));
+ select*into prior from public.sales_tracking_submission_idempotency x where x.actor_user_id=submit_sales_tracking.actor_user_id and x.idempotency_key=submit_sales_tracking.idempotency_key;
+ if prior.actor_user_id is not null then
+  if prior.request_hash<>request_hash then raise exception'sales tracking idempotency conflict'using errcode='23505';end if;
+  perform 1 from public.sales_tracking_reports x where x.id=prior.report_id and x.organization_id=c.organization_id and x.branch_id=c.branch_id and x.business_date=c.business_date and x.state='submitted';
+  if not found then raise exception'sales tracking submit denied'using errcode='42501';end if;
+  return public.get_sales_tracking_current_state(actor_user_id,target_branch_id,c.business_date);
+ end if;
+ case_row:=private.lock_normal_sales_tracking_case(c.organization_id,c.branch_id,c.business_date,false);
+ if case_row.id is null then raise sqlstate'PT409'using message='sales tracking changed';end if;
+ if case_row.authoritative_report_id is not null then raise exception'sales tracking already submitted'using errcode='23505';end if;
+ select r.*into s from public.sales_tracking_reports r where r.case_id=case_row.id and r.state='draft'for update;
+ if s.id is null or coalesce(expected_revision,-1)<>s.branch_revision then raise sqlstate'PT409'using message='sales tracking changed';end if;
+ select count(*),count(*)filter(where p.entry_period='closing_shift'),count(*)filter(where p.entry_period not in('middle_shift','closing_shift'))into period_count,closing_count,invalid_period_count from public.sales_tracking_period_entries p where p.report_id=s.id;
+ if period_count<1 or period_count>2 or closing_count<>1 or invalid_period_count<>0 then raise exception'sales tracking periods incomplete'using errcode='22023';end if;
+ update public.sales_tracking_reports r set state='submitted',submitted_at=pg_catalog.now(),branch_revision=r.branch_revision+1,updated_by_user_id=actor_user_id,submitted_by_user_id=actor_user_id,submitted_by_name_snapshot=c.actor_name where r.id=s.id returning*into s;
+ insert into public.sales_tracking_submission_idempotency(actor_user_id,idempotency_key,request_hash,report_id)values(actor_user_id,idempotency_key,request_hash,s.id);
+ return public.get_sales_tracking_current_state(actor_user_id,target_branch_id,c.business_date);
+exception when no_data_found or too_many_rows then raise exception'sales tracking submit denied'using errcode='42501';end$$;
+
+-- The null-report attachment fallback is intentionally limited to an ordinary
+-- version-1 draft. Open corrections must use their explicit report id.
+create or replace function public.prepare_sales_tracking_attachment_upload(
+ actor_user_id uuid,target_branch_id uuid,target_business_date date,target_report_id uuid,
+ expected_revision bigint,attachment_id uuid,attachment_mime_type text,replacement_attachment_id uuid default null)
+returns jsonb language plpgsql security definer set search_path='' as $$
+declare c record;s public.sales_tracking_reports%rowtype;replacement public.sales_tracking_attachments%rowtype;active_count integer;
+begin
+ select*into strict c from private.phase2_branch_context(actor_user_id,target_branch_id);
+ if target_business_date is null or target_business_date>c.business_date then raise exception'invalid sales tracking business date'using errcode='22023';end if;
+ if attachment_id is null or attachment_mime_type not in('image/jpeg','image/png','image/webp')then raise exception'invalid sales tracking attachment'using errcode='22023';end if;
+ perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(c.organization_id::text||':'||c.branch_id::text||':'||target_business_date::text||':sales_tracking',0));
+ if target_report_id is null then select e.report_id into target_report_id from public.ensure_sales_tracking_draft_report(actor_user_id,target_branch_id,target_business_date)e;end if;
+ perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(c.organization_id::text||':'||c.branch_id::text||':'||target_report_id::text||':sales_tracking_photo',0));
+ select r.*into s from public.sales_tracking_reports r where r.id=target_report_id and r.organization_id=c.organization_id and r.branch_id=c.branch_id and r.business_date=target_business_date for update;
+ if not found then raise exception'sales tracking report not found'using errcode='P0002';end if;
+ if s.state<>'draft'then raise exception'sales tracking already submitted'using errcode='23505';end if;
+ if s.branch_revision<>expected_revision then raise sqlstate'PT409'using message='sales tracking changed';end if;
+ select count(*)into active_count from public.sales_tracking_attachments a where a.report_id=s.id and a.deleted_at is null;
+ if replacement_attachment_id is not null then
+  select a.*into replacement from public.sales_tracking_attachments a where a.id=replacement_attachment_id and a.report_id=s.id and a.deleted_at is null for update;
+  if not found then raise exception'sales tracking attachment not found'using errcode='P0002';end if;
+ elsif active_count>=3 then raise exception'maximum sales tracking photos reached'using errcode='23505';end if;
+ return pg_catalog.jsonb_build_object('report_id',s.id,'organization_id',s.organization_id,'branch_id',s.branch_id,'business_date',s.business_date,'revision',s.branch_revision,'attachment_id',attachment_id);
+exception when no_data_found or too_many_rows then raise exception'sales tracking photo denied'using errcode='42501';end$$;
+
+revoke all on function public.ensure_sales_tracking_draft_report(uuid,uuid,date),public.save_sales_tracking_draft(uuid,uuid,date,bigint,text,jsonb,jsonb),public.save_sales_tracking_draft(uuid,uuid,bigint,text,jsonb,jsonb),public.submit_sales_tracking(uuid,uuid,date,bigint,uuid,text),public.submit_sales_tracking(uuid,uuid,bigint,uuid,text),public.prepare_sales_tracking_attachment_upload(uuid,uuid,date,uuid,bigint,uuid,text,uuid)from public,anon,authenticated;
+grant execute on function public.ensure_sales_tracking_draft_report(uuid,uuid,date),public.save_sales_tracking_draft(uuid,uuid,date,bigint,text,jsonb,jsonb),public.save_sales_tracking_draft(uuid,uuid,bigint,text,jsonb,jsonb),public.submit_sales_tracking(uuid,uuid,date,bigint,uuid,text),public.submit_sales_tracking(uuid,uuid,bigint,uuid,text),public.prepare_sales_tracking_attachment_upload(uuid,uuid,date,uuid,bigint,uuid,text,uuid)to service_role;
+
 revoke all on function public.start_sales_tracking_correction(uuid,uuid,uuid,bigint),public.save_sales_tracking_correction(uuid,uuid,uuid,bigint,text,jsonb,jsonb),public.submit_sales_tracking_correction(uuid,uuid,uuid,bigint,uuid,text),public.get_sales_tracking_current_state(uuid,uuid,date),public.set_managed_sales_tracking_review_status(uuid,uuid,uuid,bigint,text)from public,anon,authenticated;
 grant execute on function public.start_sales_tracking_correction(uuid,uuid,uuid,bigint),public.save_sales_tracking_correction(uuid,uuid,uuid,bigint,text,jsonb,jsonb),public.submit_sales_tracking_correction(uuid,uuid,uuid,bigint,uuid,text),public.get_sales_tracking_current_state(uuid,uuid,date),public.set_managed_sales_tracking_review_status(uuid,uuid,uuid,bigint,text)to service_role;
 
