@@ -209,6 +209,7 @@ export type ChecklistPersistence = {
   getBranchDailyInventory?(input:GetBranchDailyInventoryInput):Promise<unknown>;
   saveBranchDailyInventory?(input:SaveBranchDailyInventoryInput):Promise<unknown>;
   listManagedSalesTrackingReports?(input:{actorUserId:string;organizationId:string;dateFrom?:string|null;dateTo?:string|null;branchId?:string|null}):Promise<unknown>;
+  setManagedSalesTrackingReviewStatus?(input:{actorUserId:string;organizationId:string;reportId:string;expectedReviewRevision:number;reviewStatus:"needs_review"|"reviewed"}):Promise<unknown>;
   getManagedSalesTrackingAttachments?(input:{actorUserId:string;organizationId:string;reportId:string}):Promise<unknown>;
   getManagedSalesTrackingMonthlySummary?(input:{actorUserId:string;organizationId:string;month:string;branchId?:string|null}):Promise<unknown>;
   listManagedDailyInventoryReconciliation?(input:{actorUserId:string;organizationId:string;fromDate:string;toDate:string;branchId?:string|null;inventoryItemId?:string|null;page?:number;pageSize?:number}):Promise<unknown>;
@@ -355,6 +356,11 @@ const salesTrackingCurrent=z.object({
   submitted_at:z.string().nullable(),
   submitted_by_user_id:z.uuid().nullable(),
   submitted_by_name_snapshot:z.string().nullable(),
+  review_status:z.enum(["none","needs_review","reviewed"]),
+  review_revision:z.number().int().nonnegative(),
+  reviewed_at:z.string().nullable(),
+  reviewed_by_user_id:z.uuid().nullable(),
+  reviewed_by:z.string().nullable(),
   attachment:salesTrackingAttachmentInternal.nullable(),
   attachments:z.array(salesTrackingAttachmentInternal).max(3).optional(),
   periods:z.array(z.object({id:z.uuid(),entry_period:salesTrackingPeriod,entered_by_user_id:z.uuid(),entered_by_name:z.string(),entered_at:z.string()}).strict()).max(2),
@@ -485,9 +491,10 @@ const managedSalesTrackingReports=z.object({
     branch_name:z.string(),
     supervisor_user_id:z.uuid(),
     submitted_by:z.string().nullable(),
-    supervisor_team_id:z.uuid(),
+    supervisor_team_id:z.uuid().nullable().optional(),
     supervisor_team_name:z.string(),
     submitted_at:z.string(),
+    review_status:z.enum(["none","needs_review","reviewed"]),review_revision:z.number().int().nonnegative(),reviewed_at:z.string().nullable(),reviewed_by_user_id:z.uuid().nullable(),reviewed_by:z.string().nullable(),
     actual_cash:numericJson,
     actual_credit:numericJson,
     pos_cash:numericJson,
@@ -519,9 +526,10 @@ const managedSalesTrackingReports=z.object({
     branch_name:z.string(),
     supervisor_user_id:z.uuid(),
     submitted_by:z.string().nullable(),
-    supervisor_team_id:z.uuid(),
+    supervisor_team_id:z.uuid().nullable().optional(),
     supervisor_team_name:z.string(),
     submitted_at:z.string(),
+    review_status:z.enum(["none","needs_review","reviewed"]),review_revision:z.number().int().nonnegative(),reviewed_at:z.string().nullable(),reviewed_by_user_id:z.uuid().nullable(),reviewed_by:z.string().nullable(),
     denom_1:z.number().int().nonnegative(),
     denom_2:z.number().int().nonnegative(),
     denom_5:z.number().int().nonnegative(),
@@ -905,6 +913,9 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
     sales_rows:reports.sales_rows.filter((row)=>row.branch_id===input.branchId),
     cash_rows:reports.cash_rows.filter((row)=>row.branch_id===input.branchId),
    };
+	  },
+	  async setManagedSalesTrackingReviewStatus(input){
+	   return z.object({report_id:z.uuid(),review_status:z.enum(["needs_review","reviewed"]),review_revision:z.number().int().nonnegative(),reviewed_at:z.string(),reviewed_by_user_id:z.uuid(),reviewed_by:z.string().nullable()}).strict().parse(await rpc("set_managed_sales_tracking_review_status",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,target_report_id:input.reportId,expected_review_revision:input.expectedReviewRevision,target_review_status:input.reviewStatus}));
 	  },
 	  async getManagedSalesTrackingAttachments(input){
 	   const detail=z.object({report_id:z.uuid(),attachments:z.array(salesTrackingAttachmentInternal).max(3)}).strict().parse(await rpc("get_managed_sales_tracking_attachments",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,target_report_id:input.reportId}));

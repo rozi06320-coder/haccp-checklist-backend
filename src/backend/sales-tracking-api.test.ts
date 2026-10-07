@@ -27,6 +27,7 @@ let malformedMonthlySummary=false;
 let useProviderAliasShape=false;
 let requireOnlineBreakdownError=false;
 let managedAttachments:Array<Record<string,unknown>>=[];
+let reviewStatus:"none"|"needs_review"|"reviewed"="none",reviewRevision=0;
 const replay=new Map<string,string>();
 let providers:Array<Record<string,unknown>>=[];
 
@@ -71,6 +72,7 @@ function current(){
     submitted_at:submittedAt,
     submitted_by_user_id:submittedByUserId,
     submitted_by_name_snapshot:submittedByNameSnapshot,
+    review_status:reviewStatus,review_revision:reviewRevision,reviewed_at:reviewStatus==="none"?null:"2026-08-08T13:00:00.000Z",reviewed_by_user_id:reviewStatus==="none"?null:manager,reviewed_by:reviewStatus==="none"?null:"Manager",
     attachment:null,
     periods:currentPeriods,
     sales_rows:currentSalesRows.map((row)=>({
@@ -183,7 +185,7 @@ const persistence={
   calls.push({name:"managed-sales-tracking",input});
   if(input.actorUserId!==manager||input.organizationId!==org)throw new ChecklistAccessError();
   if(malformedManagedSalesTracking)return{sales_rows:[{bad:"shape"}],cash_rows:[]};
-  const base={report_id:"56000000-0000-4000-8000-000000000001",business_date:"2026-08-08",...(useProviderAliasShape?{}:{currency_code:"SAR"}),branch_id:branch,branch_name:"A",supervisor_user_id:supervisor,submitted_by:"S",supervisor_team_id:"46000000-0000-4000-8000-000000000001",supervisor_team_name:"S Team",submitted_at:"2026-08-08T12:00:00.000Z"};
+  const base={report_id:"56000000-0000-4000-8000-000000000001",business_date:"2026-08-08",...(useProviderAliasShape?{}:{currency_code:"SAR"}),branch_id:branch,branch_name:"A",supervisor_user_id:supervisor,submitted_by:"S",supervisor_team_id:null,supervisor_team_name:"S Team",submitted_at:"2026-08-08T12:00:00.000Z",review_status:reviewStatus,review_revision:reviewRevision,reviewed_at:reviewStatus==="none"?null:"2026-08-08T13:00:00.000Z",reviewed_by_user_id:reviewStatus==="none"?null:manager,reviewed_by:reviewStatus==="none"?null:"Manager"};
   if((input.dateFrom&&input.dateFrom>base.business_date)||(input.dateTo&&input.dateTo<base.business_date)||input.branchId&&input.branchId!==branch)return{sales_rows:[],cash_rows:[]};
   return {
     sales_rows:currentState==="submitted"?currentSalesRows.map((row,index)=>({
@@ -198,6 +200,14 @@ const persistence={
       cash_total:Number(row.denom_1)+Number(row.denom_2)*2+Number(row.denom_5)*5+Number(row.denom_10)*10+Number(row.denom_20)*20+Number(row.denom_50)*50+Number(row.denom_100)*100+Number(row.denom_200)*200+Number(row.denom_500)*500,
     })):[],
   };
+ },
+ async setManagedSalesTrackingReviewStatus(input:{actorUserId:string;organizationId:string;reportId:string;expectedReviewRevision:number;reviewStatus:"needs_review"|"reviewed"}){
+  calls.push({name:"managed-sales-tracking-review",input});
+  if(input.actorUserId!==manager||input.organizationId!==org)throw new ChecklistAccessError();
+  if(input.reportId!==report)throw new Error("missing");
+  if(input.expectedReviewRevision!==reviewRevision)throw new ChecklistConflictError("PT409");
+  reviewStatus=input.reviewStatus;reviewRevision+=1;
+  return{report_id:report,review_status:reviewStatus,review_revision:reviewRevision,reviewed_at:"2026-08-08T13:00:00.000Z",reviewed_by_user_id:manager,reviewed_by:"Manager"};
  },
  async getManagedSalesTrackingAttachments(input:{actorUserId:string;organizationId:string;reportId:string}){
   calls.push({name:"managed-sales-tracking-attachments",input});
@@ -267,7 +277,7 @@ async function submitSavedDay(idempotencyKey:string,expectedRevision=2){
 describe("Sales Tracking API integration",()=>{
  before(async()=>{server=createServer(createApp(config,deps()));await new Promise<void>((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));origin=`http://127.0.0.1:${(server.address()as AddressInfo).port}`;});
  after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
- beforeEach(()=>{calls.length=0;currentSalesRows=[];currentCashRows=[];currentPeriods=[];currentRevision=0;currentState="draft";submittedAt=null;submittedByUserId=null;submittedByNameSnapshot=null;malformedManagedSalesTracking=false;malformedMonthlySummary=false;useProviderAliasShape=false;requireOnlineBreakdownError=false;managedAttachments=[];replay.clear();providers=[
+ beforeEach(()=>{calls.length=0;currentSalesRows=[];currentCashRows=[];currentPeriods=[];currentRevision=0;currentState="draft";submittedAt=null;submittedByUserId=null;submittedByNameSnapshot=null;reviewStatus="none";reviewRevision=0;malformedManagedSalesTracking=false;malformedMonthlySummary=false;useProviderAliasShape=false;requireOnlineBreakdownError=false;managedAttachments=[];replay.clear();providers=[
   {id:"57000000-0000-4000-8000-000000000001",organization_id:org,branch_id:branch,name:"Jahez",normalized_name:"jahez",default_provider_key:"jahez",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
   {id:"57000000-0000-4000-8000-000000000003",organization_id:org,branch_id:branch,name:"HungerStation",normalized_name:"hungerstation",default_provider_key:"hungerstation",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
   {id:"57000000-0000-4000-8000-000000000002",organization_id:org,branch_id:branch,name:"Ninja",normalized_name:"ninja",default_provider_key:"ninja",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
@@ -306,7 +316,7 @@ describe("Sales Tracking API integration",()=>{
  it("returns empty current state for a Supervisor",async()=>{
   const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/current-state`,"supervisor");
   assert.equal(response.status,200);
-  assert.deepEqual(await response.json(),{current:{report_id:null,business_date:"2026-08-08",currency_code:"SAR",state:"draft",revision:0,submitted_at:null,submitted_by_user_id:null,submitted_by_name_snapshot:null,attachment:null,periods:[],sales_rows:[],cash_rows:[],totals:{actual_cash:0,actual_credit:0,pos_cash:0,pos_credit:0,online_delivery:0,actual_total:0,gross_sales:0,refund_total:0,net_sales:0,pos_total:0,variance:0,cash_total:0,remaining_cash:0}}});
+  assert.deepEqual(await response.json(),{current:{report_id:null,business_date:"2026-08-08",currency_code:"SAR",state:"draft",revision:0,submitted_at:null,submitted_by_user_id:null,submitted_by_name_snapshot:null,review_status:"none",review_revision:0,reviewed_at:null,reviewed_by_user_id:null,reviewed_by:null,attachment:null,periods:[],sales_rows:[],cash_rows:[],totals:{actual_cash:0,actual_credit:0,pos_cash:0,pos_credit:0,online_delivery:0,actual_total:0,gross_sales:0,refund_total:0,net_sales:0,pos_total:0,variance:0,cash_total:0,remaining_cash:0}}});
  });
 
  it("passes an explicit Sales Tracking business date through current, draft, and submit",async()=>{
@@ -653,5 +663,21 @@ describe("Sales Tracking API integration",()=>{
   const response=await request(`/api/v1/management/organizations/${org}/sales-tracking/monthly-summary?month=2026-08`,"manager");
   assert.equal(response.status,503);
   assert.doesNotMatch(JSON.stringify(await response.json()),/Zod|Supabase|managed-sales-tracking-monthly/i);
+ });
+ it("lets an authorized Manager mark Needs Review and then Reviewed",async()=>{
+  const endpoint=`/api/v1/management/organizations/${org}/sales-tracking/${report}/review-status`;
+  const needsReview=await request(endpoint,"manager",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:0,review_status:"needs_review"})});
+  assert.equal(needsReview.status,200);assert.deepEqual(await needsReview.json(),{report_id:report,review_status:"needs_review",review_revision:1,reviewed_at:"2026-08-08T13:00:00.000Z",reviewed_by_user_id:manager,reviewed_by:"Manager"});
+  const reviewed=await request(endpoint,"manager",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:1,review_status:"reviewed"})});
+  assert.equal(reviewed.status,200);assert.equal((await reviewed.json()).review_revision,2);
+ });
+ it("protects Manager review mutation and maps stale revisions to a safe 409",async()=>{
+  const endpoint=`/api/v1/management/organizations/${org}/sales-tracking/${report}/review-status`;
+  assert.equal((await request(endpoint,undefined,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:0,review_status:"reviewed"})})).status,401);
+  assert.equal((await request(endpoint,"supervisor",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:0,review_status:"reviewed"})})).status,403);
+  assert.equal((await request(endpoint,"manager",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:0,review_status:"none"})})).status,400);
+  reviewRevision=2;
+  const stale=await request(endpoint,"manager",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:0,review_status:"reviewed"})});
+  assert.equal(stale.status,409);assert.doesNotMatch(JSON.stringify(await stale.json()),/PT409|postgres|database/i);
  });
 });
