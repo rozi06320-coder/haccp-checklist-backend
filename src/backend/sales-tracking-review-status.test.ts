@@ -47,4 +47,18 @@ describe("Sales Tracking Manager review status",()=>{
   assert.match(persistence,/set_managed_sales_tracking_review_status/);
   assert.match(persistence,/supervisor_team_id:z\.uuid\(\)\.nullable\(\)\.optional\(\)/);
  });
+
+ it("limits Manager review authority to requesting correction",async()=>{
+  const [sql,app,persistence]=await Promise.all([
+   readFile(path.resolve("supabase/migrations/20261007150000_sales_tracking_automatic_review_completion.sql"),"utf8"),
+   readFile(path.resolve("src/backend/app.ts"),"utf8"),
+   readFile(path.resolve("src/backend/checklist-persistence.ts"),"utf8"),
+  ]);
+  const managerRpc=sql.slice(sql.indexOf("create or replace function public.set_managed_sales_tracking_review_status"),sql.indexOf("-- Normal Sales Tracking mutations"));
+  assert.match(managerRpc,/target_review_status<>'needs_review'/);
+  assert.match(managerRpc,/report\.review_status not in\('none','reviewed'\)/);
+  assert.doesNotMatch(managerRpc,/target_review_status not in\('needs_review','reviewed'\)/);
+  assert.match(app,/review_status:z\.literal\("needs_review"\)/);
+  assert.match(persistence,/reviewStatus:"needs_review"/);
+ });
 });

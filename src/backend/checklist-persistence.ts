@@ -212,7 +212,7 @@ export type ChecklistPersistence = {
   getBranchDailyInventory?(input:GetBranchDailyInventoryInput):Promise<unknown>;
   saveBranchDailyInventory?(input:SaveBranchDailyInventoryInput):Promise<unknown>;
   listManagedSalesTrackingReports?(input:{actorUserId:string;organizationId:string;dateFrom?:string|null;dateTo?:string|null;branchId?:string|null}):Promise<unknown>;
-  setManagedSalesTrackingReviewStatus?(input:{actorUserId:string;organizationId:string;reportId:string;expectedReviewRevision:number;reviewStatus:"needs_review"|"reviewed"}):Promise<unknown>;
+  setManagedSalesTrackingReviewStatus?(input:{actorUserId:string;organizationId:string;reportId:string;expectedReviewRevision:number;reviewStatus:"needs_review"}):Promise<unknown>;
   getManagedSalesTrackingAttachments?(input:{actorUserId:string;organizationId:string;reportId:string}):Promise<unknown>;
   getManagedSalesTrackingMonthlySummary?(input:{actorUserId:string;organizationId:string;month:string;branchId?:string|null}):Promise<unknown>;
   listManagedDailyInventoryReconciliation?(input:{actorUserId:string;organizationId:string;fromDate:string;toDate:string;branchId?:string|null;inventoryItemId?:string|null;page?:number;pageSize?:number}):Promise<unknown>;
@@ -927,7 +927,7 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
    };
 	  },
 	  async setManagedSalesTrackingReviewStatus(input){
-	   return z.object({report_id:z.uuid(),review_status:z.enum(["needs_review","reviewed"]),review_revision:z.number().int().nonnegative(),reviewed_at:z.string(),reviewed_by_user_id:z.uuid(),reviewed_by:z.string().nullable()}).strict().parse(await rpc("set_managed_sales_tracking_review_status",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,target_report_id:input.reportId,expected_review_revision:input.expectedReviewRevision,target_review_status:input.reviewStatus}));
+	   return z.object({report_id:z.uuid(),review_status:z.literal("needs_review"),review_revision:z.number().int().nonnegative(),reviewed_at:z.string(),reviewed_by_user_id:z.uuid(),reviewed_by:z.string().nullable()}).strict().parse(await rpc("set_managed_sales_tracking_review_status",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,target_report_id:input.reportId,expected_review_revision:input.expectedReviewRevision,target_review_status:input.reviewStatus}));
 	  },
 	  async getManagedSalesTrackingAttachments(input){
 	   const detail=z.object({report_id:z.uuid(),attachments:z.array(salesTrackingAttachmentInternal).max(3)}).strict().parse(await rpc("get_managed_sales_tracking_attachments",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,target_report_id:input.reportId}));

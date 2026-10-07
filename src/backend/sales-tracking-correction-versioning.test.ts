@@ -75,6 +75,8 @@ describe("Sales Tracking correction versioning migration",()=>{
   assert.match(submit,/state='submitted'/);
   assert.match(submit,/authoritative_report_id=s\.id,open_correction_report_id=null/);
   assert.match(submit,/review_status='reviewed'/);
+  assert.match(submit,/review_revision=source\.review_revision\+1/);
+  assert.match(submit,/sales_tracking_review_events[\s\S]*'needs_review','reviewed',actor_user_id/);
   assert.match(submit,/sales_tracking_submission_idempotency/);
   assert.match(submit,/prior\.report_id<>target_report_id/);
  });

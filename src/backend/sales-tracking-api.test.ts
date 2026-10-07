@@ -201,7 +201,7 @@ const persistence={
     })):[],
   };
  },
- async setManagedSalesTrackingReviewStatus(input:{actorUserId:string;organizationId:string;reportId:string;expectedReviewRevision:number;reviewStatus:"needs_review"|"reviewed"}){
+ async setManagedSalesTrackingReviewStatus(input:{actorUserId:string;organizationId:string;reportId:string;expectedReviewRevision:number;reviewStatus:"needs_review"}){
   calls.push({name:"managed-sales-tracking-review",input});
   if(input.actorUserId!==manager||input.organizationId!==org)throw new ChecklistAccessError();
   if(input.reportId!==report)throw new Error("missing");
@@ -664,20 +664,27 @@ describe("Sales Tracking API integration",()=>{
   assert.equal(response.status,503);
   assert.doesNotMatch(JSON.stringify(await response.json()),/Zod|Supabase|managed-sales-tracking-monthly/i);
  });
- it("lets an authorized Manager mark Needs Review and then Reviewed",async()=>{
+ it("lets an authorized Manager mark Needs Review but never Reviewed",async()=>{
   const endpoint=`/api/v1/management/organizations/${org}/sales-tracking/${report}/review-status`;
   const needsReview=await request(endpoint,"manager",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:0,review_status:"needs_review"})});
   assert.equal(needsReview.status,200);assert.deepEqual(await needsReview.json(),{report_id:report,review_status:"needs_review",review_revision:1,reviewed_at:"2026-08-08T13:00:00.000Z",reviewed_by_user_id:manager,reviewed_by:"Manager"});
   const reviewed=await request(endpoint,"manager",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:1,review_status:"reviewed"})});
-  assert.equal(reviewed.status,200);assert.equal((await reviewed.json()).review_revision,2);
+  assert.equal(reviewed.status,400);
+ });
+ it("lets a Manager request another correction after an automatic review",async()=>{
+  reviewStatus="reviewed";reviewRevision=2;
+  const endpoint=`/api/v1/management/organizations/${org}/sales-tracking/${report}/review-status`;
+  const response=await request(endpoint,"manager",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:2,review_status:"needs_review"})});
+  assert.equal(response.status,200);assert.equal((await response.json()).review_revision,3);
  });
  it("protects Manager review mutation and maps stale revisions to a safe 409",async()=>{
   const endpoint=`/api/v1/management/organizations/${org}/sales-tracking/${report}/review-status`;
-  assert.equal((await request(endpoint,undefined,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:0,review_status:"reviewed"})})).status,401);
-  assert.equal((await request(endpoint,"supervisor",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:0,review_status:"reviewed"})})).status,403);
+  assert.equal((await request(endpoint,undefined,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:0,review_status:"needs_review"})})).status,401);
+  assert.equal((await request(endpoint,"supervisor",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:0,review_status:"needs_review"})})).status,403);
   assert.equal((await request(endpoint,"manager",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:0,review_status:"none"})})).status,400);
+  assert.equal((await request(endpoint,"manager",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:0,review_status:"reviewed"})})).status,400);
   reviewRevision=2;
-  const stale=await request(endpoint,"manager",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:0,review_status:"reviewed"})});
+  const stale=await request(endpoint,"manager",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_review_revision:0,review_status:"needs_review"})});
   assert.equal(stale.status,409);assert.doesNotMatch(JSON.stringify(await stale.json()),/PT409|postgres|database/i);
  });
 });
