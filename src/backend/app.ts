@@ -8,6 +8,7 @@ import { managementOverviewSchema } from "./management-overview-contract";
 import { managementOperationsSummarySchema } from "../lib/contracts/management-operations-summary";
 import { managementSalesTrackingMonthlySummarySchema } from "../lib/contracts/management-sales-tracking-monthly";
 import { annualEvaluationDetailSchema, annualEvaluationScoreSchema, annualEvaluationSubjectTypeSchema, annualEvaluationWorkspaceSchema } from "../lib/contracts/annual-evaluation";
+import { monthlySupervisorEvaluationDetailSchema, monthlySupervisorEvaluationScoreInputSchema, monthlySupervisorEvaluationWorkspaceSchema } from "../lib/contracts/monthly-supervisor-evaluation";
 import { requireAuthentication } from "./auth";
 import { AdminAccessError, AdminConflictError, AdminDuplicatePersonCodeError, AdminDuplicateStaffCodeError, AdminInputError, AdminNotFoundError, ProvisioningStageError, type DailyAuditAccessUserCredential, type ManagerPinCredential } from "./admin";
 import type { BackendConfig } from "./config";
@@ -858,6 +859,12 @@ const managedPeopleDirectoryQuerySchema=z.object({
 const managedAnnualEvaluationQuerySchema=z.object({evaluation_year:z.coerce.number().int().min(2000).max(2200),branch_id:z.uuid().optional(),subject_type:annualEvaluationSubjectTypeSchema.optional(),subject_id:z.uuid().optional(),state:z.enum(["draft","submitted"]).optional()}).strict().refine(value=>(value.subject_type===undefined)===(value.subject_id===undefined));
 const managedAnnualEvaluationDraftSchema=z.object({branch_id:z.uuid(),evaluation_year:z.number().int().min(2000).max(2200),subject_type:annualEvaluationSubjectTypeSchema,subject_id:z.uuid(),expected_revision:z.number().int().nonnegative(),scores:z.array(annualEvaluationScoreSchema).max(20)}).strict();
 const managedAnnualEvaluationSubmitSchema=z.object({expected_revision:z.number().int().nonnegative()}).strict();
+const managedMonthlySupervisorEvaluationQuerySchema=z.object({month:monthOnlySchema}).strict();
+const managedMonthlySupervisorEvaluationDraftSchema=z.object({
+  evaluation_month:monthOnlySchema,expected_revision:z.number().int().nonnegative(),
+  scores:z.array(monthlySupervisorEvaluationScoreInputSchema).max(100),
+}).strict();
+const managedMonthlySupervisorEvaluationSubmitSchema=z.object({expected_revision:z.number().int().nonnegative()}).strict();
 const supervisorPurchaseLogQuerySchema=z.object({date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional()}).strict().refine((value)=>!value.date_from||!value.date_to||value.date_from<=value.date_to);
 const purchasingPurchaseRequestQuerySchema = z.object({
   status: z.enum(["submitted", "processing", "purchased"]).optional(),
@@ -7438,6 +7445,46 @@ export function createApp(
       const result=annualEvaluationDetailSchema.parse(await dependencies.operationalAdmin.submitManagedAnnualEvaluation({actorUserId:auth.userId,organizationId:organizationId.data,evaluationId:evaluationId.data,expectedRevision:body.data.expected_revision}));
       response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
     }catch(error){next(error instanceof HttpError?error:error instanceof OperationalConflictError?new HttpError(409,"conflict","This evaluation changed or is incomplete."):error instanceof OperationalInputError?new HttpError(422,"bad_request","Rate all 20 criteria before submitting."):error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Unable to submit this Annual Evaluation."));}});
+
+  app.get("/api/v1/management/organizations/:organizationId/monthly-supervisor-evaluations",protectedRateLimit,authenticate,
+    async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),query=managedMonthlySupervisorEvaluationQuerySchema.safeParse(request.query);
+      if(!organizationId.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request),context=await loadActiveUser(request);
+      if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.getManagedMonthlySupervisorEvaluationWorkspace)throw new HttpError(403,"forbidden","Access is denied.");
+      const result=monthlySupervisorEvaluationWorkspaceSchema.parse(await dependencies.operationalAdmin.getManagedMonthlySupervisorEvaluationWorkspace({actorUserId:auth.userId,organizationId:organizationId.data,evaluationMonth:query.data.month}));
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+    }catch(error){next(error instanceof HttpError?error:error instanceof OperationalInputError?new HttpError(422,"unprocessable_entity","Monthly Supervisor Evaluation is unavailable for this month."):error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Monthly Supervisor Evaluations are temporarily unavailable."));}});
+
+  app.get("/api/v1/management/organizations/:organizationId/monthly-supervisor-evaluations/:evaluationId",protectedRateLimit,authenticate,
+    async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),evaluationId=z.uuid().safeParse(request.params.evaluationId);
+      if(!organizationId.success||!evaluationId.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request),context=await loadActiveUser(request);
+      if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.getManagedMonthlySupervisorEvaluationDetail)throw new HttpError(403,"forbidden","Access is denied.");
+      const result=monthlySupervisorEvaluationDetailSchema.parse(await dependencies.operationalAdmin.getManagedMonthlySupervisorEvaluationDetail({actorUserId:auth.userId,organizationId:organizationId.data,evaluationId:evaluationId.data}));
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+    }catch(error){next(error instanceof HttpError?error:error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Monthly Supervisor Evaluation detail is temporarily unavailable."));}});
+
+  app.put("/api/v1/management/organizations/:organizationId/monthly-supervisor-evaluations/:supervisorUserId/draft",protectedRateLimit,authenticate,
+    async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),supervisorUserId=z.uuid().safeParse(request.params.supervisorUserId),body=managedMonthlySupervisorEvaluationDraftSchema.safeParse(request.body);
+      if(!organizationId.success||!supervisorUserId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request),context=await loadActiveUser(request);
+      if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.saveManagedMonthlySupervisorEvaluationDraft)throw new HttpError(403,"forbidden","Access is denied.");
+      const result=monthlySupervisorEvaluationDetailSchema.parse(await dependencies.operationalAdmin.saveManagedMonthlySupervisorEvaluationDraft({actorUserId:auth.userId,organizationId:organizationId.data,supervisorUserId:supervisorUserId.data,evaluationMonth:body.data.evaluation_month,expectedRevision:body.data.expected_revision,scores:body.data.scores}));
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+    }catch(error){next(error instanceof HttpError?error:error instanceof OperationalConflictError?new HttpError(409,"conflict","This evaluation changed, is immutable, or its Supervisor scope changed."):error instanceof OperationalInputError?new HttpError(422,"unprocessable_entity","Check the evaluation scores."):error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Unable to save this Monthly Supervisor Evaluation."));}});
+
+  app.post("/api/v1/management/organizations/:organizationId/monthly-supervisor-evaluations/:evaluationId/submit",protectedRateLimit,authenticate,
+    async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),evaluationId=z.uuid().safeParse(request.params.evaluationId),body=managedMonthlySupervisorEvaluationSubmitSchema.safeParse(request.body);
+      if(!organizationId.success||!evaluationId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request),context=await loadActiveUser(request);
+      if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data)||!dependencies.operationalAdmin?.submitManagedMonthlySupervisorEvaluation)throw new HttpError(403,"forbidden","Access is denied.");
+      const result=monthlySupervisorEvaluationDetailSchema.parse(await dependencies.operationalAdmin.submitManagedMonthlySupervisorEvaluation({actorUserId:auth.userId,organizationId:organizationId.data,evaluationId:evaluationId.data,expectedRevision:body.data.expected_revision}));
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+    }catch(error){next(error instanceof HttpError?error:error instanceof OperationalConflictError?new HttpError(409,"conflict","This evaluation changed or its Supervisor scope changed."):error instanceof OperationalInputError?new HttpError(422,"unprocessable_entity","Rate all 10 criteria before submitting."):error instanceof OperationalAccessError?new HttpError(403,"forbidden","Access is denied."):new HttpError(503,"service_unavailable","Unable to submit this Monthly Supervisor Evaluation."));}});
 
   app.get("/api/v1/management/organizations/:organizationId/purchase-logs", protectedRateLimit, authenticate,
     async (request, response, next) => {

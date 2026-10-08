@@ -5,6 +5,7 @@ import { z } from "zod";
 import { AdminOperationError } from "./admin";
 import { managementOperationsSummarySchema } from "../lib/contracts/management-operations-summary";
 import { annualEvaluationDetailSchema, annualEvaluationWorkspaceSchema, type AnnualEvaluationScore } from "../lib/contracts/annual-evaluation";
+import { monthlySupervisorEvaluationDetailSchema, monthlySupervisorEvaluationWorkspaceSchema, type MonthlySupervisorEvaluationScoreInput } from "../lib/contracts/monthly-supervisor-evaluation";
 import { employeeCountryCodes } from "../lib/employee-countries";
 import {
   DEFAULT_STORAGE_SIGNING_CONCURRENCY,
@@ -945,6 +946,10 @@ export type OperationalAdmin = {
   getManagedAnnualEvaluationDetail?(input:{actorUserId:string;organizationId:string;evaluationId:string}):Promise<unknown>;
   saveManagedAnnualEvaluationDraft?(input:{actorUserId:string;organizationId:string;branchId:string;evaluationYear:number;subjectType:"supervisor"|"training_supervisor"|"employee";subjectId:string;expectedRevision:number;scores:AnnualEvaluationScore[]}):Promise<unknown>;
   submitManagedAnnualEvaluation?(input:{actorUserId:string;organizationId:string;evaluationId:string;expectedRevision:number}):Promise<unknown>;
+  getManagedMonthlySupervisorEvaluationWorkspace?(input:{actorUserId:string;organizationId:string;evaluationMonth:string}):Promise<unknown>;
+  getManagedMonthlySupervisorEvaluationDetail?(input:{actorUserId:string;organizationId:string;evaluationId:string}):Promise<unknown>;
+  saveManagedMonthlySupervisorEvaluationDraft?(input:{actorUserId:string;organizationId:string;supervisorUserId:string;evaluationMonth:string;expectedRevision:number;scores:MonthlySupervisorEvaluationScoreInput[]}):Promise<unknown>;
+  submitManagedMonthlySupervisorEvaluation?(input:{actorUserId:string;organizationId:string;evaluationId:string;expectedRevision:number}):Promise<unknown>;
   listManagedPurchaseLogs?(input: { actorUserId: string; organizationId: string; branchId?: string; category?: z.infer<typeof purchaseLogCategory>; paymentStatus?: z.infer<typeof purchaseLogPaymentStatus>; dateFrom?: string; dateTo?: string }): Promise<unknown>;
   listManagedSupplierReceivings?(input: { actorUserId: string; organizationId: string; branchId?: string; category?: z.infer<typeof supplierReceivingCategory>; supplierId?: string; dateFrom?: string; dateTo?: string }): Promise<unknown>;
   listManagedMaintenanceIssues?(input: { actorUserId: string; organizationId: string; branchId?: string; status?: z.infer<typeof maintenanceIssueStatus>; priority?: z.infer<typeof maintenanceIssuePriority>; category?: z.infer<typeof maintenanceIssueCategory>; dateFrom?: string; dateTo?: string; contract?: "legacy" | "phase1" }): Promise<unknown>;
@@ -3081,6 +3086,28 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       return annualEvaluationDetailSchema.parse(await rpcObject("submit_managed_annual_evaluation",{
         p_actor_user_id:input.actorUserId,p_organization_id:input.organizationId,p_evaluation_id:input.evaluationId,
         p_expected_revision:input.expectedRevision,
+      }));
+    },
+    async getManagedMonthlySupervisorEvaluationWorkspace(input) {
+      return monthlySupervisorEvaluationWorkspaceSchema.parse(await rpcObject("get_managed_monthly_supervisor_evaluation_workspace",{
+        actor_user_id:input.actorUserId,organization_id:input.organizationId,evaluation_month:`${input.evaluationMonth}-01`,
+      }));
+    },
+    async getManagedMonthlySupervisorEvaluationDetail(input) {
+      return monthlySupervisorEvaluationDetailSchema.parse(await rpcObject("get_managed_monthly_supervisor_evaluation_detail",{
+        actor_user_id:input.actorUserId,organization_id:input.organizationId,evaluation_id:input.evaluationId,
+      }));
+    },
+    async saveManagedMonthlySupervisorEvaluationDraft(input) {
+      return monthlySupervisorEvaluationDetailSchema.parse(await rpcObject("save_managed_monthly_supervisor_evaluation_draft",{
+        actor_user_id:input.actorUserId,organization_id:input.organizationId,supervisor_user_id:input.supervisorUserId,
+        evaluation_month:`${input.evaluationMonth}-01`,expected_revision:input.expectedRevision,scores:input.scores,
+      }));
+    },
+    async submitManagedMonthlySupervisorEvaluation(input) {
+      return monthlySupervisorEvaluationDetailSchema.parse(await rpcObject("submit_managed_monthly_supervisor_evaluation",{
+        actor_user_id:input.actorUserId,organization_id:input.organizationId,evaluation_id:input.evaluationId,
+        expected_revision:input.expectedRevision,
       }));
     },
     async listManagedPurchaseLogs(input) {
