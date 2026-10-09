@@ -61,6 +61,52 @@ function throwChecklistRpcError(code:string|undefined,message?:string):never{
  throw new Error("Checklist persistence unavailable.");
 }
 
+export type SalesTrackingCorrectionSaveDiagnosticCategory="stale_revision"|"validation_check"|"lifecycle_conflict"|"unique_conflict"|"authorization"|"unknown";
+export type SalesTrackingCorrectionSaveDiagnosticEvent={
+ requestId:string;
+ action:"save_sales_tracking_correction";
+ expectedRevision:number;
+ sqlstate:string|null;
+ category:SalesTrackingCorrectionSaveDiagnosticCategory;
+};
+export type SalesTrackingCorrectionSaveDiagnostics={
+ requestId:string;
+ log?:(event:SalesTrackingCorrectionSaveDiagnosticEvent)=>void;
+};
+
+const salesTrackingCorrectionSafeSqlstates=new Set(["23505","23514","40001","PT409","55000","22023","42501"]);
+
+function safeSalesTrackingCorrectionRequestId(value:string){return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)?value:"invalid";}
+function safeSalesTrackingCorrectionSqlstate(value:unknown){return typeof value==="string"&&salesTrackingCorrectionSafeSqlstates.has(value)?value:null;}
+export function salesTrackingCorrectionSaveDiagnosticCategory(sqlstate:unknown):SalesTrackingCorrectionSaveDiagnosticCategory{
+ if(sqlstate==="PT409"||sqlstate==="40001")return"stale_revision";
+ if(sqlstate==="23514"||sqlstate==="22023")return"validation_check";
+ if(sqlstate==="55000")return"lifecycle_conflict";
+ if(sqlstate==="23505")return"unique_conflict";
+ if(sqlstate==="42501")return"authorization";
+ return"unknown";
+}
+export function logSalesTrackingCorrectionSaveDiagnostic(event:SalesTrackingCorrectionSaveDiagnosticEvent){
+ try{console.info(`SALES_TRACKING_CORRECTION_SAVE ${JSON.stringify(event)}`);}catch{/* Diagnostics must never affect persistence. */}
+}
+export async function runSalesTrackingCorrectionSaveRpc<T>(call:()=>PromiseLike<{data:T;error:{code?:string;message?:string}|null}>,expectedRevision:number,diagnostics?:SalesTrackingCorrectionSaveDiagnostics){
+ let logged=false;
+ const log=(sqlstate:unknown)=>{
+  if(!diagnostics||logged)return;
+  logged=true;
+  const safeSqlstate=safeSalesTrackingCorrectionSqlstate(sqlstate),event:SalesTrackingCorrectionSaveDiagnosticEvent={requestId:safeSalesTrackingCorrectionRequestId(diagnostics.requestId),action:"save_sales_tracking_correction",expectedRevision,sqlstate:safeSqlstate,category:salesTrackingCorrectionSaveDiagnosticCategory(safeSqlstate)};
+  try{(diagnostics.log??logSalesTrackingCorrectionSaveDiagnostic)(event);}catch{/* Diagnostics must never affect persistence. */}
+ };
+ try{
+  const result=await call();
+  if(result.error){log(result.error.code);throwChecklistRpcError(result.error.code,result.error.message);}
+  return result.data;
+ }catch(error){
+  if(!logged)log(error instanceof ChecklistConflictError?error.sqlstate:error instanceof ChecklistAccessError?"42501":null);
+  throw error;
+ }
+}
+
 export type CatalogRecipeSaveErrorDiagnostic = {
   requestId: string | null;
   branchId: string;
@@ -173,7 +219,7 @@ export type ChecklistPersistence = {
   submitColdStorageSlot?(input:{actorUserId:string;branchId:string;expectedRevision:number;slot:string;idempotencyKey:string;equipment:unknown[];readings:unknown[]}):Promise<unknown>;
   getSalesTrackingCurrentState?(actorUserId:string,branchId:string,businessDate?:string|null):Promise<unknown>;
   startSalesTrackingCorrection?(input:{actorUserId:string;branchId:string;reportId:string;expectedReviewRevision:number}):Promise<unknown>;
-  saveSalesTrackingCorrection?(input:{actorUserId:string;branchId:string;reportId:string;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:SalesTrackingDraftPayload}):Promise<unknown>;
+  saveSalesTrackingCorrection?(input:{actorUserId:string;branchId:string;reportId:string;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:SalesTrackingDraftPayload;diagnostics?:SalesTrackingCorrectionSaveDiagnostics}):Promise<unknown>;
   submitSalesTrackingCorrection?(input:{actorUserId:string;branchId:string;reportId:string;expectedRevision:number;idempotencyKey:string}):Promise<unknown>;
   listSalesTrackingOnlineOrderProviders?(actorUserId:string,branchId:string):Promise<unknown>;
   createSalesTrackingOnlineOrderProvider?(input:{actorUserId:string;branchId:string;name:string}):Promise<unknown>;
@@ -647,6 +693,11 @@ export function salesTrackingDraftRpcArgs(actorUserId:string,branchId:string,exp
  return businessDate?{actor_user_id:actorUserId,target_branch_id:branchId,target_business_date:businessDate,expected_revision:expectedRevision,entry_period:entryPeriod,sales_rows:rows.sales_rows,cash_rows:rows.cash_rows}:{actor_user_id:actorUserId,target_branch_id:branchId,expected_revision:expectedRevision,entry_period:entryPeriod,sales_rows:rows.sales_rows,cash_rows:rows.cash_rows};
 }
 
+export function salesTrackingCorrectionRpcArgs(actorUserId:string,branchId:string,reportId:string,expectedRevision:number,entryPeriod:"middle_shift"|"closing_shift",payload:SalesTrackingDraftPayload){
+ const rows=salesTrackingRpcPayload(payload);
+ return{actor_user_id:actorUserId,target_branch_id:branchId,target_report_id:reportId,expected_revision:expectedRevision,entry_period:entryPeriod,sales_rows:rows.sales_rows,cash_rows:rows.cash_rows};
+}
+
 export function salesTrackingSubmitRpcArgs(actorUserId:string,branchId:string,expectedRevision:number,idempotencyKey:string,businessDate?:string|null){
  const requestHash=businessDate?checklistRequestHash({type:"sales_tracking",branch_id:branchId,business_date:businessDate,expected_revision:expectedRevision}):checklistRequestHash({type:"sales_tracking",branch_id:branchId,expected_revision:expectedRevision});
  return businessDate?{actor_user_id:actorUserId,target_branch_id:branchId,target_business_date:businessDate,expected_revision:expectedRevision,idempotency_key:idempotencyKey,request_hash:requestHash}:{actor_user_id:actorUserId,target_branch_id:branchId,expected_revision:expectedRevision,idempotency_key:idempotencyKey,request_hash:requestHash};
@@ -768,7 +819,7 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   submitColdStorageSlot:(input)=>rpc("submit_cold_storage_slot",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,expected_revision:input.expectedRevision,slot:input.slot,idempotency_key:input.idempotencyKey,request_hash:checklistRequestHash({type:"cold_storage",slot:input.slot,equipment:input.equipment,readings:input.readings}),equipment:input.equipment,readings:input.readings}),
   async getSalesTrackingCurrentState(actorUserId,branchId,businessDate){const args=businessDate?{actor_user_id:actorUserId,target_branch_id:branchId,target_business_date:businessDate}:{actor_user_id:actorUserId,target_branch_id:branchId};return safeSalesTrackingCurrent(await rpc("get_sales_tracking_current_state",args));},
   async startSalesTrackingCorrection(input){return safeSalesTrackingCurrent(await rpc("start_sales_tracking_correction",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_report_id:input.reportId,expected_review_revision:input.expectedReviewRevision}));},
-  async saveSalesTrackingCorrection(input){return safeSalesTrackingCurrent(await rpc("save_sales_tracking_correction",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_report_id:input.reportId,expected_revision:input.expectedRevision,entry_period:input.entryPeriod,sales_rows:input.payload.sales_rows,cash_rows:input.payload.cash_rows}));},
+  async saveSalesTrackingCorrection(input){const args=salesTrackingCorrectionRpcArgs(input.actorUserId,input.branchId,input.reportId,input.expectedRevision,input.entryPeriod,input.payload);return safeSalesTrackingCurrent(await runSalesTrackingCorrectionSaveRpc(()=>client.rpc("save_sales_tracking_correction",args),input.expectedRevision,input.diagnostics));},
   async submitSalesTrackingCorrection(input){return safeSalesTrackingCurrent(await rpc("submit_sales_tracking_correction",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_report_id:input.reportId,expected_revision:input.expectedRevision,idempotency_key:input.idempotencyKey,request_hash:checklistRequestHash({type:"sales_tracking_correction",branch_id:input.branchId,report_id:input.reportId,expected_revision:input.expectedRevision})}));},
   async listSalesTrackingOnlineOrderProviders(actorUserId,branchId){
    return salesTrackingOnlineOrderProviders.parse(await rpc("list_sales_tracking_online_order_providers",{actor_user_id:actorUserId,target_branch_id:branchId}));

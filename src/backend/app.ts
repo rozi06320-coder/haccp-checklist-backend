@@ -7813,7 +7813,7 @@ export function createApp(
     if(!branch.success||!report.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request);
     if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.saveSalesTrackingCorrection)throw new HttpError(403,"forbidden","Access is denied.");
-    const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.saveSalesTrackingCorrection({actorUserId:auth.userId,branchId:branch.data,reportId:report.data,expectedRevision:body.data.expected_revision,entryPeriod:body.data.entry_period,payload:body.data}));
+    const current=salesTrackingCurrentSchema.parse(await dependencies.checklistPersistence.saveSalesTrackingCorrection({actorUserId:auth.userId,branchId:branch.data,reportId:report.data,expectedRevision:body.data.expected_revision,entryPeriod:body.data.entry_period,payload:body.data,diagnostics:{requestId:request.id}}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 

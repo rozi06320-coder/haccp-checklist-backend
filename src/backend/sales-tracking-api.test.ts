@@ -27,6 +27,7 @@ let malformedManagedSalesTracking=false;
 let malformedMonthlySummary=false;
 let useProviderAliasShape=false;
 let requireOnlineBreakdownError=false;
+let correctionSaveErrorSqlstate:string|null=null;
 let managedAttachments:Array<Record<string,unknown>>=[];
 let reviewStatus:"none"|"needs_review"|"reviewed"="none",reviewRevision=0;
 const replay=new Map<string,string>();
@@ -166,6 +167,11 @@ const persistence={
   })));
   return current();
  },
+ async saveSalesTrackingCorrection(input:{actorUserId:string;branchId:string;reportId:string;expectedRevision:number;entryPeriod:"middle_shift"|"closing_shift";payload:unknown;diagnostics?:{requestId:string}}){
+  calls.push({name:"sales-correction-save",input});
+  if(correctionSaveErrorSqlstate)throw new ChecklistConflictError(correctionSaveErrorSqlstate);
+  return current();
+ },
  async submitSalesTracking(input:{actorUserId:string;branchId:string;businessDate?:string|null;expectedRevision:number;idempotencyKey:string}){
   calls.push({name:"sales-submit",input});
   if(input.branchId!==branch)throw new ChecklistAccessError();
@@ -279,7 +285,7 @@ async function submitSavedDay(idempotencyKey:string,expectedRevision=2){
 describe("Sales Tracking API integration",()=>{
  before(async()=>{server=createServer(createApp(config,deps()));await new Promise<void>((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));origin=`http://127.0.0.1:${(server.address()as AddressInfo).port}`;});
  after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
- beforeEach(()=>{calls.length=0;currentSalesRows=[];currentCashRows=[];currentPeriods=[];currentRevision=0;currentState="draft";submittedAt=null;submittedByUserId=null;submittedByNameSnapshot=null;currentAttachment=null;reviewStatus="none";reviewRevision=0;malformedManagedSalesTracking=false;malformedMonthlySummary=false;useProviderAliasShape=false;requireOnlineBreakdownError=false;managedAttachments=[];replay.clear();providers=[
+ beforeEach(()=>{calls.length=0;currentSalesRows=[];currentCashRows=[];currentPeriods=[];currentRevision=0;currentState="draft";submittedAt=null;submittedByUserId=null;submittedByNameSnapshot=null;currentAttachment=null;reviewStatus="none";reviewRevision=0;malformedManagedSalesTracking=false;malformedMonthlySummary=false;useProviderAliasShape=false;requireOnlineBreakdownError=false;correctionSaveErrorSqlstate=null;managedAttachments=[];replay.clear();providers=[
   {id:"57000000-0000-4000-8000-000000000001",organization_id:org,branch_id:branch,name:"Jahez",normalized_name:"jahez",default_provider_key:"jahez",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
   {id:"57000000-0000-4000-8000-000000000003",organization_id:org,branch_id:branch,name:"HungerStation",normalized_name:"hungerstation",default_provider_key:"hungerstation",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
   {id:"57000000-0000-4000-8000-000000000002",organization_id:org,branch_id:branch,name:"Ninja",normalized_name:"ninja",default_provider_key:"ninja",is_default:true,active:true,created_by:null,created_at:"2026-08-08T10:00:00.000Z",updated_at:"2026-08-08T10:00:00.000Z"},
@@ -388,6 +394,17 @@ describe("Sales Tracking API integration",()=>{
   assert.equal(body.current.totals.actual_total,5249);
   assert.equal(body.current.totals.cash_total,1000);
   assert.deepEqual(body.current.cash_rows[0].denominations,{"1":8,"2":1,"5":24,"10":3,"20":2,"50":2,"100":0,"200":1,"500":1});
+ });
+ it("passes correction expected revision and request correlation while keeping conflict responses sanitized",async()=>{
+  correctionSaveErrorSqlstate="23514";
+  const response=await request(`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/${report}/correction/draft`,"supervisor",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({...closingPayload,expected_revision:7})});
+  assert.equal(response.status,409);
+  const input=calls.at(-1)?.input as {expectedRevision:number;diagnostics?:{requestId:string}};
+  assert.equal(input.expectedRevision,7);
+  assert.equal(input.diagnostics?.requestId,response.headers.get("x-request-id"));
+  const body=JSON.stringify(await response.json());
+  assert.match(body,/"code":"conflict"/);
+  assert.doesNotMatch(body,/23514|validation_check|postgres|database|sqlstate/i);
  });
  it("accepts refund without changing variance and rejects invalid refund amounts",async()=>{
   const path=`/api/v1/supervisor/branches/${branch}/checklists/sales_tracking/draft`;
