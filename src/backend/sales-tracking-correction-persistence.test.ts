@@ -7,6 +7,7 @@ import {
   runSalesTrackingCorrectionSaveRpc,
   salesTrackingCorrectionRpcArgs,
   salesTrackingCorrectionSaveDiagnosticCategory,
+  salesTrackingCorrectionSaveDiagnosticReason,
   type SalesTrackingCorrectionSaveDiagnosticEvent,
   type SalesTrackingDraftPayload,
 } from "./checklist-persistence";
@@ -49,6 +50,15 @@ describe("Sales Tracking correction persistence boundary",()=>{
     assert.equal(salesTrackingCorrectionSaveDiagnosticCategory("unexpected"),"unknown");
   });
 
+  it("maps only exact allowlisted 23514 messages to safe reasons",()=>{
+    assert.equal(salesTrackingCorrectionSaveDiagnosticReason("23514","sales tracking online provider total mismatch"),"online_provider_total_mismatch");
+    assert.equal(salesTrackingCorrectionSaveDiagnosticReason("23514",'new row for relation "sales_tracking_sales_rows" violates check constraint "sales_tracking_sales_rows_refund_not_over_gross_check"'),"refund_validation");
+    assert.equal(salesTrackingCorrectionSaveDiagnosticReason("23514",'new row for relation "sales_tracking_cash_rows" violates check constraint "sales_tracking_cash_rows_remaining_cash_check"'),"cash_validation");
+    assert.equal(salesTrackingCorrectionSaveDiagnosticReason("23514","invalid sales tracking online amount row"),"online_amount_row_validation");
+    assert.equal(salesTrackingCorrectionSaveDiagnosticReason("23514","unrecognized raw database message"),"validation_check_unknown");
+    assert.equal(salesTrackingCorrectionSaveDiagnosticReason("PT409","sales tracking online provider total mismatch"),null);
+  });
+
   it("wires correction saves through the shared normalizer and diagnostic runner",async()=>{
     const source=await readFile(path.resolve("src/backend/checklist-persistence.ts"),"utf8");
     const method=source.slice(source.indexOf("async saveSalesTrackingCorrection(input)"),source.indexOf("async submitSalesTrackingCorrection(input)"));
@@ -80,9 +90,18 @@ describe("Sales Tracking correction persistence boundary",()=>{
         runSalesTrackingCorrectionSaveRpc(async()=>({data:null,error:{code:sqlstate,message:"raw database message"}}),7,{requestId,log:(event)=>events.push(event)}),
         (error:unknown)=>error instanceof ChecklistConflictError&&error.sqlstate===sqlstate,
       );
-      assert.deepEqual(events,[{requestId,action:"save_sales_tracking_correction",expectedRevision:7,sqlstate,category}]);
+      assert.deepEqual(events,[{requestId,action:"save_sales_tracking_correction",expectedRevision:7,sqlstate,category,reason:sqlstate==="23514"?"validation_check_unknown":null}]);
     });
   }
+
+  it("logs the allowlisted reason for a known provider mismatch",async()=>{
+    const events:SalesTrackingCorrectionSaveDiagnosticEvent[]=[];
+    await assert.rejects(
+      runSalesTrackingCorrectionSaveRpc(async()=>({data:null,error:{code:"23514",message:"sales tracking online provider total mismatch"}}),7,{requestId,log:(event)=>events.push(event)}),
+      ChecklistConflictError,
+    );
+    assert.deepEqual(events,[{requestId,action:"save_sales_tracking_correction",expectedRevision:7,sqlstate:"23514",category:"validation_check",reason:"online_provider_total_mismatch"}]);
+  });
 
   it("logs a bounded diagnostic without payloads, identities, raw messages, or stack traces",async()=>{
     const records:unknown[][]=[],originalInfo=console.info;
@@ -96,6 +115,7 @@ describe("Sales Tracking correction persistence boundary",()=>{
     assert.match(serialized,/SALES_TRACKING_CORRECTION_SAVE/);
     assert.match(serialized,/validation_check/);
     assert.doesNotMatch(serialized,/999|secret-provider|secret-user|secret-report|raw database|stack/i);
-    assert.deepEqual(Object.keys(JSON.parse(String(records[0][0]).replace(/^SALES_TRACKING_CORRECTION_SAVE /u,""))).sort(),["action","category","expectedRevision","requestId","sqlstate"]);
+    assert.match(serialized,/validation_check_unknown/);
+    assert.deepEqual(Object.keys(JSON.parse(String(records[0][0]).replace(/^SALES_TRACKING_CORRECTION_SAVE /u,""))).sort(),["action","category","expectedRevision","reason","requestId","sqlstate"]);
   });
 });

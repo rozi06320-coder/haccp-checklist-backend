@@ -62,12 +62,14 @@ function throwChecklistRpcError(code:string|undefined,message?:string):never{
 }
 
 export type SalesTrackingCorrectionSaveDiagnosticCategory="stale_revision"|"validation_check"|"lifecycle_conflict"|"unique_conflict"|"authorization"|"unknown";
+export type SalesTrackingCorrectionSaveDiagnosticReason="online_provider_total_mismatch"|"online_amount_row_validation"|"online_amount_scope_validation"|"online_provider_scope_validation"|"online_amount_validation"|"refund_validation"|"sales_validation"|"cash_validation"|"period_validation"|"report_validation"|"validation_check_unknown";
 export type SalesTrackingCorrectionSaveDiagnosticEvent={
  requestId:string;
  action:"save_sales_tracking_correction";
  expectedRevision:number;
  sqlstate:string|null;
  category:SalesTrackingCorrectionSaveDiagnosticCategory;
+ reason:SalesTrackingCorrectionSaveDiagnosticReason|null;
 };
 export type SalesTrackingCorrectionSaveDiagnostics={
  requestId:string;
@@ -75,6 +77,29 @@ export type SalesTrackingCorrectionSaveDiagnostics={
 };
 
 const salesTrackingCorrectionSafeSqlstates=new Set(["23505","23514","40001","PT409","55000","22023","42501"]);
+const salesTrackingCorrection23514Reasons=new Map<string,SalesTrackingCorrectionSaveDiagnosticReason>([
+ ["sales tracking online provider total mismatch","online_provider_total_mismatch"],
+ ["invalid sales tracking online amount row","online_amount_row_validation"],
+ ["invalid sales tracking online amount scope","online_amount_scope_validation"],
+ ["invalid sales tracking online provider scope","online_provider_scope_validation"],
+ ["new row for relation \"sales_tracking_online_amounts\" violates check constraint \"sales_tracking_online_amounts_amount_check\"","online_amount_validation"],
+ ["new row for relation \"sales_tracking_sales_rows\" violates check constraint \"sales_tracking_sales_rows_refund_nonnegative_check\"","refund_validation"],
+ ["new row for relation \"sales_tracking_sales_rows\" violates check constraint \"sales_tracking_sales_rows_refund_not_over_gross_check\"","refund_validation"],
+ ...["actual_cash","actual_credit","pos_cash","pos_credit","online_delivery","remarks"].map((field)=>[
+  `new row for relation \"sales_tracking_sales_rows\" violates check constraint \"sales_tracking_sales_rows_${field}_check\"`,
+  "sales_validation" as const,
+ ] as const),
+ ...["denom_1","denom_2","denom_5","denom_10","denom_20","denom_50","denom_100","denom_200","denom_500","remaining_cash","remarks"].map((field)=>[
+  `new row for relation \"sales_tracking_cash_rows\" violates check constraint \"sales_tracking_cash_rows_${field}_check\"`,
+  "cash_validation" as const,
+ ] as const),
+ ["new row for relation \"sales_tracking_period_entries\" violates check constraint \"sales_tracking_period_entries_entry_period_check\"","period_validation"],
+ ["new row for relation \"sales_tracking_period_entries\" violates check constraint \"sales_tracking_period_entries_name_check\"","period_validation"],
+ ...["branch_revision","snapshots","state","submitted_by_name_snapshot","currency_code","review_status","review_revision","review_actor","draft_review","version_positive","correction_provenance"].map((constraint)=>[
+  `new row for relation \"sales_tracking_reports\" violates check constraint \"sales_tracking_reports_${constraint}_check\"`,
+  "report_validation" as const,
+ ] as const),
+]);
 
 function safeSalesTrackingCorrectionRequestId(value:string){return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(value)?value:"invalid";}
 function safeSalesTrackingCorrectionSqlstate(value:unknown){return typeof value==="string"&&salesTrackingCorrectionSafeSqlstates.has(value)?value:null;}
@@ -86,20 +111,25 @@ export function salesTrackingCorrectionSaveDiagnosticCategory(sqlstate:unknown):
  if(sqlstate==="42501")return"authorization";
  return"unknown";
 }
+export function salesTrackingCorrectionSaveDiagnosticReason(sqlstate:unknown,message:unknown):SalesTrackingCorrectionSaveDiagnosticReason|null{
+ if(sqlstate!=="23514")return null;
+ if(typeof message!=="string")return"validation_check_unknown";
+ return salesTrackingCorrection23514Reasons.get(message)??"validation_check_unknown";
+}
 export function logSalesTrackingCorrectionSaveDiagnostic(event:SalesTrackingCorrectionSaveDiagnosticEvent){
  try{console.info(`SALES_TRACKING_CORRECTION_SAVE ${JSON.stringify(event)}`);}catch{/* Diagnostics must never affect persistence. */}
 }
 export async function runSalesTrackingCorrectionSaveRpc<T>(call:()=>PromiseLike<{data:T;error:{code?:string;message?:string}|null}>,expectedRevision:number,diagnostics?:SalesTrackingCorrectionSaveDiagnostics){
  let logged=false;
- const log=(sqlstate:unknown)=>{
+ const log=(sqlstate:unknown,message?:unknown)=>{
   if(!diagnostics||logged)return;
   logged=true;
-  const safeSqlstate=safeSalesTrackingCorrectionSqlstate(sqlstate),event:SalesTrackingCorrectionSaveDiagnosticEvent={requestId:safeSalesTrackingCorrectionRequestId(diagnostics.requestId),action:"save_sales_tracking_correction",expectedRevision,sqlstate:safeSqlstate,category:salesTrackingCorrectionSaveDiagnosticCategory(safeSqlstate)};
+  const safeSqlstate=safeSalesTrackingCorrectionSqlstate(sqlstate),event:SalesTrackingCorrectionSaveDiagnosticEvent={requestId:safeSalesTrackingCorrectionRequestId(diagnostics.requestId),action:"save_sales_tracking_correction",expectedRevision,sqlstate:safeSqlstate,category:salesTrackingCorrectionSaveDiagnosticCategory(safeSqlstate),reason:salesTrackingCorrectionSaveDiagnosticReason(safeSqlstate,message)};
   try{(diagnostics.log??logSalesTrackingCorrectionSaveDiagnostic)(event);}catch{/* Diagnostics must never affect persistence. */}
  };
  try{
   const result=await call();
-  if(result.error){log(result.error.code);throwChecklistRpcError(result.error.code,result.error.message);}
+  if(result.error){log(result.error.code,result.error.message);throwChecklistRpcError(result.error.code,result.error.message);}
   return result.data;
  }catch(error){
   if(!logged)log(error instanceof ChecklistConflictError?error.sqlstate:error instanceof ChecklistAccessError?"42501":null);
