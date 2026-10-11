@@ -775,6 +775,11 @@ export type OperationalAdmin = {
     status: Extract<z.infer<typeof purchaseRequestStatus>, "processing" | "purchased">;
     purchaseDetails?: PurchaseRequestPurchaseDetailInput[] | null;
   }): Promise<unknown>;
+  cancelPurchasingPurchaseRequest?(input: {
+    actorUserId: string;
+    organizationId: string;
+    requestId: string;
+  }): Promise<unknown>;
   savePurchasingPurchaseRequestDetails?(input: {
     actorUserId: string;
     organizationId: string;
@@ -2356,6 +2361,13 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         if(prepared?.uploadedPaths.length)await purchaseRequestAttachmentStorage.remove(prepared.uploadedPaths).catch(()=>undefined);
         throw error;
       }
+    },
+    async cancelPurchasingPurchaseRequest(input) {
+      return await signPurchaseRequestPayload(await rpcObject("cancel_purchasing_purchase_request", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_request_id: input.requestId,
+      }));
     },
     async savePurchasingPurchaseRequestDetails(input) {
       const prepared=await preparePurchaseRequestDetails({organizationId:input.organizationId,requestId:input.requestId,details:input.purchaseDetails});

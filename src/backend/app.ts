@@ -394,6 +394,7 @@ const purchaseRequestStatusBodySchema = z.object({
   status: z.enum(["processing", "purchased"]),
   items: z.array(purchaseRequestDetailItemBodySchema).max(50).optional(),
 }).strict();
+const purchaseRequestCancelBodySchema = z.object({}).strict();
 const purchaseRequestDetailSaveBodySchema = z.object({
   items: z.array(purchaseRequestDetailItemBodySchema).min(1).max(50),
 }).strict();
@@ -452,6 +453,8 @@ const purchaseRequestResponseRowSchema = z.object({
   notes: z.string().nullable(),
   created_at: z.string(),
   updated_at: z.string(),
+  cancelled_at: z.string().nullable().optional().transform((value) => value ?? null),
+  cancelled_by: z.uuid().nullable().optional().transform((value) => value ?? null),
   items: z.array(purchaseRequestItemResponseSchema).min(1).max(50),
 }).strict();
 const purchaseRequestListResponseSchema = z.object({ purchase_requests: z.array(purchaseRequestResponseRowSchema).max(500) }).strict();
@@ -4579,6 +4582,28 @@ export function createApp(
           requestId: requestId.data,
           status: body.data.status,
           purchaseDetails: body.data.items ? purchaseRequestDetailsForOperation(body.data.items) : null,
+        }));
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : operationalPurchaseRequestError(error));
+      }
+    });
+  app.post("/api/v1/purchasing/organizations/:organizationId/purchase-requests/:requestId/cancel", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const requestId = z.uuid().safeParse(request.params.requestId);
+        const body = purchaseRequestCancelBodySchema.safeParse(request.body);
+        if (!organizationId.success || !requestId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        const hasPurchasingAccess = (context.purchasing_organizations ?? []).some((organization) => organization.id === organizationId.data);
+        if (context.must_change_password || !hasPurchasingAccess || !dependencies.operationalAdmin?.cancelPurchasingPurchaseRequest) throw new HttpError(403, "forbidden", "Access is denied.");
+        const result = purchaseRequestMutationResponseSchema.parse(await dependencies.operationalAdmin.cancelPurchasingPurchaseRequest({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          requestId: requestId.data,
         }));
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json(result);

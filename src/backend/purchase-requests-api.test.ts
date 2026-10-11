@@ -66,7 +66,7 @@ const purchaseLog = {
   revision: 1,
 };
 
-function deps(options: { transitionError?: boolean; photoConflict?: boolean } = {}): BackendDependencies {
+function deps(options: { transitionError?: boolean; photoConflict?: boolean; cancelError?: "access" | "conflict" | "unexpected" } = {}): BackendDependencies {
   return {
     async checkReadiness() { return true; },
     authVerifier: { async verify(token) {
@@ -143,6 +143,20 @@ function deps(options: { transitionError?: boolean; photoConflict?: boolean } = 
               purchasing_notes: input.purchaseDetails?.[0]?.purchasing_notes ?? null,
               attachments: [],
             })),
+          },
+        };
+      },
+      async cancelPurchasingPurchaseRequest(input) {
+        calls.push({ name: "cancel-purchasing", input });
+        if (options.cancelError === "access" || input.organizationId !== organization) throw new OperationalAccessError();
+        if (options.cancelError === "conflict") throw new OperationalConflictError();
+        if (options.cancelError === "unexpected") throw new Error("private database detail");
+        return {
+          purchase_request: {
+            ...purchaseRequest,
+            status: "cancelled",
+            cancelled_at: "2026-09-21T09:00:00.000Z",
+            cancelled_by: purchaser,
           },
         };
       },
@@ -352,6 +366,32 @@ describe("Purchase Request API", () => {
     assert.equal((call?.input as { purchaseDetails?: unknown }).purchaseDetails, null);
   });
 
+  it("lets active Purchasing cancel a request with an exact empty body", async () => {
+    const response = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/cancel`, "purchasing", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(calls.at(-1), {
+      name: "cancel-purchasing",
+      input: { actorUserId: purchaser, organizationId: organization, requestId },
+    });
+    const body = await response.json();
+    assert.equal(body.purchase_request.status, "cancelled");
+    assert.equal(body.purchase_request.cancelled_at, "2026-09-21T09:00:00.000Z");
+    assert.equal(body.purchase_request.cancelled_by, purchaser);
+  });
+
+  it("rejects non-empty cancellation payloads and non-Purchasing actors", async () => {
+    const path = `/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/cancel`;
+    assert.equal((await request(path, "purchasing", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "cancelled" }) })).status, 400);
+    assert.equal((await request(path, "manager", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status, 403);
+    assert.equal((await request(path, "supervisor", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status, 403);
+    assert.equal((await request(path, "inactive-purchasing", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status, 403);
+    assert.equal((await request(`/api/v1/purchasing/organizations/${otherOrganization}/purchase-requests/${requestId}/cancel`, "purchasing", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status, 403);
+  });
+
   it("accepts optional non-financial item details without synthesizing monetary fields", async () => {
     const response = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", {
       method: "PATCH",
@@ -473,5 +513,24 @@ describe("Purchase Request API", () => {
     origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
     const response = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased", items: [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", actual_total_cost: "30.00" }] }) });
     assert.equal(response.status, 422);
+  });
+
+  it("maps cancellation conflicts and unexpected failures to sanitized responses", async () => {
+    const path = `/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/cancel`;
+    for (const testCase of [
+      { error: "conflict" as const, status: 409, code: "conflict", message: "The purchase request conflicts with current workflow state." },
+      { error: "unexpected" as const, status: 503, code: "service_unavailable", message: "Purchase Requests are temporarily unavailable." },
+    ]) {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      server = createServer(createApp(config, deps({ cancelError: testCase.error })));
+      await new Promise<void>((resolve, reject) => server.listen(0, "127.0.0.1", resolve).once("error", reject));
+      origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const response = await request(path, "purchasing", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      assert.equal(response.status, testCase.status);
+      const body = await response.json();
+      assert.equal(body.error.code, testCase.code);
+      assert.equal(body.error.message, testCase.message);
+      assert.equal(JSON.stringify(body).includes("private database detail"), false);
+    }
   });
 });
