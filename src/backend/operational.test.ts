@@ -722,10 +722,12 @@ describe("managed maintenance operational adapter", () => {
     await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
     try{
       const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
-      await assert.rejects(()=>admin.createSupervisorMaintenanceIssue({actorUserId:id.supervisor,branchId:id.branch,payload:{title:"Freezer",category:"refrigeration",priority:"urgent"},contract:"phase1",diagnostics:{requestId:"issue-request-42883",log:(event)=>diagnostics.push(event)}}));
+      await assert.rejects(()=>admin.createSupervisorMaintenanceIssue({actorUserId:id.supervisor,branchId:id.branch,payload:{title:"Freezer",category:"refrigeration",priority:"urgent"},contract:"phase1",diagnostics:{requestId:"issue-request-42883",action:"create_issue",log:(event)=>diagnostics.push(event)}}));
       assert.deepEqual(diagnostics.map((event)=>({stage:event.stage,outcome:event.outcome,safeCode:event.safeCode,undefinedObjectKind:event.undefinedObjectKind,undefinedIdentity:event.undefinedIdentity})),[
-        {stage:"create_rpc",outcome:"start",safeCode:null,undefinedObjectKind:null,undefinedIdentity:null},
-        {stage:"create_rpc",outcome:"failure",safeCode:"42883",undefinedObjectKind:"operator",undefinedIdentity:"text=uuid"},
+        {stage:"storage_upload",outcome:"start",safeCode:null,undefinedObjectKind:null,undefinedIdentity:null},
+        {stage:"storage_upload",outcome:"success",safeCode:null,undefinedObjectKind:null,undefinedIdentity:null},
+        {stage:"rpc",outcome:"start",safeCode:null,undefinedObjectKind:null,undefinedIdentity:null},
+        {stage:"rpc",outcome:"failure",safeCode:"42883",undefinedObjectKind:"operator",undefinedIdentity:"text=uuid"},
       ]);
       assert.doesNotMatch(JSON.stringify(diagnostics),/private issue payload|bearer-token|service-key|Freezer/);
     }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
@@ -743,11 +745,13 @@ describe("managed maintenance operational adapter", () => {
     await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
     try{
       const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
-      await assert.rejects(()=>admin.createSupervisorMaintenanceIssue({actorUserId:id.supervisor,branchId:id.branch,payload:{title:"Freezer",category:"refrigeration",priority:"urgent",description:"Do not log"},contract:"legacy",diagnostics:{requestId:"legacy-request-42883",log:(event)=>diagnostics.push(event)}}));
+      await assert.rejects(()=>admin.createSupervisorMaintenanceIssue({actorUserId:id.supervisor,branchId:id.branch,payload:{title:"Freezer",category:"refrigeration",priority:"urgent",description:"Do not log"},contract:"legacy",diagnostics:{requestId:"legacy-request-42883",action:"create_issue",log:(event)=>diagnostics.push(event)}}));
       assert.deepEqual(paths,["/rest/v1/rpc/create_supervisor_maintenance_issue"]);
-      assert.deepEqual(diagnostics.map((event)=>({stage:event.stage,outcome:event.outcome,safeErrorCategory:event.safeErrorCategory,safeCode:event.safeCode,undefinedObjectKind:event.undefinedObjectKind,undefinedIdentity:event.undefinedIdentity})),[
-        {stage:"create_rpc",outcome:"start",safeErrorCategory:undefined,safeCode:null,undefinedObjectKind:null,undefinedIdentity:null},
-        {stage:"create_rpc",outcome:"failure",safeErrorCategory:"rpc",safeCode:"42883",undefinedObjectKind:"function",undefinedIdentity:"pg_catalog.nullif(text,unknown)"},
+      assert.deepEqual(diagnostics.map((event)=>({stage:event.stage,outcome:event.outcome,safeCategory:event.safeCategory,safeCode:event.safeCode,undefinedObjectKind:event.undefinedObjectKind,undefinedIdentity:event.undefinedIdentity})),[
+        {stage:"storage_upload",outcome:"start",safeCategory:undefined,safeCode:null,undefinedObjectKind:null,undefinedIdentity:null},
+        {stage:"storage_upload",outcome:"success",safeCategory:undefined,safeCode:null,undefinedObjectKind:null,undefinedIdentity:null},
+        {stage:"rpc",outcome:"start",safeCategory:undefined,safeCode:null,undefinedObjectKind:null,undefinedIdentity:null},
+        {stage:"rpc",outcome:"failure",safeCategory:"rpc_failure",safeCode:"42883",undefinedObjectKind:"function",undefinedIdentity:"pg_catalog.nullif(text,unknown)"},
       ]);
       assert.doesNotMatch(JSON.stringify(diagnostics),/private payload|service-key|Freezer|Do not log/);
     }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
@@ -773,10 +777,12 @@ describe("managed maintenance operational adapter", () => {
     await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
     try{
       const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
-      await assert.rejects(()=>admin.createSupervisorMaintenanceIssue({actorUserId:id.supervisor,branchId:id.branch,payload:{title:"Sink",category:"plumbing",priority:"normal"},photos:[{bytes:Buffer.from([0xff,0xd8,0xff,0x00,0xff,0xd9]),mimeType:"image/jpeg",originalName:"private-photo.jpg"}],contract:"legacy",diagnostics:{requestId:"legacy-photo-request",log:(event)=>diagnostics.push(event)}}));
+      await assert.rejects(()=>admin.createSupervisorMaintenanceIssue({actorUserId:id.supervisor,branchId:id.branch,payload:{title:"Sink",category:"plumbing",priority:"normal"},photos:[{bytes:Buffer.from([0xff,0xd8,0xff,0x00,0xff,0xd9]),mimeType:"image/jpeg",originalName:"private-photo.jpg"}],contract:"legacy",diagnostics:{requestId:"legacy-photo-request",action:"create_issue",log:(event)=>diagnostics.push(event)}}));
       assert.ok(paths.includes("POST /rest/v1/rpc/create_supervisor_maintenance_issue_with_photo"));
       const failure=diagnostics.at(-1);
-      assert.deepEqual({stage:failure?.stage,outcome:failure?.outcome,safeErrorCategory:failure?.safeErrorCategory,safeCode:failure?.safeCode,undefinedObjectKind:failure?.undefinedObjectKind,undefinedIdentity:failure?.undefinedIdentity},{stage:"create_rpc",outcome:"failure",safeErrorCategory:"rpc",safeCode:"22023",undefinedObjectKind:null,undefinedIdentity:null});
+      assert.deepEqual({stage:failure?.stage,outcome:failure?.outcome,safeCategory:failure?.safeCategory,safeCode:failure?.safeCode,undefinedObjectKind:failure?.undefinedObjectKind,undefinedIdentity:failure?.undefinedIdentity},{stage:"storage_cleanup",outcome:"success",safeCategory:undefined,safeCode:null,undefinedObjectKind:null,undefinedIdentity:null});
+      const rpcFailure=diagnostics.find((event)=>event.stage==="rpc"&&event.outcome==="failure");
+      assert.deepEqual({safeCategory:rpcFailure?.safeCategory,safeCode:rpcFailure?.safeCode},{safeCategory:"invalid_transition",safeCode:"22023"});
       assert.doesNotMatch(JSON.stringify(diagnostics),/private invalid|private-photo|storage\/path|service-key|Sink/);
     }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
   });
@@ -796,14 +802,52 @@ describe("managed maintenance operational adapter", () => {
     await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
     try{
       const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
-      await admin.createSupervisorMaintenanceIssue({actorUserId:id.supervisor,branchId:id.branch,payload:{title:"Freezer",category:"refrigeration",priority:"urgent"},contract:"phase1",diagnostics:{requestId:"phase1-create",log:(event)=>diagnostics.push(event)}});
+      await admin.createSupervisorMaintenanceIssue({actorUserId:id.supervisor,branchId:id.branch,payload:{title:"Freezer",category:"refrigeration",priority:"urgent"},contract:"phase1",diagnostics:{requestId:"phase1-create",action:"create_issue",log:(event)=>diagnostics.push(event)}});
       assert.deepEqual(paths,["/rest/v1/rpc/create_supervisor_maintenance_issue_v2","/rest/v1/rpc/list_maintenance_issue_attachments"]);
       assert.deepEqual(diagnostics.map((event)=>({stage:event.stage,outcome:event.outcome})),[
-        {stage:"create_rpc",outcome:"start"},
-        {stage:"create_rpc",outcome:"success"},
+        {stage:"storage_upload",outcome:"start"},
+        {stage:"storage_upload",outcome:"success"},
+        {stage:"rpc",outcome:"start"},
+        {stage:"rpc",outcome:"success"},
         {stage:"response_parse",outcome:"start"},
+        {stage:"attachment_lookup",outcome:"start"},
+        {stage:"attachment_lookup",outcome:"success"},
         {stage:"response_parse",outcome:"success"},
       ]);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("distinguishes a post-persistence Maintenance response parse failure without leaking response data",async()=>{
+    const diagnostics:Array<Record<string,unknown>>=[];
+    const rpc=createServer(async(_request,response)=>{
+      response.setHeader("content-type","application/json");
+      response.end(JSON.stringify([{id:id.maintenanceIssue,title:"private response title"}]));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await assert.rejects(()=>admin.createSupervisorMaintenanceIssue({actorUserId:id.supervisor,branchId:id.branch,payload:{title:"private request title",category:"refrigeration",priority:"urgent"},contract:"phase1",diagnostics:{requestId:"parse-failure",action:"create_issue",log:(event)=>diagnostics.push(event)}}));
+      const failure=diagnostics.find((event)=>event.stage==="response_parse"&&event.outcome==="failure");
+      assert.equal(failure?.safeCategory,"response_schema");
+      assert.equal(diagnostics.some((event)=>event.stage==="attachment_lookup"),false);
+      assert.doesNotMatch(JSON.stringify(diagnostics),/private response title|private request title|service-key/);
+    }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
+  });
+
+  it("classifies stale Maintenance status revisions without logging issue data",async()=>{
+    const diagnostics:Array<Record<string,unknown>>=[];
+    const rpc=createServer(async(_request,response)=>{
+      response.setHeader("content-type","application/json");
+      response.statusCode=400;
+      response.end(JSON.stringify({code:"40001",message:"private stale issue details",details:"private note"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await assert.rejects(()=>admin.updateMaintenanceIssue({contract:"phase1",actorUserId:id.staffAccount,issueId:id.maintenanceIssue,status:"in_progress",note:"private note",responsiblePersonName:null,expectedRevision:2,plannedRepairDate:null,plannedRepairChangeReason:null,diagnostics:{requestId:"stale-status",action:"update_status",expectedRevision:2,log:(event)=>diagnostics.push(event)}}));
+      const failure=diagnostics.find((event)=>event.stage==="rpc"&&event.outcome==="failure");
+      assert.deepEqual({action:failure?.action,expectedRevision:failure?.expectedRevision,safeCategory:failure?.safeCategory,safeCode:failure?.safeCode},{action:"update_status",expectedRevision:2,safeCategory:"stale_revision",safeCode:"40001"});
+      assert.doesNotMatch(JSON.stringify(diagnostics),/private stale issue details|private note|service-key/);
     }finally{await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));}
   });
 
@@ -1572,6 +1616,7 @@ describe("Maintenance purchase diagnostic API", () => {
   async function captureMaintenanceIssueDiagnostics<T>(run: () => Promise<T>) {
     const original=console.info;
     const events:Array<Record<string,unknown>>=[];
+    const submitEvents:Array<Record<string,unknown>>=[];
     const lines:Array<{argumentCount:number;value:string}>=[];
     console.info=(...args:unknown[])=>{
       if(typeof args[0]==="string"&&args[0].startsWith("MAINTENANCE_ISSUE_DIAGNOSTIC ")){
@@ -1580,9 +1625,15 @@ describe("Maintenance purchase diagnostic API", () => {
         events.push(JSON.parse(value.slice("MAINTENANCE_ISSUE_DIAGNOSTIC ".length))as Record<string,unknown>);
         return;
       }
+      if(typeof args[0]==="string"&&args[0].startsWith("MAINTENANCE_SUBMIT_FAILURE ")){
+        const value=args[0];
+        lines.push({argumentCount:args.length,value});
+        submitEvents.push(JSON.parse(value.slice("MAINTENANCE_SUBMIT_FAILURE ".length))as Record<string,unknown>);
+        return;
+      }
       original(...args);
     };
-    try{return{value:await run(),events,lines};}finally{console.info=original;}
+    try{return{value:await run(),events,submitEvents,lines};}finally{console.info=original;}
   }
 
   it("emits safe diagnostics for issue-linked Maintenance purchase validation and success paths", async () => {
@@ -1667,7 +1718,7 @@ describe("Maintenance purchase diagnostic API", () => {
     const fixture=dependencies(calls);
     if(!fixture.operationalAdmin)throw new Error("missing test adapter");
     fixture.operationalAdmin.createSupervisorMaintenanceIssue=async(input)=>{
-      input.diagnostics?.log?.({requestId:input.diagnostics.requestId,stage:"create_rpc",outcome:"failure",safeErrorCategory:"rpc",safeCode:"42883",undefinedObjectKind:"function",undefinedIdentity:"private.create_issue(uuid,text)",durationMs:1.25});
+      input.diagnostics?.log?.({requestId:input.diagnostics.requestId,action:"create_issue",stage:"rpc",outcome:"failure",safeCategory:"rpc_failure",safeCode:"42883",undefinedObjectKind:"function",undefinedIdentity:"private.create_issue(uuid,text)",durationMs:1.25});
       throw new Error("raw SQL secret issue payload bearer-token");
     };
     const config=loadBackendConfig({NODE_ENV:"test",SUPABASE_URL:"http://127.0.0.1:54321",SUPABASE_PUBLISHABLE_KEY:"placeholder",DAILY_AUDIT_GRANT_SECRET:"test-daily-audit-grant-secret-placeholder-32-bytes"});
@@ -1684,6 +1735,7 @@ describe("Maintenance purchase diagnostic API", () => {
       assert.doesNotMatch(body,/raw SQL|secret|payload|bearer-token|Private freezer|Do not log/);
       assert.equal(result.events.length,1);
       assert.deepEqual({stage:result.events[0]?.stage,outcome:result.events[0]?.outcome,safeCode:result.events[0]?.safeCode,undefinedObjectKind:result.events[0]?.undefinedObjectKind,undefinedIdentity:result.events[0]?.undefinedIdentity},{stage:"create_rpc",outcome:"failure",safeCode:"42883",undefinedObjectKind:"function",undefinedIdentity:"private.create_issue(uuid,text)"});
+      assert.deepEqual(result.submitEvents,[{requestId:result.events[0]?.requestId,action:"create_issue",stage:"rpc",status:"failure",safeCategory:"rpc_failure"}]);
       assert.equal(typeof result.events[0]?.requestId,"string");
       assert.ok(result.lines.every((line)=>line.argumentCount===1));
       assert.doesNotMatch(JSON.stringify({events:result.events,lines:result.lines}),/raw SQL|secret|issue payload|bearer-token|Private freezer|Do not log/);

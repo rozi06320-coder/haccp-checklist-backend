@@ -93,13 +93,19 @@ type MaintenancePurchaseDiagnostics = {
     durationMs?: number;
   }) => void;
 };
-type MaintenanceIssueCreateDiagnostics = {
+type MaintenanceSubmitDiagnosticStage = "storage_upload" | "rpc" | "attachment_lookup" | "response_parse" | "storage_cleanup";
+type MaintenanceSubmitSafeCategory = "stale_revision" | "unique_conflict" | "validation_check" | "lifecycle_conflict" | "invalid_transition" | "authorization" | "storage_failure" | "rpc_failure" | "attachment_failure" | "response_schema" | "cleanup_failure" | "unknown";
+type MaintenanceSubmitDiagnostics = {
   requestId?: string | null;
+  action: "create_issue" | "update_status";
+  expectedRevision?: number;
   log?: (event: {
     requestId?: string | null;
-    stage: "create_rpc" | "response_parse";
+    action: "create_issue" | "update_status";
+    expectedRevision?: number;
+    stage: MaintenanceSubmitDiagnosticStage;
     outcome: MaintenancePurchaseDiagnosticOutcome;
-    safeErrorCategory?: "rpc" | "response";
+    safeCategory?: MaintenanceSubmitSafeCategory;
     safeCode?: string | null;
     undefinedObjectKind?: "function" | "operator" | null;
     undefinedIdentity?: string | null;
@@ -883,7 +889,7 @@ export type OperationalAdmin = {
     photo?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
     photos?: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> | null;
     contract?: "legacy" | "phase1";
-    diagnostics?: MaintenanceIssueCreateDiagnostics;
+    diagnostics?: MaintenanceSubmitDiagnostics;
   }): Promise<unknown>;
   createManagerOfficeMaintenanceIssue?(input: {
     actorUserId: string;
@@ -911,6 +917,7 @@ export type OperationalAdmin = {
     responsiblePersonName?: string | null;
     repairPhoto?: { bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string } | null;
     repairPhotos?: Array<{ bytes: Buffer; mimeType: z.infer<typeof maintenanceIssuePhotoMime>; originalName: string }> | null;
+    diagnostics?: MaintenanceSubmitDiagnostics;
   } & ({
     contract: "phase1";
     expectedRevision: number;
@@ -1009,20 +1016,31 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       });
     };
   }
-  function startMaintenanceIssueCreateDiagnosticStage(diagnostics: MaintenanceIssueCreateDiagnostics | undefined, stage: "create_rpc" | "response_parse") {
+  function maintenanceSubmitSafeCategory(code: string | null | undefined, fallback: MaintenanceSubmitSafeCategory): MaintenanceSubmitSafeCategory {
+    if (code === "40001" || code === "PT409") return "stale_revision";
+    if (code === "23505") return "unique_conflict";
+    if (code === "23514") return "validation_check";
+    if (code === "55000") return "lifecycle_conflict";
+    if (code === "22023") return "invalid_transition";
+    if (code === "42501") return "authorization";
+    return fallback;
+  }
+  function startMaintenanceSubmitDiagnosticStage(diagnostics: MaintenanceSubmitDiagnostics | undefined, stage: MaintenanceSubmitDiagnosticStage) {
     const startedAt = performance.now();
     let completed = false;
-    diagnostics?.log?.({ requestId: diagnostics.requestId ?? null, stage, outcome: "start", safeCode: null, undefinedObjectKind: null, undefinedIdentity: null });
-    return (outcome: Exclude<MaintenancePurchaseDiagnosticOutcome, "start">, safeErrorCategory?: "rpc" | "response", safeCode?: string | null, undefinedObject?: MaintenanceUndefinedObjectIdentity | null) => {
+    diagnostics?.log?.({ requestId: diagnostics.requestId ?? null, action: diagnostics.action, expectedRevision: diagnostics.expectedRevision, stage, outcome: "start", safeCode: null, undefinedObjectKind: null, undefinedIdentity: null });
+    return (outcome: Exclude<MaintenancePurchaseDiagnosticOutcome, "start">, safeCategory?: MaintenanceSubmitSafeCategory, safeCode?: string | null, undefinedObject?: MaintenanceUndefinedObjectIdentity | null) => {
       if (completed) return;
       completed = true;
       const boundedCode = safeMaintenancePurchaseDiagnosticCode(safeCode);
       const boundedUndefinedObject = boundedCode === "42883" ? undefinedObject : null;
       diagnostics?.log?.({
         requestId: diagnostics.requestId ?? null,
+        action: diagnostics.action,
+        expectedRevision: diagnostics.expectedRevision,
         stage,
         outcome,
-        safeErrorCategory,
+        safeCategory,
         safeCode: boundedCode,
         undefinedObjectKind: boundedUndefinedObject?.undefinedObjectKind ?? null,
         undefinedIdentity: boundedUndefinedObject?.undefinedIdentity ?? null,
@@ -1659,18 +1677,23 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     actorUserId?:string|null,
     accessUserId?:string|null,
     timingCollector?:MaintenanceIssuesStageTiming,
+    diagnostics?:MaintenanceSubmitDiagnostics,
   ){
+    const finishAttachmentLookup=startMaintenanceSubmitDiagnosticStage(diagnostics,"attachment_lookup");
+    try {
     if(rows.length===0){
       if (timingCollector) {
         timingCollector.attachmentsRpcMs = 0;
         timingCollector.attachmentCount = 0;
         timingCollector.attachmentSigningMs = 0;
       }
-      return rows.map((row)=> {
+      const emptyRows=rows.map((row)=> {
         const { organization_id, ...safeRow } = row;
         void organization_id;
         return {...safeRow,updates:row.updates??[],before_photo:null,after_photo:null,before_photos:[],after_photos:[]};
       });
+      finishAttachmentLookup("success");
+      return emptyRows;
     }
     const rpcStart = performance.now();
     const rawAttachments = await rpc("list_maintenance_issue_attachments",{
@@ -1728,19 +1751,24 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
     if (timingCollector) {
       timingCollector.normalizationMs += performance.now() - mapStart;
     }
+    finishAttachmentLookup("success");
     return mapped;
+    } catch (error) {
+      finishAttachmentLookup("failure","attachment_failure");
+      throw error;
+    }
   }
-  async function normalizeMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null,accessUserId?:string|null,timingCollector?:MaintenanceIssuesStageTiming) {
+  async function normalizeMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null,accessUserId?:string|null,timingCollector?:MaintenanceIssuesStageTiming,diagnostics?:MaintenanceSubmitDiagnostics) {
     const parseStart = performance.now();
     const parsedRows = z.array(maintenanceIssueRow).max(1000).parse(rows);
     if (timingCollector) timingCollector.normalizationMs += performance.now() - parseStart;
-    return attachMaintenanceIssuePhotos(parsedRows,actorUserId,accessUserId,timingCollector);
+    return attachMaintenanceIssuePhotos(parsedRows,actorUserId,accessUserId,timingCollector,diagnostics);
   }
-  async function normalizeLegacyMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null,accessUserId?:string|null,timingCollector?:MaintenanceIssuesStageTiming) {
+  async function normalizeLegacyMaintenanceIssueRows(rows: unknown[],actorUserId?:string|null,accessUserId?:string|null,timingCollector?:MaintenanceIssuesStageTiming,diagnostics?:MaintenanceSubmitDiagnostics) {
     const parseStart = performance.now();
     const parsedRows = z.array(maintenanceIssueLegacyRpcRow).max(1000).parse(rows);
     if (timingCollector) timingCollector.normalizationMs += performance.now() - parseStart;
-    const rowsWithPhotos=await attachMaintenanceIssuePhotos(parsedRows,actorUserId,accessUserId,timingCollector);
+    const rowsWithPhotos=await attachMaintenanceIssuePhotos(parsedRows,actorUserId,accessUserId,timingCollector,diagnostics);
     const mapStart = performance.now();
     const mapped = rowsWithPhotos.map((row)=>({
       ...row,
@@ -2647,13 +2675,20 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       const photos=input.photos?.filter((photo)=>photo.bytes.length>0)??(input.photo?[input.photo]:[]);
       const issueId=(input.idempotencyKey||photos.length)?randomUUID():null;
       try{
-        if(issueId)uploaded=await uploadMaintenanceIssuePhotos(issueId,"issue",photos);
+        const finishStorageUpload=startMaintenanceSubmitDiagnosticStage(input.diagnostics,"storage_upload");
+        try {
+          if(issueId)uploaded=await uploadMaintenanceIssuePhotos(issueId,"issue",photos);
+          finishStorageUpload("success");
+        } catch (error) {
+          finishStorageUpload("failure","storage_failure");
+          throw error;
+        }
         const payload={...input.payload,...(issueId?{issue_id:issueId}:{}),...(input.idempotencyKey?{idempotency_key:input.idempotencyKey}:{}),...(uploaded.length?{before_photos:uploaded}:{})};
         const phase1=input.contract!=="legacy";
         const functionName=uploaded.length
           ? phase1?"create_supervisor_maintenance_issue_with_photo_v2":"create_supervisor_maintenance_issue_with_photo"
           : phase1?"create_supervisor_maintenance_issue_v2":"create_supervisor_maintenance_issue";
-        const finishCreateRpc=startMaintenanceIssueCreateDiagnosticStage(input.diagnostics,"create_rpc");
+        const finishCreateRpc=startMaintenanceSubmitDiagnosticStage(input.diagnostics,"rpc");
         let rpcErrorCode:string|null=null;
         let undefinedObject:MaintenanceUndefinedObjectIdentity|null=null;
         let rawRows:unknown[];
@@ -2665,26 +2700,43 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
           },{onError:(error)=>{rpcErrorCode=error.code??null;undefinedObject=parseMaintenanceUndefinedObjectIdentity(error.code,error.message);}});
           finishCreateRpc("success");
         }catch(error){
-          finishCreateRpc("failure","rpc",rpcErrorCode,undefinedObject);
+          finishCreateRpc("failure",maintenanceSubmitSafeCategory(rpcErrorCode,"rpc_failure"),rpcErrorCode,undefinedObject);
           throw error;
         }
-        const finishResponseParse=startMaintenanceIssueCreateDiagnosticStage(input.diagnostics,"response_parse");
+        const finishResponseParse=startMaintenanceSubmitDiagnosticStage(input.diagnostics,"response_parse");
         let rows:Array<{id:string}>;
         try{
           rows=phase1
-            ? await normalizeMaintenanceIssueRows(rawRows,input.actorUserId,null)
-            : await normalizeLegacyMaintenanceIssueRows(rawRows,input.actorUserId,null);
+            ? await normalizeMaintenanceIssueRows(rawRows,input.actorUserId,null,undefined,input.diagnostics)
+            : await normalizeLegacyMaintenanceIssueRows(rawRows,input.actorUserId,null,undefined,input.diagnostics);
           if (rows.length !== 1) throw new AdminOperationError();
           finishResponseParse("success");
         }catch(error){
-          finishResponseParse("failure","response");
+          finishResponseParse("failure","response_schema");
           throw error;
         }
         const created=issueId?rows[0].id===issueId:true;
-        if(uploaded.length&&!created)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path)).catch(()=>undefined);
+        if(uploaded.length&&!created){
+          const finishStorageCleanup=startMaintenanceSubmitDiagnosticStage(input.diagnostics,"storage_cleanup");
+          try {
+            await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path));
+            finishStorageCleanup("success");
+          } catch {
+            finishStorageCleanup("failure","cleanup_failure");
+          }
+        }
         return { maintenance_issue: rows[0], created };
       }catch(error){
-        if(uploaded.length)await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path));
+        if(uploaded.length){
+          const finishStorageCleanup=startMaintenanceSubmitDiagnosticStage(input.diagnostics,"storage_cleanup");
+          try {
+            await maintenanceIssuePhotoStorage.remove(uploaded.map((photo)=>photo.storage_path));
+            finishStorageCleanup("success");
+          } catch (cleanupError) {
+            finishStorageCleanup("failure","cleanup_failure");
+            throw cleanupError;
+          }
+        }
         throw error;
       }
     },
@@ -2753,7 +2805,16 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
           new_planned_repair_date:input.plannedRepairDate??null,
           planned_repair_change_reason:input.plannedRepairChangeReason??null,
         }:commonInput;
-        const rawRows=await rpc(functionName,rpcInput);
+        const finishUpdateRpc=startMaintenanceSubmitDiagnosticStage(input.diagnostics,"rpc");
+        let rpcErrorCode:string|null=null;
+        let rawRows:unknown[];
+        try {
+          rawRows=await rpc(functionName,rpcInput,{onError:(error)=>{rpcErrorCode=error.code??null;}});
+          finishUpdateRpc("success");
+        } catch (error) {
+          finishUpdateRpc("failure",maintenanceSubmitSafeCategory(rpcErrorCode,"unknown"),rpcErrorCode);
+          throw error;
+        }
         // The DB intentionally retains legacy overloads during rollout; they return the pre-Phase-1 row shape.
         const rows = input.contract==="phase1"
           ? await normalizeMaintenanceIssueRows(rawRows,input.actorUserId,input.accessUserId)

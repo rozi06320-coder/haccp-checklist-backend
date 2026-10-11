@@ -764,13 +764,17 @@ function startMaintenancePurchaseDiagnosticStage(requestId:string,stage:Maintena
     logMaintenancePurchaseDiagnostic({requestId,stage,outcome,safeErrorCategory,safeCode,durationMs:Math.round((performance.now()-startedAt)*100)/100});
   };
 }
-type MaintenanceIssueDiagnosticEvent={requestId?:string|null;stage:"create_rpc"|"response_parse";outcome:MaintenancePurchaseDiagnosticOutcome;safeErrorCategory?:"rpc"|"response";safeCode?:string|null;undefinedObjectKind?:"function"|"operator"|null;undefinedIdentity?:string|null;durationMs?:number};
+type MaintenanceIssueDiagnosticEvent={requestId?:string|null;action:"create_issue"|"update_status";expectedRevision?:number;stage:"storage_upload"|"rpc"|"attachment_lookup"|"response_parse"|"storage_cleanup";outcome:MaintenancePurchaseDiagnosticOutcome;safeCategory?:"stale_revision"|"unique_conflict"|"validation_check"|"lifecycle_conflict"|"invalid_transition"|"authorization"|"storage_failure"|"rpc_failure"|"attachment_failure"|"response_schema"|"cleanup_failure"|"unknown";safeCode?:string|null;undefinedObjectKind?:"function"|"operator"|null;undefinedIdentity?:string|null;durationMs?:number};
 const MAINTENANCE_ISSUE_DIAGNOSTIC_PREFIX="MAINTENANCE_ISSUE_DIAGNOSTIC";
 function logMaintenanceIssueDiagnostic(event:MaintenanceIssueDiagnosticEvent){
   const safeCode=event.safeCode&&/^(?:PGRST\d{3}|[0-9A-Z]{5}|[1-5]\d{2})$/.test(event.safeCode)?event.safeCode:null;
   const undefinedObject=safeMaintenanceUndefinedObject(safeCode,event.undefinedObjectKind,event.undefinedIdentity);
-  const payload={timestamp:new Date().toISOString(),requestId:event.requestId??null,stage:event.stage,outcome:event.outcome,safeErrorCategory:event.safeErrorCategory??null,safeCode,undefinedObjectKind:undefinedObject?.undefinedObjectKind??null,undefinedIdentity:undefinedObject?.undefinedIdentity??null,durationMs:typeof event.durationMs==="number"&&Number.isFinite(event.durationMs)?event.durationMs:null};
-  try{console.info(`${MAINTENANCE_ISSUE_DIAGNOSTIC_PREFIX} ${JSON.stringify(payload)}`);}catch{/* Diagnostics must never affect a request. */}
+  const payload={timestamp:new Date().toISOString(),requestId:event.requestId??null,stage:event.stage==="rpc"?"create_rpc":event.stage,outcome:event.outcome,safeErrorCategory:event.safeCategory?(event.stage==="rpc"?"rpc":"response"):null,safeCode,undefinedObjectKind:undefinedObject?.undefinedObjectKind??null,undefinedIdentity:undefinedObject?.undefinedIdentity??null,durationMs:typeof event.durationMs==="number"&&Number.isFinite(event.durationMs)?event.durationMs:null};
+  const submitPayload={requestId:event.requestId??null,action:event.action,stage:event.stage,status:event.outcome,safeCategory:event.safeCategory??null,...(event.action==="update_status"&&typeof event.expectedRevision==="number"?{expectedRevision:event.expectedRevision}:{})};
+  try{
+    if(event.action==="create_issue"&&(event.stage==="rpc"||event.stage==="response_parse"))console.info(`${MAINTENANCE_ISSUE_DIAGNOSTIC_PREFIX} ${JSON.stringify(payload)}`);
+    console.info(`${event.outcome==="failure"?"MAINTENANCE_SUBMIT_FAILURE":"MAINTENANCE_SUBMIT_STAGE"} ${JSON.stringify(submitPayload)}`);
+  }catch{/* Diagnostics must never affect a request. */}
 }
 const dailyAuditItemApiSchema=z.object({item_id:z.string().min(1).max(80),answer:z.enum(["not_checked","compliant","non_compliant"]),remark:z.string().max(4000)}).strict();
 const dailyAuditBodySchema=z.object({business_date:dateOnlySchema,expected_revision:z.number().int().nonnegative().default(0),items:z.array(dailyAuditItemApiSchema).max(13)}).strict();
@@ -5850,8 +5854,9 @@ export function createApp(
               expectedRevision: updateRequest.data.expected_revision,
               plannedRepairDate: updateRequest.data.planned_repair_date,
               plannedRepairChangeReason: updateRequest.data.planned_repair_change_reason,
+              diagnostics:{requestId:request.id,action:"update_status",expectedRevision:updateRequest.data.expected_revision,log:logMaintenanceIssueDiagnostic},
             })
-          : await dependencies.operationalAdmin.updateMaintenanceIssue({ ...commonInput, contract: "legacy" });
+          : await dependencies.operationalAdmin.updateMaintenanceIssue({ ...commonInput, contract: "legacy", diagnostics:{requestId:request.id,action:"update_status",log:logMaintenanceIssueDiagnostic} });
         const result = updateRequest.contract === "phase1"
           ? maintenanceIssueMutationResponseSchema.parse(operationalResult)
           : maintenanceIssueLegacyMutationResponseSchema.parse(operationalResult);
@@ -6925,7 +6930,7 @@ export function createApp(
           payload: body.data,
           photos,
           contract,
-          diagnostics:{requestId:request.id,log:logMaintenanceIssueDiagnostic},
+          diagnostics:{requestId:request.id,action:"create_issue",log:logMaintenanceIssueDiagnostic},
         });
         const created = maintenanceIssueCreateResultWasCreated(serviceResult);
         const responsePayload=maintenanceIssueCreateResponsePayload(serviceResult);
