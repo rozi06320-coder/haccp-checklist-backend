@@ -332,22 +332,41 @@ describe("Purchase Request API", () => {
     assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "processing" }) })).status, 200);
     const purchased = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased", items: [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", invoice_number: "INV-1", purchased_quantity: 3, purchased_unit: "box", before_tax_amount: "30.00", tax_amount: "4.50", total_amount: "34.50", purchasing_notes: "Delivered" }] }) });
     assert.equal(purchased.status, 200);
-    assert.deepEqual((calls.at(-1)?.input as { purchaseDetails?: unknown }).purchaseDetails, [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", invoice_number: "INV-1", purchased_quantity: 3, purchased_unit: "box", actual_unit_cost: null, actual_total_cost: null, before_tax_amount: "30.00", tax_amount: "4.50", total_amount: "34.50", purchasing_notes: "Delivered" }]);
+    assert.deepEqual((calls.at(-1)?.input as { purchaseDetails?: unknown }).purchaseDetails, [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", invoice_number: "INV-1", purchased_quantity: 3, purchased_unit: "box", before_tax_amount: "30.00", tax_amount: "4.50", total_amount: "34.50", purchasing_notes: "Delivered" }]);
     const qtyOnly = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased", items: [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", purchased_quantity: 2, actual_unit_cost: null, before_tax_amount: "190.00", tax_amount: "9.00", total_amount: "199.00" }] }) });
     assert.equal(qtyOnly.status, 400);
     const unitOnly = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased", items: [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", purchased_unit: "kg", before_tax_amount: "190.00", tax_amount: "9.00", total_amount: "199.00" }] }) });
     assert.equal(unitOnly.status, 400);
     const blankQuantity = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased", items: [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", before_tax_amount: "190.00", tax_amount: "9.00", total_amount: "199.00" }] }) });
     assert.equal(blankQuantity.status, 200);
-    assert.deepEqual((calls.at(-1)?.input as { purchaseDetails?: unknown }).purchaseDetails, [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", invoice_number: null, purchased_quantity: null, purchased_unit: null, actual_unit_cost: null, actual_total_cost: null, before_tax_amount: "190.00", tax_amount: "9.00", total_amount: "199.00", purchasing_notes: null }]);
+    assert.deepEqual((calls.at(-1)?.input as { purchaseDetails?: unknown }).purchaseDetails, [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", invoice_number: null, purchased_quantity: null, purchased_unit: null, before_tax_amount: "190.00", tax_amount: "9.00", total_amount: "199.00", purchasing_notes: null }]);
     assert.equal((await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "received" }) })).status, 400);
     assert.equal(calls.some((call) => call.name === "create-purchase-log"), false);
   });
 
-  it("requires purchase details before Purchasing marks a request purchased", async () => {
+  it("allows Purchasing to mark a request purchased without financial details", async () => {
     const response = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "purchased" }) });
-    assert.equal(response.status, 400);
-    assert.equal(calls.some((call) => call.name === "status-purchasing"), false);
+    assert.equal(response.status, 200);
+    const call = calls.at(-1);
+    assert.equal(call?.name, "status-purchasing");
+    assert.equal((call?.input as { purchaseDetails?: unknown }).purchaseDetails, null);
+  });
+
+  it("accepts optional non-financial item details without synthesizing monetary fields", async () => {
+    const response = await request(`/api/v1/purchasing/organizations/${organization}/purchase-requests/${requestId}/status`, "purchasing", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "purchased", items: [{ item_id: purchaseRequest.items[0].id, vendor_name: "Office Vendor", purchasing_notes: "Handled" }] }),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual((calls.at(-1)?.input as { purchaseDetails?: unknown }).purchaseDetails, [{
+      item_id: purchaseRequest.items[0].id,
+      vendor_name: "Office Vendor",
+      invoice_number: null,
+      purchased_quantity: null,
+      purchased_unit: null,
+      purchasing_notes: "Handled",
+    }]);
   });
 
   it("lets active Purchasing save financial item details and attachment without changing status", async () => {
@@ -361,7 +380,7 @@ describe("Purchase Request API", () => {
     assert.equal(call?.name, "save-purchasing-details");
     const details = (call?.input as { purchaseDetails: Array<{ attachments?: Array<{ bytes: Buffer; mimeType: string; originalName: string }> }> }).purchaseDetails;
     assert.equal(details[0]?.attachments?.[0]?.mimeType, "application/pdf");
-    assert.deepEqual({ ...details[0], attachments: undefined }, { item_id: purchaseRequest.items[0].id, vendor_name: "Food Vendor", invoice_number: "INV-9", purchased_quantity: 3, purchased_unit: "meter", actual_unit_cost: null, actual_total_cost: null, before_tax_amount: "30.00", tax_amount: "4.50", total_amount: "34.50", purchasing_notes: "Saved", attachments: undefined });
+    assert.deepEqual({ ...details[0], attachments: undefined }, { item_id: purchaseRequest.items[0].id, vendor_name: "Food Vendor", invoice_number: "INV-9", purchased_quantity: 3, purchased_unit: "meter", before_tax_amount: "30.00", tax_amount: "4.50", total_amount: "34.50", purchasing_notes: "Saved", attachments: undefined });
     assert.equal(calls.some((entry) => entry.name === "create-purchase-log"), false);
   });
 

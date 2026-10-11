@@ -1248,6 +1248,39 @@ describe("Purchase Request attachment lifecycle",()=>{
     assert.throws(()=>inspectMaintenancePurchaseReceipt(Buffer.alloc(MAX_PURCHASE_INVOICE_BYTES+1,1),"application/pdf"));
   });
 
+  it("sends status-only Finished and omits unsupplied financial fields from detail saves",async()=>{
+    const observed:Array<Record<string,unknown>>=[];
+    const rpc=createServer(async(request,response)=>{
+      const body=await readJsonBody(request);
+      response.setHeader("content-type","application/json");
+      if(request.method==="POST"&&request.url==="/rest/v1/rpc/set_purchasing_purchase_request_status"){
+        observed.push(body);
+        response.end(JSON.stringify(requestJson([])));
+        return;
+      }
+      if(request.method==="POST"&&request.url==="/rest/v1/rpc/save_purchasing_purchase_request_details"){
+        observed.push(body);
+        const detail=(body.purchase_details as Array<Record<string,unknown>>)[0]??{};
+        for(const key of ["actual_unit_cost","actual_total_cost","before_tax_amount","tax_amount","total_amount"]){
+          assert.equal(key in detail,false);
+        }
+        response.end(JSON.stringify(requestJson([])));
+        return;
+      }
+      response.statusCode=404;
+      response.end(JSON.stringify({message:"unexpected"}));
+    });
+    await new Promise<void>((resolve)=>rpc.listen(0,"127.0.0.1",resolve));
+    try{
+      const admin=createOperationalAdmin(`http://127.0.0.1:${(rpc.address()as AddressInfo).port}`,"service-key");
+      await admin.setPurchasingPurchaseRequestStatus?.({actorUserId:id.staffAccount,organizationId:id.organization,requestId,status:"purchased"});
+      await admin.savePurchasingPurchaseRequestDetails?.({actorUserId:id.staffAccount,organizationId:id.organization,requestId,purchaseDetails:[{item_id:itemId,vendor_name:"Vendor",purchasing_notes:"Handled"}]});
+      assert.equal(observed[0]?.purchase_details,null);
+    }finally{
+      await new Promise<void>((resolve,reject)=>rpc.close((error)=>error?reject(error):resolve()));
+    }
+  });
+
   it("uploads product photos through the dedicated bucket and returns only signed metadata",async()=>{
     const calls:Array<{method:string;url:string;body:Record<string,unknown>}>=[],removed:Array<Record<string,unknown>>=[];
     const oldPath=`${id.organization}/${id.branch}/purchase-requests/${requestId}/items/${itemId}/old.jpg`;

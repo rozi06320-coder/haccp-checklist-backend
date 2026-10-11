@@ -1288,13 +1288,15 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
           invoice_number:detail.invoice_number??null,
           purchased_quantity:detail.purchased_quantity??null,
           purchased_unit:detail.purchased_unit??null,
-          actual_unit_cost:null,
-          actual_total_cost:detail.total_amount??detail.actual_total_cost??null,
-          before_tax_amount:detail.before_tax_amount??null,
-          tax_amount:detail.tax_amount??null,
-          total_amount:detail.total_amount??detail.actual_total_cost??null,
           purchasing_notes:detail.purchasing_notes??null,
         };
+        const suppliedTotal=detail.total_amount??detail.actual_total_cost;
+        if(suppliedTotal!=null){
+          preparedDetail.actual_total_cost=suppliedTotal;
+          preparedDetail.total_amount=suppliedTotal;
+        }
+        if(detail.before_tax_amount!=null)preparedDetail.before_tax_amount=detail.before_tax_amount;
+        if(detail.tax_amount!=null)preparedDetail.tax_amount=detail.tax_amount;
         if(detail.attachments)preparedDetail.attachments=attachments;
         else if(detail.attachments!==undefined)preparedDetail.attachments=[];
         prepared.push(preparedDetail);

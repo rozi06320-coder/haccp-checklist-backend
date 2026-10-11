@@ -378,11 +378,11 @@ const purchaseRequestDetailItemBodySchema = z.object({
     invoice_number: optionalStaffTextSchema(120),
     purchased_quantity: z.union([z.number(), z.string()]).transform(Number).pipe(z.number().positive()).optional().nullable().transform((value) => value ?? null),
     purchased_unit: optionalStaffTextSchema(40),
-    actual_unit_cost: moneyAmountSchema.optional().nullable().transform((value) => value ?? null),
-    actual_total_cost: moneyAmountSchema.optional().nullable().transform((value) => value ?? null),
-    before_tax_amount: moneyAmountSchema.optional().nullable().transform((value) => value ?? null),
-    tax_amount: moneyAmountSchema.optional().nullable().transform((value) => value ?? null),
-    total_amount: moneyAmountSchema.optional().nullable().transform((value) => value ?? null),
+    actual_unit_cost: moneyAmountSchema.optional().nullable(),
+    actual_total_cost: moneyAmountSchema.optional().nullable(),
+    before_tax_amount: moneyAmountSchema.optional().nullable(),
+    tax_amount: moneyAmountSchema.optional().nullable(),
+    total_amount: moneyAmountSchema.optional().nullable(),
     purchasing_notes: optionalStaffTextSchema(1000),
     attachments: z.array(purchaseRequestAttachmentUploadSchema).max(3).optional(),
 }).strict().superRefine((value, context) => {
@@ -393,11 +393,7 @@ const purchaseRequestDetailItemBodySchema = z.object({
 const purchaseRequestStatusBodySchema = z.object({
   status: z.enum(["processing", "purchased"]),
   items: z.array(purchaseRequestDetailItemBodySchema).max(50).optional(),
-}).strict().superRefine((value, context) => {
-  if (value.status === "purchased" && (!value.items || value.items.length === 0)) {
-    context.addIssue({ code: "custom", path: ["items"], message: "Purchase details are required." });
-  }
-});
+}).strict();
 const purchaseRequestDetailSaveBodySchema = z.object({
   items: z.array(purchaseRequestDetailItemBodySchema).min(1).max(50),
 }).strict();

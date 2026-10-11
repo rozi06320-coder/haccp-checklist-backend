@@ -1,5 +1,5 @@
 begin;
-select plan(28);
+select plan(33);
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated', email, '{}', '{}', now(), now()
@@ -77,7 +77,21 @@ select is((select purchased_unit from public.purchase_request_items where id='95
 select throws_ok($$select public.set_purchasing_purchase_request_status(
  '91000000-0000-4000-8000-000000000002','92000000-0000-4000-8000-000000000001','94000000-0000-4000-8000-000000000002','purchased',
  jsonb_build_array(jsonb_build_object('item_id','95000000-0000-4000-8000-000000000003','vendor_name','Missing Vendor','before_tax_amount','10.00','tax_amount','0.00'))
-)$$,'22023','invalid purchase detail total','submit purchase requires total details');
+)$$,'22023','invalid purchase detail tax breakdown','incomplete optional tax details remain invalid');
+select lives_ok($$select public.set_purchasing_purchase_request_status(
+ '91000000-0000-4000-8000-000000000002','92000000-0000-4000-8000-000000000001','94000000-0000-4000-8000-000000000002','purchased'
+)$$,'status-only Finished succeeds after an invalid optional-detail attempt');
+select is((select status from public.purchase_requests where id='94000000-0000-4000-8000-000000000002'),'purchased','status-only request becomes purchased');
+select is((select count(*)::int from public.branch_purchase_logs where source_purchase_request_id='94000000-0000-4000-8000-000000000002'),0,'status-only Finished creates no Purchase Log');
+
+select lives_ok($$select public.save_purchasing_purchase_request_details(
+ '91000000-0000-4000-8000-000000000002','92000000-0000-4000-8000-000000000001','94000000-0000-4000-8000-000000000001',
+ jsonb_build_array(
+  jsonb_build_object('item_id','95000000-0000-4000-8000-000000000001','vendor_name','First Vendor','invoice_number','INV-FIRST','purchased_quantity','2','purchased_unit','box','purchasing_notes','first note'),
+  jsonb_build_object('item_id','95000000-0000-4000-8000-000000000002','vendor_name','Second Vendor','invoice_number','INV-SECOND','purchased_quantity','1','purchased_unit','pcs','purchasing_notes','second note')
+ )
+)$$,'non-financial detail save succeeds without echoing hidden monetary fields');
+select is((select sum(total_amount) from public.purchase_request_items where purchase_request_id='94000000-0000-4000-8000-000000000001'),138.00::numeric,'omitted monetary fields preserve existing historical totals');
 
 select lives_ok($$select public.set_purchasing_purchase_request_status(
  '91000000-0000-4000-8000-000000000002','92000000-0000-4000-8000-000000000001','94000000-0000-4000-8000-000000000001','purchased'

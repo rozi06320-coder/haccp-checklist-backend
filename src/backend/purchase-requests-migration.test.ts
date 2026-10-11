@@ -10,6 +10,7 @@ const linkMigrationPath = path.join(process.cwd(), "supabase/migrations/20260924
 const productPhotosMigrationPath = path.join(process.cwd(), "supabase/migrations/20260927130000_purchase_request_product_photos.sql");
 const productPhotoLifecycleMigrationPath = path.join(process.cwd(), "supabase/migrations/20261006140000_purchase_request_product_photo_lifecycle.sql");
 const productPhotoAuthorizationAliasesMigrationPath = path.join(process.cwd(), "supabase/migrations/20261006160000_purchase_request_product_photo_authorization_aliases.sql");
+const statusOnlyFinishedMigrationPath = path.join(process.cwd(), "supabase/migrations/20261011180000_purchasing_status_only_finished.sql");
 
 describe("Purchase Request migration contract", () => {
   it("creates a separate request and item domain with no Purchase Log or expense coupling", async () => {
@@ -98,6 +99,21 @@ describe("Purchase Request migration contract", () => {
     assert.match(sql, /'unpaid'/i);
     assert.match(sql, /source_type='central_purchasing'/i);
     assert.match(sql, /existing\.source_type='central_purchasing'[\s\S]*central purchasing purchase logs are source managed/i);
+  });
+
+  it("allows status-only Finished while linking only complete positive-cost items", async () => {
+    const sql = await readFile(statusOnlyFinishedMigrationPath, "utf8");
+    assert.match(sql, /create or replace function public\.set_purchasing_purchase_request_status\([\s\S]*purchase_details jsonb/i);
+    assert.match(sql, /if purchase_details is not null then[\s\S]*apply_purchasing_purchase_request_details\(v_request, purchase_details, false\)/i);
+    assert.match(sql, /v_item\.vendor_name is null[\s\S]*coalesce\(v_item\.total_amount, v_item\.actual_total_cost\) <= 0[\s\S]*continue/i);
+    assert.doesNotMatch(sql, /purchase details incomplete/i);
+    assert.match(sql, /actual_total_cost = case when v_actual_total_cost is null then item\.actual_total_cost/i);
+    assert.match(sql, /before_tax_amount = case when v_before_tax_amount is null then item\.before_tax_amount/i);
+    assert.match(sql, /tax_amount = case when v_tax_amount is null then item\.tax_amount/i);
+    assert.match(sql, /total_amount = case when v_total_amount is null then item\.total_amount/i);
+    assert.match(sql, /security definer[\s\S]*set search_path = ''/i);
+    assert.match(sql, /grant execute on function public\.set_purchasing_purchase_request_status\(uuid, uuid, uuid, text, jsonb\) to service_role/i);
+    assert.doesNotMatch(sql, /grant execute[\s\S]*to authenticated/i);
   });
 
   it("adds optional item product photos separately from buyer receipt attachments", async () => {
