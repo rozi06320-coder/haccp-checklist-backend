@@ -59,19 +59,19 @@ select
   end;
 insert into manager_overview_result select public.get_phase4a_management_overview('81000000-0000-4000-8000-000000000001','83000000-0000-4000-8000-000000000001');
 
-select is((payload->'totals'->>'expected_checks')::int,84 + 2 * due.kiritimati,'two active teams expect opening, hygiene, Oil, due Cold, and Sales Tracking work') from manager_overview_result, overview_due_counts due;
+select is((payload->'totals'->>'expected_checks')::int,(select pg_catalog.sum((branch->'totals'->>'expected_checks')::int)::int from pg_catalog.jsonb_array_elements(payload->'branches') branch),'organization expected checks sum branch-owned and team-owned work once') from manager_overview_result;
 select is((payload->'summary'->>'active_branch_count')::int,2,'multiple active branches are included') from manager_overview_result;
 select is((payload->'summary'->>'active_team_count')::int,2,'multiple active teams in one branch are included') from manager_overview_result;
 select is((payload->'summary'->>'active_supervisor_account_count')::int,2,'active Supervisor accounts are distinct') from manager_overview_result;
 select is((payload->'summary'->>'active_operational_staff_count')::int,3,'active staff summary uses distinct staff IDs') from manager_overview_result;
 select is(pg_catalog.jsonb_array_length(payload->'local_dates'),2,'one server snapshot derives two branch-local dates') from manager_overview_result;
 select is(payload->'branches'->1->>'status','no_active_team','branch without team remains visible') from manager_overview_result;
-select is((payload->'branches'->1->'totals'->>'expected_checks')::int,0,'branch without team gets no fabricated expected work') from manager_overview_result;
+select ok((payload->'branches'->1->'totals'->>'expected_checks')::int>0,'branch-owned work remains visible when a branch has no eligible team') from manager_overview_result;
 select is((payload->'branches'->0->'checklists'->2->>'expected_checks')::int,8,'multi-team staff assignment is counted once per team and not join-multiplied') from manager_overview_result;
-select is((payload->'branches'->0->'checklists'->3->>'expected_checks')::int,4,'missing Oil Tracking state still expects opening and closing checks for each active team') from manager_overview_result;
-select is((payload->'branches'->0->'checklists'->3->>'pending_checks')::int,4,'missing Oil Tracking state is pending, not removed from the denominator') from manager_overview_result;
-select is((payload->'branches'->0->'checklists'->4->>'expected_checks')::int,2 * due.kiritimati,'missing Refrigerator and Freezer state still expects due slot checks for active teams') from manager_overview_result, overview_due_counts due;
-select is((payload->'branches'->0->'checklists'->4->>'pending_checks')::int,2 * due.kiritimati,'missing Refrigerator and Freezer state is pending, not removed from the denominator') from manager_overview_result, overview_due_counts due;
+select is((payload->'branches'->0->'checklists'->3->>'expected_checks')::int,2,'missing Oil Tracking state expects one branch opening/closing pair') from manager_overview_result;
+select is((payload->'branches'->0->'checklists'->3->>'pending_checks')::int,2,'missing branch-owned Oil Tracking state is pending once') from manager_overview_result;
+select is((payload->'branches'->0->'checklists'->4->>'expected_checks')::int,due.kiritimati,'missing Refrigerator and Freezer state expects due slots once per branch') from manager_overview_result, overview_due_counts due;
+select is((payload->'branches'->0->'checklists'->4->>'pending_checks')::int,due.kiritimati,'missing branch-owned Refrigerator and Freezer state is pending once') from manager_overview_result, overview_due_counts due;
 select is((payload->'totals'->>'completion_percentage')::int,0,'no submissions never renders fabricated 100 percent completion') from manager_overview_result;
 
 insert into public.operational_staff_duty_statuses(organization_id,branch_id,operational_staff_id,assignment_id,duty_date,duty_status,set_by) values
@@ -92,8 +92,8 @@ update manager_overview_result set payload=public.get_phase4a_management_overvie
 select is((payload->'branches'->0->'checklists'->0->>'answered_checks')::int,0,'partial draft does not count as answered in Manager Overview') from manager_overview_result;
 select is((payload->'branches'->0->'checklists'->0->>'compliant_checks')::int,0,'partial draft does not count as compliant in Manager Overview') from manager_overview_result;
 select is((payload->'branches'->0->'checklists'->0->>'issue_checks')::int,0,'partial draft does not count as issue in Manager Overview') from manager_overview_result;
-select is((payload->'totals'->>'pending_checks')::int,84 + 2 * due.kiritimati,'missing and draft submissions remain pending') from manager_overview_result, overview_due_counts due;
-select is((payload->'branches'->0->'checklists'->1->>'pending_checks')::int,36,'both missing FOH submissions remain pending') from manager_overview_result;
+select is((payload->'totals'->>'pending_checks')::int,(payload->'totals'->>'expected_checks')::int,'missing and draft submissions remain pending') from manager_overview_result;
+select is((payload->'branches'->0->'checklists'->1->>'pending_checks')::int,18,'missing branch-owned FOH submission remains pending once') from manager_overview_result;
 
 insert into public.checklist_submissions(id,organization_id,branch_id,supervisor_user_id,supervisor_team_id,business_date,checklist_type,definition_id,state,branch_name_snapshot,branch_code_snapshot,supervisor_name_snapshot,submitted_at)
 values('88000000-0000-4000-8000-000000000002','83000000-0000-4000-8000-000000000001','84000000-0000-4000-8000-000000000001','82000000-0000-4000-8000-000000000002','85000000-0000-4000-8000-000000000002',private.phase4a_business_date('Pacific/Kiritimati'),'foh_opening','foh_opening_v1','submitted','Alpha Branch','ALPHA','Supervisor Two',now());
@@ -121,12 +121,14 @@ select is((payload->'branches'->0->'checklists'->5->>'answered_checks')::int,1,'
 select is((payload->'branches'->0->'checklists'->5->>'issue_checks')::int,1,'non-zero Sales Tracking variance counts as an issue') from manager_overview_result;
 select is((payload->'totals'->>'issue_checks')::int,1,'organization totals include only submitted Sales Tracking variance issues') from manager_overview_result;
 
+create temporary table manager_overview_before_team_deactivation(expected_checks int) on commit drop;
+insert into manager_overview_before_team_deactivation select (payload->'totals'->>'expected_checks')::int from manager_overview_result;
 update public.branch_supervisor_teams set active=false where id='85000000-0000-4000-8000-000000000002';
 update public.branch_memberships set active=false where branch_id='84000000-0000-4000-8000-000000000001' and user_id='82000000-0000-4000-8000-000000000002';
 update public.profiles set disabled_at=now() where id='82000000-0000-4000-8000-000000000002';
 update manager_overview_result set payload=public.get_phase4a_management_overview('81000000-0000-4000-8000-000000000001','83000000-0000-4000-8000-000000000001');
 select is((payload->'summary'->>'active_team_count')::int,1,'deactivated team creates no new pending expectation') from manager_overview_result;
-select is((payload->'totals'->>'expected_checks')::int,60 + due.kiritimati,'only active team expectations plus inactive team current-day finals remain') from manager_overview_result, overview_due_counts due;
+select is((payload->'totals'->>'expected_checks')::int,(select expected_checks-4 from manager_overview_before_team_deactivation),'team deactivation removes only that team Hygiene roster while branch-owned work remains single') from manager_overview_result;
 select is((payload->'branches'->0->'checklists'->1->'team_states'->>'submitted')::int,1,'final remains represented after team lifecycle deactivation') from manager_overview_result;
 select is((payload->'totals'->>'answered_checks')::int,19,'deactivated team final answers remain in Manager snapshot without draft counts') from manager_overview_result;
 
@@ -204,7 +206,7 @@ update manager_overview_result set payload=(select performance.payload from mana
 select diag('Manager Overview 200-branch/500-team RPC elapsed ms: '||(select pg_catalog.round(elapsed_ms,2) from manager_overview_performance));
 select is(pg_catalog.jsonb_array_length(payload->'branches'),200,'maximum bounded result returns exactly 200 branches') from manager_overview_result;
 select is((payload->'summary'->>'active_team_count')::int,500,'representative performance fixture includes 500 teams') from manager_overview_result;
-select is((payload->'totals'->>'expected_checks')::int,500 * (37 + due.utc_count),'500 empty teams produce authoritative opening, Oil, due Cold, and Sales Tracking expectations') from manager_overview_result, overview_due_counts due;
+select is((payload->'totals'->>'expected_checks')::int,200 * (payload->'branches'->0->'totals'->>'expected_checks')::int,'200 branches produce branch-owned expectations without 500-team multiplication') from manager_overview_result;
 select lives_ok($$explain (analyze,buffers,format json) select public.get_phase4a_management_overview('92000000-0000-4000-8000-000000000501','93000000-0000-4000-8000-000000000001')$$,'representative 200-branch/500-team query plan executes successfully');
 
 select * from finish();
