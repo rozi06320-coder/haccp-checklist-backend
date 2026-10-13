@@ -413,4 +413,24 @@ describe("Branch Training Access API", () => {
     assert.match(migration, /grant execute on function public\.validate_training_branch_employee\(uuid, uuid, uuid\) to service_role/);
     assert.doesNotMatch(migration, /iqama|phone|email|country_code|company_name|supervisor/i);
   });
+
+  it("uses branch-local assignment validity for listing, selection, and employee-bound sessions", () => {
+    const migration = readFileSync("supabase/migrations/20261013120000_training_assignment_validity_access.sql", "utf8");
+    const app = readFileSync("src/backend/app.ts", "utf8");
+
+    assert.match(migration, /create or replace function public\.list_training_branch_employees/);
+    assert.match(migration, /private\.phase4a_business_date\(branch\.timezone\)/);
+    assert.match(migration, /assignment\.valid_from\s*<=\s*private\.phase4a_business_date\(branch\.timezone\)/);
+    assert.match(migration, /assignment\.valid_to is null\s*or assignment\.valid_to\s*>=\s*private\.phase4a_business_date\(branch\.timezone\)/);
+    assert.match(migration, /exists\s*\(\s*select 1[\s\S]*assignment\.active/i);
+    assert.match(migration, /join public\.branch_operational_teams operational_team[\s\S]*operational_team\.active/i);
+    assert.doesNotMatch(migration, /branch_supervisor_teams/);
+    assert.match(migration, /security definer/);
+    assert.match(migration, /set search_path = ''/);
+    assert.match(migration, /revoke all on function public\.list_training_branch_employees\(uuid, uuid\) from public, anon, authenticated/);
+    assert.match(migration, /grant execute on function public\.list_training_branch_employees\(uuid, uuid\) to service_role/);
+
+    assert.match(app, /const employee = parsed\.employeeId[\s\S]*trainingAdmin\.validateEmployee/);
+    assert.match(app, /employee_invalidated: Boolean\(parsed\.employeeId && !employee\)/);
+  });
 });
