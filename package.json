@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "generate:training-draft": "node --import tsx scripts/generate-baladiyah-draft-seed.ts",
     "dev:api": "node --env-file-if-exists=.env.backend.local --watch --import tsx src/backend/server.ts",
     "build:api": "tsc -p tsconfig.api.json",
     "start:api": "node --env-file-if-exists=.env.backend.local dist-api/server.js",
