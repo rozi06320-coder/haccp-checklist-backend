@@ -149,16 +149,58 @@ declare
             "approval_status": "needed"
           },
           {
-            "asset_key": "personal-hygiene-handwashing-stages",
-            "purpose": "Show the four source-supported handwashing stages.",
+            "asset_key": "personal-hygiene-handwashing-wet",
+            "purpose": "Show hands being wetted with warm running water at 38°C-43°C.",
             "lesson_key": "practical-photo-guide",
-            "placement": "procedure-steps",
+            "placement": "procedure-step",
             "alt_i18n": {
-              "en": "Hands being wetted, soaped, scrubbed, and dried in the required sequence.",
-              "ar": "يدان يتم تبليلهما ووضع الصابون وفركهما وتجفيفهما بالتسلسل المطلوب.",
-              "id": "Tangan dibasahi, diberi sabun, digosok, dan dikeringkan sesuai urutan.",
-              "hi": "आवश्यक क्रम में हाथ गीले करते, साबुन लगाते, रगड़ते और सुखाते हुए।",
-              "fil": "Mga kamay na binabasa, sinasabon, kinukuskos, at pinatutuyo sa tamang pagkakasunod-sunod."
+              "en": "Hands being wetted under warm running water.",
+              "ar": "يدان تُبللان تحت ماء جارٍ دافئ.",
+              "id": "Tangan dibasahi di bawah air mengalir hangat.",
+              "hi": "गर्म बहते पानी के नीचे हाथ गीले किए जा रहे हैं।",
+              "fil": "Mga kamay na binabasa sa maligamgam na dumadaloy na tubig."
+            },
+            "approval_status": "needed"
+          },
+          {
+            "asset_key": "personal-hygiene-handwashing-soap",
+            "purpose": "Show antibacterial liquid soap being applied to wet hands.",
+            "lesson_key": "practical-photo-guide",
+            "placement": "procedure-step",
+            "alt_i18n": {
+              "en": "Antibacterial liquid soap being applied to wet hands.",
+              "ar": "صابون سائل مضاد للبكتيريا يوضع على يدين مبللتين.",
+              "id": "Sabun cair antibakteri digunakan pada tangan yang basah.",
+              "hi": "गीले हाथों पर एंटीबैक्टीरियल लिक्विड साबुन लगाया जा रहा है।",
+              "fil": "Antibacterial liquid soap na inilalagay sa basang mga kamay."
+            },
+            "approval_status": "needed"
+          },
+          {
+            "asset_key": "personal-hygiene-handwashing-scrub",
+            "purpose": "Show the listed hand areas being scrubbed for at least 20 seconds.",
+            "lesson_key": "practical-photo-guide",
+            "placement": "procedure-step",
+            "alt_i18n": {
+              "en": "Hands being scrubbed across the required areas.",
+              "ar": "يدان يتم فرك المناطق المطلوبة فيهما.",
+              "id": "Tangan digosok pada bagian-bagian yang diwajibkan.",
+              "hi": "हाथों के आवश्यक क्षेत्रों को रगड़ा जा रहा है।",
+              "fil": "Mga kamay na kinukuskos sa mga kinakailangang bahagi."
+            },
+            "approval_status": "needed"
+          },
+          {
+            "asset_key": "personal-hygiene-handwashing-dry",
+            "purpose": "Show hands being dried and the tap closed with the towel when applicable.",
+            "lesson_key": "practical-photo-guide",
+            "placement": "procedure-step",
+            "alt_i18n": {
+              "en": "Hands being dried with a single-use paper towel beside the tap.",
+              "ar": "يدان تُجففان بمنشفة ورقية أحادية الاستخدام بجانب الصنبور.",
+              "id": "Tangan dikeringkan dengan tisu sekali pakai di samping keran.",
+              "hi": "नल के पास एक बार उपयोग होने वाले पेपर टॉवल से हाथ सुखाए जा रहे हैं।",
+              "fil": "Mga kamay na pinatutuyo gamit ang single-use paper towel sa tabi ng gripo."
             },
             "approval_status": "needed"
           },
@@ -348,28 +390,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "Wet hands with warm running water at 38°C-43°C.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-wet",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-soap",
                   "presentation": "step",
                   "position": 2,
                   "text": "Use antibacterial liquid soap, not bar soap.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-soap",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-scrub",
                   "presentation": "step",
                   "position": 3,
                   "text": "Scrub palms, backs of hands, between fingers, under nails, thumbs, and wrists for at least 20 seconds.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-scrub",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-dry",
                   "presentation": "step",
                   "position": 4,
                   "text": "Dry with a single-use paper towel or air dryer, then use the towel to turn off the tap.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-dry",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-04.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-triggers",
@@ -397,28 +455,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "بلّل اليدين بماء جارٍ دافئ بدرجة 38°C-43°C.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-wet",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-soap",
                   "presentation": "step",
                   "position": 2,
                   "text": "استخدم صابوناً سائلاً مضاداً للبكتيريا، وليس صابوناً صلباً.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-soap",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-scrub",
                   "presentation": "step",
                   "position": 3,
                   "text": "افرك راحتي اليدين وظهرهما وبين الأصابع وتحت الأظافر والإبهامين والمعصمين لمدة لا تقل عن 20 ثانية.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-scrub",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-dry",
                   "presentation": "step",
                   "position": 4,
                   "text": "جفّف بمنشفة ورقية أحادية الاستخدام أو بمجفف الهواء، ثم استخدم المنشفة لإغلاق الصنبور.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-dry",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-04.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-triggers",
@@ -446,28 +520,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "Basahi tangan dengan air mengalir hangat pada 38°C-43°C.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-wet",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-soap",
                   "presentation": "step",
                   "position": 2,
                   "text": "Gunakan sabun cair antibakteri, bukan sabun batang.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-soap",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-scrub",
                   "presentation": "step",
                   "position": 3,
                   "text": "Gosok telapak, punggung tangan, sela jari, bawah kuku, ibu jari, dan pergelangan setidaknya 20 detik.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-scrub",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-dry",
                   "presentation": "step",
                   "position": 4,
                   "text": "Keringkan dengan tisu sekali pakai atau pengering udara, lalu gunakan tisu untuk menutup keran.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-dry",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-04.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-triggers",
@@ -495,28 +585,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "हाथों को 38°C-43°C के गर्म बहते पानी से गीला करें।",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-wet",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-soap",
                   "presentation": "step",
                   "position": 2,
                   "text": "एंटीबैक्टीरियल लिक्विड साबुन उपयोग करें, बार साबुन नहीं।",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-soap",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-scrub",
                   "presentation": "step",
                   "position": 3,
                   "text": "हथेलियाँ, हाथों का पिछला भाग, उँगलियों के बीच, नाखूनों के नीचे, अंगूठे और कलाइयाँ कम से कम 20 सेकंड तक रगड़ें।",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-scrub",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-dry",
                   "presentation": "step",
                   "position": 4,
                   "text": "एक बार उपयोग होने वाले पेपर टॉवल या एयर ड्रायर से सुखाएँ, फिर नल बंद करने के लिए टॉवल का उपयोग करें।",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-dry",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-04.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-triggers",
@@ -544,28 +650,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "Basain ang mga kamay sa maligamgam na dumadaloy na tubig na 38°C-43°C.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-wet",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-soap",
                   "presentation": "step",
                   "position": 2,
                   "text": "Gumamit ng antibacterial liquid soap, hindi bar soap.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-soap",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-scrub",
                   "presentation": "step",
                   "position": 3,
                   "text": "Kuskusin ang palad, likod ng kamay, pagitan ng mga daliri, ilalim ng kuko, hinlalaki, at pulsuhan nang hindi bababa sa 20 segundo.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-scrub",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-dry",
                   "presentation": "step",
                   "position": 4,
                   "text": "Patuyuin gamit ang single-use paper towel o air dryer, saka gamitin ang towel sa pagsara ng gripo.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "personal-hygiene-handwashing-dry",
+                    "src": "/training/baladiyah/personal-hygiene-health/step-04.webp"
+                  }
                 },
                 {
                   "fact_key": "handwash-triggers",
@@ -602,7 +724,10 @@ declare
             ],
             "photo_requirement_keys": [
               "personal-hygiene-clean-uniform-ppe",
-              "personal-hygiene-handwashing-stages",
+              "personal-hygiene-handwashing-wet",
+              "personal-hygiene-handwashing-soap",
+              "personal-hygiene-handwashing-scrub",
+              "personal-hygiene-handwashing-dry",
               "personal-hygiene-protected-cut"
             ]
           }
@@ -1120,16 +1245,58 @@ declare
             "approval_status": "needed"
           },
           {
-            "asset_key": "cleaning-four-stage-sequence",
-            "purpose": "Show wash, rinse, sanitize, and air-dry stages.",
+            "asset_key": "cleaning-sanitation-wash",
+            "purpose": "Show equipment being washed in clean detergent water at 43°C-49°C.",
             "lesson_key": "practical-photo-guide",
-            "placement": "procedure-steps",
+            "placement": "procedure-step",
             "alt_i18n": {
-              "en": "Equipment moving through wash, rinse, sanitize, and air-dry stages.",
-              "ar": "معدات تمر بمراحل الغسل والشطف والتعقيم والتجفيف الهوائي.",
-              "id": "Peralatan melalui tahap cuci, bilas, sanitasi, dan kering udara.",
-              "hi": "उपकरण धोने, कुल्ला, सैनिटाइज़ और हवा में सुखाने के चरणों से गुजरता हुआ।",
-              "fil": "Kagamitan na dumaraan sa wash, rinse, sanitize, at air-dry na mga yugto."
+              "en": "Equipment being washed in clean water with detergent.",
+              "ar": "معدات تُغسل في ماء نظيف مع منظف.",
+              "id": "Peralatan dicuci dalam air bersih dengan deterjen.",
+              "hi": "उपकरण साफ पानी और डिटर्जेंट से धोया जा रहा है।",
+              "fil": "Kagamitan na hinuhugasan sa malinis na tubig na may detergent."
+            },
+            "approval_status": "needed"
+          },
+          {
+            "asset_key": "cleaning-sanitation-rinse",
+            "purpose": "Show soap residue being rinsed away with warm, clean running water.",
+            "lesson_key": "practical-photo-guide",
+            "placement": "procedure-step",
+            "alt_i18n": {
+              "en": "Equipment being rinsed under warm, clean running water.",
+              "ar": "معدات تُشطف تحت ماء جارٍ دافئ ونظيف.",
+              "id": "Peralatan dibilas di bawah air mengalir hangat dan bersih.",
+              "hi": "उपकरण को गर्म साफ बहते पानी के नीचे कुल्ला किया जा रहा है।",
+              "fil": "Kagamitan na binabanlawan sa maligamgam at malinis na dumadaloy na tubig."
+            },
+            "approval_status": "needed"
+          },
+          {
+            "asset_key": "cleaning-sanitation-sanitize",
+            "purpose": "Show equipment being sanitized using one of the approved methods in the draft curriculum.",
+            "lesson_key": "practical-photo-guide",
+            "placement": "procedure-step",
+            "alt_i18n": {
+              "en": "Equipment being sanitized using an approved method.",
+              "ar": "معدات تُعقّم باستخدام طريقة معتمدة.",
+              "id": "Peralatan disanitasi menggunakan metode yang disetujui.",
+              "hi": "उपकरण को स्वीकृत विधि से सैनिटाइज़ किया जा रहा है।",
+              "fil": "Kagamitan na sini-sanitize gamit ang aprubadong paraan."
+            },
+            "approval_status": "needed"
+          },
+          {
+            "asset_key": "cleaning-sanitation-air-dry",
+            "purpose": "Show equipment air drying on a stainless rack without a wiping cloth.",
+            "lesson_key": "practical-photo-guide",
+            "placement": "procedure-step",
+            "alt_i18n": {
+              "en": "Sanitized equipment air drying on a stainless rack.",
+              "ar": "معدات معقمة تُجفف بالهواء على رف ستانلس.",
+              "id": "Peralatan yang sudah disanitasi dikeringkan dengan udara di rak stainless.",
+              "hi": "सैनिटाइज़ किया गया उपकरण स्टेनलेस रैक पर हवा में सूख रहा है।",
+              "fil": "Na-sanitize na kagamitan na pinatutuyo sa hangin sa stainless rack."
             },
             "approval_status": "needed"
           },
@@ -1333,28 +1500,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "Wash in clean water with detergent at 43°C-49°C.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-wash",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "sink-rinse",
                   "presentation": "step",
                   "position": 2,
                   "text": "Rinse with warm, clean running water to remove soap residue.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-rinse",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "sink-sanitize",
                   "presentation": "step",
                   "position": 3,
                   "text": "Sanitize with chlorine at 50-100 ppm or quats at 200-400 ppm for 30-60 seconds, or use hot water at least 77°C.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-sanitize",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "air-dry",
                   "presentation": "step",
                   "position": 4,
                   "text": "Air dry equipment on stainless racks; do not dry it with a wiping cloth.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-air-dry",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-04.webp"
+                  }
                 },
                 {
                   "fact_key": "cloth-colors",
@@ -1375,28 +1558,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "اغسل في ماء نظيف مع منظف بدرجة 43°C-49°C.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-wash",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "sink-rinse",
                   "presentation": "step",
                   "position": 2,
                   "text": "اشطف بماء جارٍ دافئ ونظيف لإزالة بقايا الصابون.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-rinse",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "sink-sanitize",
                   "presentation": "step",
                   "position": 3,
                   "text": "عقّم بالكلور بتركيز 50-100 ppm أو بمركبات الأمونيوم الرباعية بتركيز 200-400 ppm لمدة 30-60 ثانية، أو استخدم ماءً ساخناً لا يقل عن 77°C.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-sanitize",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "air-dry",
                   "presentation": "step",
                   "position": 4,
                   "text": "جفّف المعدات بالهواء على رفوف ستانلس؛ ولا تجففها بقطعة مسح.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-air-dry",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-04.webp"
+                  }
                 },
                 {
                   "fact_key": "cloth-colors",
@@ -1417,28 +1616,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "Cuci dalam air bersih dengan deterjen pada 43°C-49°C.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-wash",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "sink-rinse",
                   "presentation": "step",
                   "position": 2,
                   "text": "Bilas dengan air mengalir hangat dan bersih untuk menghilangkan sisa sabun.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-rinse",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "sink-sanitize",
                   "presentation": "step",
                   "position": 3,
                   "text": "Sanitasi dengan klorin 50-100 ppm atau quats 200-400 ppm selama 30-60 detik, atau gunakan air panas setidaknya 77°C.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-sanitize",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "air-dry",
                   "presentation": "step",
                   "position": 4,
                   "text": "Keringkan peralatan dengan udara di rak stainless; jangan keringkan dengan kain lap.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-air-dry",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-04.webp"
+                  }
                 },
                 {
                   "fact_key": "cloth-colors",
@@ -1459,28 +1674,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "43°C-49°C पर साफ पानी और डिटर्जेंट से धोएँ।",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-wash",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "sink-rinse",
                   "presentation": "step",
                   "position": 2,
                   "text": "साबुन के अवशेष हटाने के लिए गर्म साफ बहते पानी से कुल्ला करें।",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-rinse",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "sink-sanitize",
                   "presentation": "step",
                   "position": 3,
                   "text": "30-60 सेकंड के लिए 50-100 ppm क्लोरीन या 200-400 ppm क्वाट्स से सैनिटाइज़ करें, अथवा कम से कम 77°C गर्म पानी उपयोग करें।",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-sanitize",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "air-dry",
                   "presentation": "step",
                   "position": 4,
                   "text": "उपकरण को स्टेनलेस रैक पर हवा में सुखाएँ; पोंछने वाले कपड़े से न सुखाएँ।",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-air-dry",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-04.webp"
+                  }
                 },
                 {
                   "fact_key": "cloth-colors",
@@ -1501,28 +1732,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "Hugasan sa malinis na tubig na may detergent sa 43°C-49°C.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-wash",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "sink-rinse",
                   "presentation": "step",
                   "position": 2,
                   "text": "Banlawan sa maligamgam at malinis na dumadaloy na tubig upang alisin ang latak ng sabon.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-rinse",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "sink-sanitize",
                   "presentation": "step",
                   "position": 3,
                   "text": "I-sanitize gamit ang chlorine na 50-100 ppm o quats na 200-400 ppm sa loob ng 30-60 segundo, o gumamit ng mainit na tubig na hindi bababa sa 77°C.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-sanitize",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "air-dry",
                   "presentation": "step",
                   "position": 4,
                   "text": "Patuyuin sa hangin ang kagamitan sa stainless rack; huwag patuyuin gamit ang pamunas.",
-                  "provenance_classification": "baladiyah_explicit"
+                  "provenance_classification": "baladiyah_explicit",
+                  "image": {
+                    "asset_key": "cleaning-sanitation-air-dry",
+                    "src": "/training/baladiyah/cleaning-sanitation/step-04.webp"
+                  }
                 },
                 {
                   "fact_key": "cloth-colors",
@@ -1551,7 +1798,10 @@ declare
             ],
             "photo_requirement_keys": [
               "cleaning-food-contact-surface",
-              "cleaning-four-stage-sequence",
+              "cleaning-sanitation-wash",
+              "cleaning-sanitation-rinse",
+              "cleaning-sanitation-sanitize",
+              "cleaning-sanitation-air-dry",
               "cleaning-sanitizer-test",
               "cleaning-color-coded-cloths"
             ]
@@ -4045,7 +4295,7 @@ declare
             "asset_key": "receiving-temperature-check",
             "purpose": "Show a receiving temperature check for frozen and chilled food.",
             "lesson_key": "practical-photo-guide",
-            "placement": "procedure-steps",
+            "placement": "procedure-step",
             "alt_i18n": {
               "en": "Employee checking the receiving temperature of a packaged cold food item.",
               "ar": "موظف يفحص درجة حرارة استلام مادة غذائية باردة ومعبأة.",
@@ -4059,7 +4309,7 @@ declare
             "asset_key": "receiving-intact-eggs",
             "purpose": "Show intact fresh-egg shells at receiving.",
             "lesson_key": "practical-photo-guide",
-            "placement": "reference-card",
+            "placement": "procedure-step",
             "alt_i18n": {
               "en": "Fresh eggs with intact shells during receiving inspection.",
               "ar": "بيض طازج بقشرة سليمة أثناء فحص الاستلام.",
@@ -4073,7 +4323,7 @@ declare
             "asset_key": "receiving-can-comparison",
             "purpose": "Compare an acceptable can with the listed rejection signs.",
             "lesson_key": "practical-photo-guide",
-            "placement": "comparison-card",
+            "placement": "procedure-step",
             "alt_i18n": {
               "en": "Acceptable can beside swollen, leaking, rusted, and seam-dented examples.",
               "ar": "علبة سليمة بجانب أمثلة منتفخة ومتسربة وصدئة ومنبعجة عند الحافة.",
@@ -4087,7 +4337,7 @@ declare
             "asset_key": "receiving-cold-storage-transfer",
             "purpose": "Show accepted perishables being moved to cold storage.",
             "lesson_key": "practical-photo-guide",
-            "placement": "procedure-step-final",
+            "placement": "procedure-step",
             "alt_i18n": {
               "en": "Accepted perishable food being moved promptly into a chiller.",
               "ar": "طعام سريع التلف مقبول يُنقل سريعاً إلى المبرد.",
@@ -4233,28 +4483,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "Receive frozen food at no more than -18°C.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-temperature-check",
+                    "src": "/training/baladiyah/food-receiving/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-chilled",
                   "presentation": "step",
                   "position": 2,
                   "text": "Receive chilled meat, dairy, and poultry at no more than 4°C; receive fresh eggs at no more than 7°C with intact shells.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-intact-eggs",
+                    "src": "/training/baladiyah/food-receiving/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-damaged-cans",
                   "presentation": "step",
                   "position": 3,
                   "text": "Reject cans that are swollen, leaking, severely rusted, or dented at the seam.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-can-comparison",
+                    "src": "/training/baladiyah/food-receiving/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-transfer-time",
                   "presentation": "step",
                   "position": 4,
                   "text": "Move accepted perishable food to the chiller or freezer within 15 minutes.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-cold-storage-transfer",
+                    "src": "/training/baladiyah/food-receiving/step-04.webp"
+                  }
                 }
               ]
             },
@@ -4268,28 +4534,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "استلم الطعام المجمد بدرجة لا تزيد على -18°C.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-temperature-check",
+                    "src": "/training/baladiyah/food-receiving/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-chilled",
                   "presentation": "step",
                   "position": 2,
                   "text": "استلم اللحوم المبردة والألبان والدواجن بدرجة لا تزيد على 4°C، والبيض الطازج بدرجة لا تزيد على 7°C مع قشرة سليمة.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-intact-eggs",
+                    "src": "/training/baladiyah/food-receiving/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-damaged-cans",
                   "presentation": "step",
                   "position": 3,
                   "text": "ارفض العلب المنتفخة أو المتسربة أو شديدة الصدأ أو المنبعجة عند الحافة.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-can-comparison",
+                    "src": "/training/baladiyah/food-receiving/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-transfer-time",
                   "presentation": "step",
                   "position": 4,
                   "text": "انقل الطعام سريع التلف المقبول إلى المبرد أو المجمد خلال 15 دقيقة.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-cold-storage-transfer",
+                    "src": "/training/baladiyah/food-receiving/step-04.webp"
+                  }
                 }
               ]
             },
@@ -4303,28 +4585,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "Terima makanan beku pada suhu tidak lebih dari -18°C.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-temperature-check",
+                    "src": "/training/baladiyah/food-receiving/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-chilled",
                   "presentation": "step",
                   "position": 2,
                   "text": "Terima daging, susu, dan unggas dingin pada suhu tidak lebih dari 4°C; terima telur segar pada suhu tidak lebih dari 7°C dengan cangkang utuh.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-intact-eggs",
+                    "src": "/training/baladiyah/food-receiving/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-damaged-cans",
                   "presentation": "step",
                   "position": 3,
                   "text": "Tolak kaleng yang menggembung, bocor, sangat berkarat, atau penyok pada sambungan.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-can-comparison",
+                    "src": "/training/baladiyah/food-receiving/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-transfer-time",
                   "presentation": "step",
                   "position": 4,
                   "text": "Pindahkan makanan mudah rusak yang diterima ke chiller atau freezer dalam 15 menit.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-cold-storage-transfer",
+                    "src": "/training/baladiyah/food-receiving/step-04.webp"
+                  }
                 }
               ]
             },
@@ -4338,28 +4636,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "जमे भोजन को -18°C से अधिक तापमान पर स्वीकार न करें।",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-temperature-check",
+                    "src": "/training/baladiyah/food-receiving/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-chilled",
                   "presentation": "step",
                   "position": 2,
                   "text": "ठंडा मांस, डेयरी और पोल्ट्री 4°C से अधिक पर न लें; ताज़े अंडे 7°C से अधिक पर न लें और खोल साबुत हों।",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-intact-eggs",
+                    "src": "/training/baladiyah/food-receiving/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-damaged-cans",
                   "presentation": "step",
                   "position": 3,
                   "text": "फूले, रिसते, बहुत जंग लगे या सीम पर दबे डिब्बे अस्वीकार करें।",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-can-comparison",
+                    "src": "/training/baladiyah/food-receiving/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-transfer-time",
                   "presentation": "step",
                   "position": 4,
                   "text": "स्वीकृत शीघ्र खराब होने वाले भोजन को 15 मिनट के भीतर चिलर या फ्रीज़र में रखें।",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-cold-storage-transfer",
+                    "src": "/training/baladiyah/food-receiving/step-04.webp"
+                  }
                 }
               ]
             },
@@ -4373,28 +4687,44 @@ declare
                   "presentation": "step",
                   "position": 1,
                   "text": "Tanggapin ang frozen food sa hindi hihigit sa -18°C.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-temperature-check",
+                    "src": "/training/baladiyah/food-receiving/step-01.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-chilled",
                   "presentation": "step",
                   "position": 2,
                   "text": "Tanggapin ang chilled meat, dairy, at poultry sa hindi hihigit sa 4°C; tanggapin ang sariwang itlog sa hindi hihigit sa 7°C at buo ang shell.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-intact-eggs",
+                    "src": "/training/baladiyah/food-receiving/step-02.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-damaged-cans",
                   "presentation": "step",
                   "position": 3,
                   "text": "Tanggihan ang lata na umbok, tumutulo, sobrang kalawangin, o yupi sa seam.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-can-comparison",
+                    "src": "/training/baladiyah/food-receiving/step-03.webp"
+                  }
                 },
                 {
                   "fact_key": "receiving-transfer-time",
                   "presentation": "step",
                   "position": 4,
                   "text": "Ilipat ang tinanggap na perishable food sa chiller o freezer sa loob ng 15 minuto.",
-                  "provenance_classification": "existing_training_supporting"
+                  "provenance_classification": "existing_training_supporting",
+                  "image": {
+                    "asset_key": "receiving-cold-storage-transfer",
+                    "src": "/training/baladiyah/food-receiving/step-04.webp"
+                  }
                 }
               ]
             }
@@ -8344,7 +8674,7 @@ declare
   ]
 }
 $manifest$::jsonb;
-  manifest_hash constant text := '20a717dea5e42296bd36ba8b5bbd04385287f62af47fd315025899b1a62fd865';
+  manifest_hash constant text := '4e63cd0f0dbca4bd1e3e4e9b15548d7e19b80c5b7deab1e72c26d8e2c300b15b';
   saved_course_id uuid;
   saved_version_id uuid;
   saved_version_status text;

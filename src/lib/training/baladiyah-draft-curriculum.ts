@@ -22,6 +22,10 @@ type DraftFact = {
   position: number;
   provenance_classification: ProvenanceClassification;
   text_i18n: LocalizedText;
+  image?: {
+    asset_key: string;
+    src: string;
+  };
 };
 
 type PhotoRequirement = {
@@ -171,6 +175,10 @@ const modules: ModuleSource[] = [
         presentation: "step",
         position: 1,
         provenance_classification: explicit,
+        image: {
+          asset_key: "personal-hygiene-handwashing-wet",
+          src: "/training/baladiyah/personal-hygiene-health/step-01.webp",
+        },
         text_i18n: text(
           "Wet hands with warm running water at 38°C-43°C.",
           "بلّل اليدين بماء جارٍ دافئ بدرجة 38°C-43°C.",
@@ -185,6 +193,10 @@ const modules: ModuleSource[] = [
         presentation: "step",
         position: 2,
         provenance_classification: explicit,
+        image: {
+          asset_key: "personal-hygiene-handwashing-soap",
+          src: "/training/baladiyah/personal-hygiene-health/step-02.webp",
+        },
         text_i18n: text(
           "Use antibacterial liquid soap, not bar soap.",
           "استخدم صابوناً سائلاً مضاداً للبكتيريا، وليس صابوناً صلباً.",
@@ -199,6 +211,10 @@ const modules: ModuleSource[] = [
         presentation: "step",
         position: 3,
         provenance_classification: explicit,
+        image: {
+          asset_key: "personal-hygiene-handwashing-scrub",
+          src: "/training/baladiyah/personal-hygiene-health/step-03.webp",
+        },
         text_i18n: text(
           "Scrub palms, backs of hands, between fingers, under nails, thumbs, and wrists for at least 20 seconds.",
           "افرك راحتي اليدين وظهرهما وبين الأصابع وتحت الأظافر والإبهامين والمعصمين لمدة لا تقل عن 20 ثانية.",
@@ -213,6 +229,10 @@ const modules: ModuleSource[] = [
         presentation: "step",
         position: 4,
         provenance_classification: explicit,
+        image: {
+          asset_key: "personal-hygiene-handwashing-dry",
+          src: "/training/baladiyah/personal-hygiene-health/step-04.webp",
+        },
         text_i18n: text(
           "Dry with a single-use paper towel or air dryer, then use the towel to turn off the tap.",
           "جفّف بمنشفة ورقية أحادية الاستخدام أو بمجفف الهواء، ثم استخدم المنشفة لإغلاق الصنبور.",
@@ -266,16 +286,58 @@ const modules: ModuleSource[] = [
         approval_status: "needed",
       },
       {
-        asset_key: "personal-hygiene-handwashing-stages",
-        purpose: "Show the four source-supported handwashing stages.",
+        asset_key: "personal-hygiene-handwashing-wet",
+        purpose: "Show hands being wetted with warm running water at 38°C-43°C.",
         lesson_key: "practical-photo-guide",
-        placement: "procedure-steps",
+        placement: "procedure-step",
         alt_i18n: text(
-          "Hands being wetted, soaped, scrubbed, and dried in the required sequence.",
-          "يدان يتم تبليلهما ووضع الصابون وفركهما وتجفيفهما بالتسلسل المطلوب.",
-          "Tangan dibasahi, diberi sabun, digosok, dan dikeringkan sesuai urutan.",
-          "आवश्यक क्रम में हाथ गीले करते, साबुन लगाते, रगड़ते और सुखाते हुए।",
-          "Mga kamay na binabasa, sinasabon, kinukuskos, at pinatutuyo sa tamang pagkakasunod-sunod.",
+          "Hands being wetted under warm running water.",
+          "يدان تُبللان تحت ماء جارٍ دافئ.",
+          "Tangan dibasahi di bawah air mengalir hangat.",
+          "गर्म बहते पानी के नीचे हाथ गीले किए जा रहे हैं।",
+          "Mga kamay na binabasa sa maligamgam na dumadaloy na tubig.",
+        ),
+        approval_status: "needed",
+      },
+      {
+        asset_key: "personal-hygiene-handwashing-soap",
+        purpose: "Show antibacterial liquid soap being applied to wet hands.",
+        lesson_key: "practical-photo-guide",
+        placement: "procedure-step",
+        alt_i18n: text(
+          "Antibacterial liquid soap being applied to wet hands.",
+          "صابون سائل مضاد للبكتيريا يوضع على يدين مبللتين.",
+          "Sabun cair antibakteri digunakan pada tangan yang basah.",
+          "गीले हाथों पर एंटीबैक्टीरियल लिक्विड साबुन लगाया जा रहा है।",
+          "Antibacterial liquid soap na inilalagay sa basang mga kamay.",
+        ),
+        approval_status: "needed",
+      },
+      {
+        asset_key: "personal-hygiene-handwashing-scrub",
+        purpose: "Show the listed hand areas being scrubbed for at least 20 seconds.",
+        lesson_key: "practical-photo-guide",
+        placement: "procedure-step",
+        alt_i18n: text(
+          "Hands being scrubbed across the required areas.",
+          "يدان يتم فرك المناطق المطلوبة فيهما.",
+          "Tangan digosok pada bagian-bagian yang diwajibkan.",
+          "हाथों के आवश्यक क्षेत्रों को रगड़ा जा रहा है।",
+          "Mga kamay na kinukuskos sa mga kinakailangang bahagi.",
+        ),
+        approval_status: "needed",
+      },
+      {
+        asset_key: "personal-hygiene-handwashing-dry",
+        purpose: "Show hands being dried and the tap closed with the towel when applicable.",
+        lesson_key: "practical-photo-guide",
+        placement: "procedure-step",
+        alt_i18n: text(
+          "Hands being dried with a single-use paper towel beside the tap.",
+          "يدان تُجففان بمنشفة ورقية أحادية الاستخدام بجانب الصنبور.",
+          "Tangan dikeringkan dengan tisu sekali pakai di samping keran.",
+          "नल के पास एक बार उपयोग होने वाले पेपर टॉवल से हाथ सुखाए जा रहे हैं।",
+          "Mga kamay na pinatutuyo gamit ang single-use paper towel sa tabi ng gripo.",
         ),
         approval_status: "needed",
       },
@@ -392,15 +454,18 @@ const modules: ModuleSource[] = [
     facts: [
       { fact_key: "food-contact-cleaning-frequency", lesson_key: "overview", presentation: "key_point", position: 1, provenance_classification: explicit, text_i18n: text("Clean and sanitize food-contact surfaces after use, when changing ingredients, or at least every 4 hours of continuous use.", "نظّف وعقّم الأسطح الملامسة للطعام بعد الاستخدام أو عند تغيير المكونات أو كل 4 ساعات على الأقل من الاستخدام المتواصل.", "Bersihkan dan sanitasi permukaan yang bersentuhan dengan makanan setelah digunakan, saat mengganti bahan, atau setidaknya setiap 4 jam penggunaan terus-menerus.", "खाद्य-संपर्क सतहों को उपयोग के बाद, सामग्री बदलते समय या लगातार उपयोग के कम से कम हर 4 घंटे में साफ और सैनिटाइज़ करें।", "Linisin at i-sanitize ang food-contact surfaces pagkatapos gamitin, kapag nagpapalit ng sangkap, o hindi bababa sa bawat 4 na oras ng tuloy-tuloy na paggamit.") },
       { fact_key: "chemical-storage", lesson_key: "overview", presentation: "warning", position: 2, provenance_classification: explicit, text_i18n: text("Detergents, degreasers, and chlorine or quats sanitizers require MSDS and locked storage away from food.", "تتطلب المنظفات ومزيلات الدهون ومعقمات الكلور أو الأمونيوم الرباعي نشرات MSDS وتخزيناً مقفلاً بعيداً عن الطعام.", "Deterjen, degreaser, dan sanitizer klorin atau quats memerlukan MSDS dan penyimpanan terkunci jauh dari makanan.", "डिटर्जेंट, डीग्रीज़र और क्लोरीन या क्वाट्स सैनिटाइज़र के लिए MSDS तथा भोजन से दूर बंद भंडारण आवश्यक है।", "Ang detergent, degreaser, at chlorine o quats sanitizer ay nangangailangan ng MSDS at nakakandadong imbakan na malayo sa pagkain.") },
-      { fact_key: "sink-wash", lesson_key: "practical-photo-guide", presentation: "step", position: 1, provenance_classification: explicit, text_i18n: text("Wash in clean water with detergent at 43°C-49°C.", "اغسل في ماء نظيف مع منظف بدرجة 43°C-49°C.", "Cuci dalam air bersih dengan deterjen pada 43°C-49°C.", "43°C-49°C पर साफ पानी और डिटर्जेंट से धोएँ।", "Hugasan sa malinis na tubig na may detergent sa 43°C-49°C.") },
-      { fact_key: "sink-rinse", lesson_key: "practical-photo-guide", presentation: "step", position: 2, provenance_classification: explicit, text_i18n: text("Rinse with warm, clean running water to remove soap residue.", "اشطف بماء جارٍ دافئ ونظيف لإزالة بقايا الصابون.", "Bilas dengan air mengalir hangat dan bersih untuk menghilangkan sisa sabun.", "साबुन के अवशेष हटाने के लिए गर्म साफ बहते पानी से कुल्ला करें।", "Banlawan sa maligamgam at malinis na dumadaloy na tubig upang alisin ang latak ng sabon.") },
-      { fact_key: "sink-sanitize", lesson_key: "practical-photo-guide", presentation: "step", position: 3, provenance_classification: explicit, text_i18n: text("Sanitize with chlorine at 50-100 ppm or quats at 200-400 ppm for 30-60 seconds, or use hot water at least 77°C.", "عقّم بالكلور بتركيز 50-100 ppm أو بمركبات الأمونيوم الرباعية بتركيز 200-400 ppm لمدة 30-60 ثانية، أو استخدم ماءً ساخناً لا يقل عن 77°C.", "Sanitasi dengan klorin 50-100 ppm atau quats 200-400 ppm selama 30-60 detik, atau gunakan air panas setidaknya 77°C.", "30-60 सेकंड के लिए 50-100 ppm क्लोरीन या 200-400 ppm क्वाट्स से सैनिटाइज़ करें, अथवा कम से कम 77°C गर्म पानी उपयोग करें।", "I-sanitize gamit ang chlorine na 50-100 ppm o quats na 200-400 ppm sa loob ng 30-60 segundo, o gumamit ng mainit na tubig na hindi bababa sa 77°C.") },
-      { fact_key: "air-dry", lesson_key: "practical-photo-guide", presentation: "step", position: 4, provenance_classification: explicit, text_i18n: text("Air dry equipment on stainless racks; do not dry it with a wiping cloth.", "جفّف المعدات بالهواء على رفوف ستانلس؛ ولا تجففها بقطعة مسح.", "Keringkan peralatan dengan udara di rak stainless; jangan keringkan dengan kain lap.", "उपकरण को स्टेनलेस रैक पर हवा में सुखाएँ; पोंछने वाले कपड़े से न सुखाएँ।", "Patuyuin sa hangin ang kagamitan sa stainless rack; huwag patuyuin gamit ang pamunas.") },
+      { fact_key: "sink-wash", lesson_key: "practical-photo-guide", presentation: "step", position: 1, provenance_classification: explicit, image: { asset_key: "cleaning-sanitation-wash", src: "/training/baladiyah/cleaning-sanitation/step-01.webp" }, text_i18n: text("Wash in clean water with detergent at 43°C-49°C.", "اغسل في ماء نظيف مع منظف بدرجة 43°C-49°C.", "Cuci dalam air bersih dengan deterjen pada 43°C-49°C.", "43°C-49°C पर साफ पानी और डिटर्जेंट से धोएँ।", "Hugasan sa malinis na tubig na may detergent sa 43°C-49°C.") },
+      { fact_key: "sink-rinse", lesson_key: "practical-photo-guide", presentation: "step", position: 2, provenance_classification: explicit, image: { asset_key: "cleaning-sanitation-rinse", src: "/training/baladiyah/cleaning-sanitation/step-02.webp" }, text_i18n: text("Rinse with warm, clean running water to remove soap residue.", "اشطف بماء جارٍ دافئ ونظيف لإزالة بقايا الصابون.", "Bilas dengan air mengalir hangat dan bersih untuk menghilangkan sisa sabun.", "साबुन के अवशेष हटाने के लिए गर्म साफ बहते पानी से कुल्ला करें।", "Banlawan sa maligamgam at malinis na dumadaloy na tubig upang alisin ang latak ng sabon.") },
+      { fact_key: "sink-sanitize", lesson_key: "practical-photo-guide", presentation: "step", position: 3, provenance_classification: explicit, image: { asset_key: "cleaning-sanitation-sanitize", src: "/training/baladiyah/cleaning-sanitation/step-03.webp" }, text_i18n: text("Sanitize with chlorine at 50-100 ppm or quats at 200-400 ppm for 30-60 seconds, or use hot water at least 77°C.", "عقّم بالكلور بتركيز 50-100 ppm أو بمركبات الأمونيوم الرباعية بتركيز 200-400 ppm لمدة 30-60 ثانية، أو استخدم ماءً ساخناً لا يقل عن 77°C.", "Sanitasi dengan klorin 50-100 ppm atau quats 200-400 ppm selama 30-60 detik, atau gunakan air panas setidaknya 77°C.", "30-60 सेकंड के लिए 50-100 ppm क्लोरीन या 200-400 ppm क्वाट्स से सैनिटाइज़ करें, अथवा कम से कम 77°C गर्म पानी उपयोग करें।", "I-sanitize gamit ang chlorine na 50-100 ppm o quats na 200-400 ppm sa loob ng 30-60 segundo, o gumamit ng mainit na tubig na hindi bababa sa 77°C.") },
+      { fact_key: "air-dry", lesson_key: "practical-photo-guide", presentation: "step", position: 4, provenance_classification: explicit, image: { asset_key: "cleaning-sanitation-air-dry", src: "/training/baladiyah/cleaning-sanitation/step-04.webp" }, text_i18n: text("Air dry equipment on stainless racks; do not dry it with a wiping cloth.", "جفّف المعدات بالهواء على رفوف ستانلس؛ ولا تجففها بقطعة مسح.", "Keringkan peralatan dengan udara di rak stainless; jangan keringkan dengan kain lap.", "उपकरण को स्टेनलेस रैक पर हवा में सुखाएँ; पोंछने वाले कपड़े से न सुखाएँ।", "Patuyuin sa hangin ang kagamitan sa stainless rack; huwag patuyuin gamit ang pamunas.") },
       { fact_key: "cloth-colors", lesson_key: "practical-photo-guide", presentation: "key_point", position: 5, provenance_classification: explicit, text_i18n: text("Use red cloths for toilets or waste, yellow for raw preparation, green for produce or dessert, and blue for service, cashier, or dining areas.", "استخدم القماش الأحمر لدورات المياه أو النفايات، والأصفر لتحضير النيء، والأخضر للخضار أو الحلوى، والأزرق لمناطق الخدمة أو الكاشير أو صالة الطعام.", "Gunakan kain merah untuk toilet atau sampah, kuning untuk persiapan bahan mentah, hijau untuk hasil bumi atau dessert, dan biru untuk area servis, kasir, atau ruang makan.", "लाल कपड़ा शौचालय या कचरे, पीला कच्ची तैयारी, हरा फल-सब्ज़ी या डेज़र्ट और नीला सेवा, कैशियर या डाइनिंग क्षेत्र के लिए उपयोग करें।", "Gamitin ang pulang pamunas sa palikuran o basura, dilaw sa raw preparation, berde sa produce o dessert, at asul sa service, cashier, o dining area.") },
     ],
     photo_requirements: [
       { asset_key: "cleaning-food-contact-surface", purpose: "Show a clean food-contact surface ready for sanitation.", lesson_key: "overview", placement: "overview-hero", alt_i18n: text("Clean food-contact work surface prepared for sanitation.", "سطح عمل نظيف ملامس للطعام ومجهز للتعقيم.", "Permukaan kerja bersih yang bersentuhan dengan makanan dan siap disanitasi.", "सैनिटेशन के लिए तैयार साफ खाद्य-संपर्क कार्य सतह।", "Malinis na food-contact work surface na handa para sa sanitasyon."), approval_status: "needed" },
-      { asset_key: "cleaning-four-stage-sequence", purpose: "Show wash, rinse, sanitize, and air-dry stages.", lesson_key: "practical-photo-guide", placement: "procedure-steps", alt_i18n: text("Equipment moving through wash, rinse, sanitize, and air-dry stages.", "معدات تمر بمراحل الغسل والشطف والتعقيم والتجفيف الهوائي.", "Peralatan melalui tahap cuci, bilas, sanitasi, dan kering udara.", "उपकरण धोने, कुल्ला, सैनिटाइज़ और हवा में सुखाने के चरणों से गुजरता हुआ।", "Kagamitan na dumaraan sa wash, rinse, sanitize, at air-dry na mga yugto."), approval_status: "needed" },
+      { asset_key: "cleaning-sanitation-wash", purpose: "Show equipment being washed in clean detergent water at 43°C-49°C.", lesson_key: "practical-photo-guide", placement: "procedure-step", alt_i18n: text("Equipment being washed in clean water with detergent.", "معدات تُغسل في ماء نظيف مع منظف.", "Peralatan dicuci dalam air bersih dengan deterjen.", "उपकरण साफ पानी और डिटर्जेंट से धोया जा रहा है।", "Kagamitan na hinuhugasan sa malinis na tubig na may detergent."), approval_status: "needed" },
+      { asset_key: "cleaning-sanitation-rinse", purpose: "Show soap residue being rinsed away with warm, clean running water.", lesson_key: "practical-photo-guide", placement: "procedure-step", alt_i18n: text("Equipment being rinsed under warm, clean running water.", "معدات تُشطف تحت ماء جارٍ دافئ ونظيف.", "Peralatan dibilas di bawah air mengalir hangat dan bersih.", "उपकरण को गर्म साफ बहते पानी के नीचे कुल्ला किया जा रहा है।", "Kagamitan na binabanlawan sa maligamgam at malinis na dumadaloy na tubig."), approval_status: "needed" },
+      { asset_key: "cleaning-sanitation-sanitize", purpose: "Show equipment being sanitized using one of the approved methods in the draft curriculum.", lesson_key: "practical-photo-guide", placement: "procedure-step", alt_i18n: text("Equipment being sanitized using an approved method.", "معدات تُعقّم باستخدام طريقة معتمدة.", "Peralatan disanitasi menggunakan metode yang disetujui.", "उपकरण को स्वीकृत विधि से सैनिटाइज़ किया जा रहा है।", "Kagamitan na sini-sanitize gamit ang aprubadong paraan."), approval_status: "needed" },
+      { asset_key: "cleaning-sanitation-air-dry", purpose: "Show equipment air drying on a stainless rack without a wiping cloth.", lesson_key: "practical-photo-guide", placement: "procedure-step", alt_i18n: text("Sanitized equipment air drying on a stainless rack.", "معدات معقمة تُجفف بالهواء على رف ستانلس.", "Peralatan yang sudah disanitasi dikeringkan dengan udara di rak stainless.", "सैनिटाइज़ किया गया उपकरण स्टेनलेस रैक पर हवा में सूख रहा है।", "Na-sanitize na kagamitan na pinatutuyo sa hangin sa stainless rack."), approval_status: "needed" },
       { asset_key: "cleaning-sanitizer-test", purpose: "Show sanitizer concentration being checked without implying an unapproved method.", lesson_key: "practical-photo-guide", placement: "sanitizer-reference", alt_i18n: text("Sanitizer concentration check displaying the approved range.", "فحص تركيز المعقم مع إظهار النطاق المعتمد.", "Pemeriksaan konsentrasi sanitizer yang menampilkan rentang yang disetujui.", "स्वीकृत सीमा दिखाती सैनिटाइज़र सांद्रता जाँच।", "Pagsusuri ng sanitizer concentration na nagpapakita ng aprubadong saklaw."), approval_status: "needed" },
       { asset_key: "cleaning-color-coded-cloths", purpose: "Show the four current cloth color assignments.", lesson_key: "practical-photo-guide", placement: "reference-card", alt_i18n: text("Red, yellow, green, and blue cleaning cloths separated by work area.", "أقمشة تنظيف حمراء وصفراء وخضراء وزرقاء مفصولة حسب منطقة العمل.", "Kain pembersih merah, kuning, hijau, dan biru dipisahkan berdasarkan area kerja.", "कार्य क्षेत्र के अनुसार अलग लाल, पीले, हरे और नीले सफाई कपड़े।", "Pula, dilaw, berde, at asul na cleaning cloth na hiwalay ayon sa work area."), approval_status: "needed" },
     ],
@@ -527,16 +592,16 @@ const modules: ModuleSource[] = [
     practical_mode: "procedure",
     facts: [
       { fact_key: "receiving-scope", lesson_key: "overview", presentation: "overview", position: 1, provenance_classification: supporting, text_i18n: text("The current curriculum covers vehicle temperature, expiry date, labels, and package integrity during receiving.", "يغطي المنهج الحالي حرارة المركبة وتاريخ الانتهاء والملصقات وسلامة العبوة أثناء الاستلام.", "Kurikulum saat ini mencakup suhu kendaraan, tanggal kedaluwarsa, label, dan integritas kemasan saat penerimaan.", "वर्तमान पाठ्यक्रम प्राप्ति के दौरान वाहन तापमान, समाप्ति तिथि, लेबल और पैकेज अखंडता को शामिल करता है।", "Saklaw ng kasalukuyang kurikulum ang vehicle temperature, expiry date, labels, at package integrity sa receiving.") },
-      { fact_key: "receiving-frozen", lesson_key: "practical-photo-guide", presentation: "step", position: 1, provenance_classification: supporting, text_i18n: text("Receive frozen food at no more than -18°C.", "استلم الطعام المجمد بدرجة لا تزيد على -18°C.", "Terima makanan beku pada suhu tidak lebih dari -18°C.", "जमे भोजन को -18°C से अधिक तापमान पर स्वीकार न करें।", "Tanggapin ang frozen food sa hindi hihigit sa -18°C.") },
-      { fact_key: "receiving-chilled", lesson_key: "practical-photo-guide", presentation: "step", position: 2, provenance_classification: supporting, text_i18n: text("Receive chilled meat, dairy, and poultry at no more than 4°C; receive fresh eggs at no more than 7°C with intact shells.", "استلم اللحوم المبردة والألبان والدواجن بدرجة لا تزيد على 4°C، والبيض الطازج بدرجة لا تزيد على 7°C مع قشرة سليمة.", "Terima daging, susu, dan unggas dingin pada suhu tidak lebih dari 4°C; terima telur segar pada suhu tidak lebih dari 7°C dengan cangkang utuh.", "ठंडा मांस, डेयरी और पोल्ट्री 4°C से अधिक पर न लें; ताज़े अंडे 7°C से अधिक पर न लें और खोल साबुत हों।", "Tanggapin ang chilled meat, dairy, at poultry sa hindi hihigit sa 4°C; tanggapin ang sariwang itlog sa hindi hihigit sa 7°C at buo ang shell.") },
-      { fact_key: "receiving-damaged-cans", lesson_key: "practical-photo-guide", presentation: "step", position: 3, provenance_classification: supporting, text_i18n: text("Reject cans that are swollen, leaking, severely rusted, or dented at the seam.", "ارفض العلب المنتفخة أو المتسربة أو شديدة الصدأ أو المنبعجة عند الحافة.", "Tolak kaleng yang menggembung, bocor, sangat berkarat, atau penyok pada sambungan.", "फूले, रिसते, बहुत जंग लगे या सीम पर दबे डिब्बे अस्वीकार करें।", "Tanggihan ang lata na umbok, tumutulo, sobrang kalawangin, o yupi sa seam.") },
-      { fact_key: "receiving-transfer-time", lesson_key: "practical-photo-guide", presentation: "step", position: 4, provenance_classification: supporting, text_i18n: text("Move accepted perishable food to the chiller or freezer within 15 minutes.", "انقل الطعام سريع التلف المقبول إلى المبرد أو المجمد خلال 15 دقيقة.", "Pindahkan makanan mudah rusak yang diterima ke chiller atau freezer dalam 15 menit.", "स्वीकृत शीघ्र खराब होने वाले भोजन को 15 मिनट के भीतर चिलर या फ्रीज़र में रखें।", "Ilipat ang tinanggap na perishable food sa chiller o freezer sa loob ng 15 minuto.") },
+      { fact_key: "receiving-frozen", lesson_key: "practical-photo-guide", presentation: "step", position: 1, provenance_classification: supporting, image: { asset_key: "receiving-temperature-check", src: "/training/baladiyah/food-receiving/step-01.webp" }, text_i18n: text("Receive frozen food at no more than -18°C.", "استلم الطعام المجمد بدرجة لا تزيد على -18°C.", "Terima makanan beku pada suhu tidak lebih dari -18°C.", "जमे भोजन को -18°C से अधिक तापमान पर स्वीकार न करें।", "Tanggapin ang frozen food sa hindi hihigit sa -18°C.") },
+      { fact_key: "receiving-chilled", lesson_key: "practical-photo-guide", presentation: "step", position: 2, provenance_classification: supporting, image: { asset_key: "receiving-intact-eggs", src: "/training/baladiyah/food-receiving/step-02.webp" }, text_i18n: text("Receive chilled meat, dairy, and poultry at no more than 4°C; receive fresh eggs at no more than 7°C with intact shells.", "استلم اللحوم المبردة والألبان والدواجن بدرجة لا تزيد على 4°C، والبيض الطازج بدرجة لا تزيد على 7°C مع قشرة سليمة.", "Terima daging, susu, dan unggas dingin pada suhu tidak lebih dari 4°C; terima telur segar pada suhu tidak lebih dari 7°C dengan cangkang utuh.", "ठंडा मांस, डेयरी और पोल्ट्री 4°C से अधिक पर न लें; ताज़े अंडे 7°C से अधिक पर न लें और खोल साबुत हों।", "Tanggapin ang chilled meat, dairy, at poultry sa hindi hihigit sa 4°C; tanggapin ang sariwang itlog sa hindi hihigit sa 7°C at buo ang shell.") },
+      { fact_key: "receiving-damaged-cans", lesson_key: "practical-photo-guide", presentation: "step", position: 3, provenance_classification: supporting, image: { asset_key: "receiving-can-comparison", src: "/training/baladiyah/food-receiving/step-03.webp" }, text_i18n: text("Reject cans that are swollen, leaking, severely rusted, or dented at the seam.", "ارفض العلب المنتفخة أو المتسربة أو شديدة الصدأ أو المنبعجة عند الحافة.", "Tolak kaleng yang menggembung, bocor, sangat berkarat, atau penyok pada sambungan.", "फूले, रिसते, बहुत जंग लगे या सीम पर दबे डिब्बे अस्वीकार करें।", "Tanggihan ang lata na umbok, tumutulo, sobrang kalawangin, o yupi sa seam.") },
+      { fact_key: "receiving-transfer-time", lesson_key: "practical-photo-guide", presentation: "step", position: 4, provenance_classification: supporting, image: { asset_key: "receiving-cold-storage-transfer", src: "/training/baladiyah/food-receiving/step-04.webp" }, text_i18n: text("Move accepted perishable food to the chiller or freezer within 15 minutes.", "انقل الطعام سريع التلف المقبول إلى المبرد أو المجمد خلال 15 دقيقة.", "Pindahkan makanan mudah rusak yang diterima ke chiller atau freezer dalam 15 menit.", "स्वीकृत शीघ्र खराब होने वाले भोजन को 15 मिनट के भीतर चिलर या फ्रीज़र में रखें।", "Ilipat ang tinanggap na perishable food sa chiller o freezer sa loob ng 15 minuto.") },
     ],
     photo_requirements: [
-      { asset_key: "receiving-temperature-check", purpose: "Show a receiving temperature check for frozen and chilled food.", lesson_key: "practical-photo-guide", placement: "procedure-steps", alt_i18n: text("Employee checking the receiving temperature of a packaged cold food item.", "موظف يفحص درجة حرارة استلام مادة غذائية باردة ومعبأة.", "Karyawan memeriksa suhu penerimaan bahan makanan dingin dalam kemasan.", "कर्मचारी पैक ठंडे खाद्य पदार्थ का प्राप्ति तापमान जाँचता हुआ।", "Empleyado na sumusuri sa receiving temperature ng naka-package na cold food item."), approval_status: "needed" },
-      { asset_key: "receiving-intact-eggs", purpose: "Show intact fresh-egg shells at receiving.", lesson_key: "practical-photo-guide", placement: "reference-card", alt_i18n: text("Fresh eggs with intact shells during receiving inspection.", "بيض طازج بقشرة سليمة أثناء فحص الاستلام.", "Telur segar dengan cangkang utuh saat pemeriksaan penerimaan.", "प्राप्ति निरीक्षण में साबुत खोल वाले ताज़े अंडे।", "Sariwang itlog na buo ang shell sa receiving inspection."), approval_status: "needed" },
-      { asset_key: "receiving-can-comparison", purpose: "Compare an acceptable can with the listed rejection signs.", lesson_key: "practical-photo-guide", placement: "comparison-card", alt_i18n: text("Acceptable can beside swollen, leaking, rusted, and seam-dented examples.", "علبة سليمة بجانب أمثلة منتفخة ومتسربة وصدئة ومنبعجة عند الحافة.", "Kaleng yang dapat diterima di samping contoh menggembung, bocor, berkarat, dan penyok pada sambungan.", "स्वीकार्य डिब्बे के पास फूले, रिसते, जंग लगे और सीम पर दबे उदाहरण।", "Katanggap-tanggap na lata katabi ng umbok, tumutulo, kalawangin, at seam-dented na mga halimbawa."), approval_status: "needed" },
-      { asset_key: "receiving-cold-storage-transfer", purpose: "Show accepted perishables being moved to cold storage.", lesson_key: "practical-photo-guide", placement: "procedure-step-final", alt_i18n: text("Accepted perishable food being moved promptly into a chiller.", "طعام سريع التلف مقبول يُنقل سريعاً إلى المبرد.", "Makanan mudah rusak yang diterima segera dipindahkan ke chiller.", "स्वीकृत शीघ्र खराब होने वाला भोजन तुरंत चिलर में रखा जा रहा है।", "Tinanggap na perishable food na agad inililipat sa chiller."), approval_status: "needed" },
+      { asset_key: "receiving-temperature-check", purpose: "Show a receiving temperature check for frozen and chilled food.", lesson_key: "practical-photo-guide", placement: "procedure-step", alt_i18n: text("Employee checking the receiving temperature of a packaged cold food item.", "موظف يفحص درجة حرارة استلام مادة غذائية باردة ومعبأة.", "Karyawan memeriksa suhu penerimaan bahan makanan dingin dalam kemasan.", "कर्मचारी पैक ठंडे खाद्य पदार्थ का प्राप्ति तापमान जाँचता हुआ।", "Empleyado na sumusuri sa receiving temperature ng naka-package na cold food item."), approval_status: "needed" },
+      { asset_key: "receiving-intact-eggs", purpose: "Show intact fresh-egg shells at receiving.", lesson_key: "practical-photo-guide", placement: "procedure-step", alt_i18n: text("Fresh eggs with intact shells during receiving inspection.", "بيض طازج بقشرة سليمة أثناء فحص الاستلام.", "Telur segar dengan cangkang utuh saat pemeriksaan penerimaan.", "प्राप्ति निरीक्षण में साबुत खोल वाले ताज़े अंडे।", "Sariwang itlog na buo ang shell sa receiving inspection."), approval_status: "needed" },
+      { asset_key: "receiving-can-comparison", purpose: "Compare an acceptable can with the listed rejection signs.", lesson_key: "practical-photo-guide", placement: "procedure-step", alt_i18n: text("Acceptable can beside swollen, leaking, rusted, and seam-dented examples.", "علبة سليمة بجانب أمثلة منتفخة ومتسربة وصدئة ومنبعجة عند الحافة.", "Kaleng yang dapat diterima di samping contoh menggembung, bocor, berkarat, dan penyok pada sambungan.", "स्वीकार्य डिब्बे के पास फूले, रिसते, जंग लगे और सीम पर दबे उदाहरण।", "Katanggap-tanggap na lata katabi ng umbok, tumutulo, kalawangin, at seam-dented na mga halimbawa."), approval_status: "needed" },
+      { asset_key: "receiving-cold-storage-transfer", purpose: "Show accepted perishables being moved to cold storage.", lesson_key: "practical-photo-guide", placement: "procedure-step", alt_i18n: text("Accepted perishable food being moved promptly into a chiller.", "طعام سريع التلف مقبول يُنقل سريعاً إلى المبرد.", "Makanan mudah rusak yang diterima segera dipindahkan ke chiller.", "स्वीकृत शीघ्र खराब होने वाला भोजन तुरंत चिलर में रखा जा रहा है।", "Tinanggap na perishable food na agad inililipat sa chiller."), approval_status: "needed" },
     ],
     quiz_questions: [
       { stable_key: "frozen-receiving-temperature", source_fact_keys: ["receiving-frozen"], prompt_i18n: text("What is the listed maximum receiving temperature for frozen food?", "ما أقصى درجة حرارة استلام مذكورة للطعام المجمد؟", "Berapa suhu penerimaan maksimum yang tercantum untuk makanan beku?", "जमे भोजन के लिए सूचीबद्ध अधिकतम प्राप्ति तापमान क्या है?", "Ano ang nakalistang maximum receiving temperature para sa frozen food?"), options: [option("a", text("-18°C", "-18°C", "-18°C", "-18°C", "-18°C")), option("b", text("4°C", "4°C", "4°C", "4°C", "4°C")), option("c", text("7°C", "7°C", "7°C", "7°C", "7°C"))], correct_option_key: "a", explanation_i18n: text("The current curriculum lists frozen food at no more than -18°C.", "يذكر المنهج الحالي الطعام المجمد بدرجة لا تزيد على -18°C.", "Kurikulum saat ini mencantumkan makanan beku pada suhu tidak lebih dari -18°C.", "वर्तमान पाठ्यक्रम जमे भोजन के लिए -18°C से अधिक नहीं बताता है।", "Nakalista sa kasalukuyang kurikulum ang frozen food sa hindi hihigit sa -18°C.") },
@@ -710,6 +775,7 @@ function localizedFactContent(module: ModuleSource, lessonKey: "overview" | "pra
             position: fact.position,
             text: fact.text_i18n[locale],
             provenance_classification: fact.provenance_classification,
+            ...(fact.image ? { image: { ...fact.image } } : {}),
           })),
       },
     ]),

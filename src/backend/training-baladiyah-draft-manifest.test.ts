@@ -95,12 +95,12 @@ describe("Baladiyah photo-first draft curriculum manifest", () => {
   });
 
   it("defines only needed, URL-free photo requirements with complete alt text", () => {
-    const expectedCounts = [3, 4, 3, 4, 4, 4, 4, 4, 4];
+    const expectedCounts = [6, 7, 3, 4, 4, 4, 4, 4, 4];
     assert.deepEqual(
       baladiyahDraftCurriculum.modules.map((module) => module.metadata.photo_requirements.length),
       expectedCounts,
     );
-    assert.equal(expectedCounts.reduce((total, count) => total + count, 0), 34);
+    assert.equal(expectedCounts.reduce((total, count) => total + count, 0), 40);
 
     const assetKeys = new Set<string>();
     for (const module of baladiyahDraftCurriculum.modules) {
@@ -160,4 +160,3 @@ describe("Baladiyah photo-first draft curriculum manifest", () => {
     assert.deepEqual(JSON.parse(match[1]), JSON.parse(JSON.stringify(baladiyahDraftCurriculum)));
   });
 });
-
