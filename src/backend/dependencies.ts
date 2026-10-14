@@ -27,6 +27,7 @@ import { createChecklistPersistence, type ChecklistPersistence } from "./checkli
 import { createEvidenceService, type EvidenceService } from "./evidence";
 import { createBrandingService, type BrandingService } from "./branding";
 import { createMaintenancePushService, type MaintenancePushService } from "./maintenance-push";
+import { createTrainingMediaService, type TrainingMediaService } from "./training-media";
 
 export type AuthVerifier = {
   verify(token: string): Promise<{ userId: string; email: string } | null>;
@@ -62,6 +63,7 @@ export type BackendDependencies = {
   evidenceService?: EvidenceService;
   brandingService?: BrandingService;
   maintenancePush?: MaintenancePushService;
+  trainingMediaService?: TrainingMediaService;
   now?: () => Date;
 };
 
@@ -138,6 +140,7 @@ export function createDefaultDependencies(
     evidenceService: createEvidenceService(config.supabase.url, config.supabase.secretKey),
     brandingService: createBrandingService(config.supabase.url, config.supabase.secretKey),
     maintenancePush: createMaintenancePushService(config),
+    trainingMediaService: createTrainingMediaService(config.supabase.url, config.supabase.secretKey),
     now: () => new Date(),
     authVerifier: createSupabaseClaimsAuthVerifier(authClient),
     async checkReadiness() {

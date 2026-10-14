@@ -22,6 +22,7 @@ import { CatalogMappedIngredientError, ChecklistAccessError, ChecklistConflictEr
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
 import { MaintenancePushAccessError, MaintenancePushConflictError, MaintenancePushInputError, MaintenancePushUnavailableError } from "./maintenance-push";
+import { MAX_TRAINING_MEDIA_SOURCE_BYTES, TrainingMediaAccessError, TrainingMediaConflictError, TrainingMediaInputError, TrainingMediaNotFoundError, TrainingMediaUnavailableError, trainingMediaMetadataSchema } from "./training-media";
 import type { UserContext } from "./user-context";
 import { validateDailyAuditGrant } from "./daily-audit-grant";
 import { decodeUploadFilename } from "../lib/internal-api/upload-filename";
@@ -779,6 +780,10 @@ const dailyAuditItemApiSchema=z.object({item_id:z.string().min(1).max(80),answer
 const dailyAuditBodySchema=z.object({business_date:dateOnlySchema,expected_revision:z.number().int().nonnegative().default(0),items:z.array(dailyAuditItemApiSchema).max(13)}).strict();
 const dailyAuditResponseSchema=z.object({submission_id:z.uuid().nullable().optional(),branch_id:z.uuid(),business_date:dateOnlySchema,state:z.enum(["empty","draft","submitted"]).nullable(),revision:z.number().int().nonnegative().default(0),auditor_display_name:z.string().nullable().optional(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),submitted_at:z.string().nullable().optional(),updated_at:z.string().nullable().optional(),items:z.array(z.object({item_id:z.string(),item_number:z.number().int().optional(),answer:z.enum(["not_checked","compliant","non_compliant"]),remark:z.string()}).strict()).length(13)}).strict();
 const emptyQuerySchema = z.object({}).strict();
+const trainingMediaScopeQuerySchema=z.object({course:z.uuid(),version:z.uuid()}).strict();
+const trainingMediaHeaderSchema=z.string().min(1).max(10000).transform((value)=>{
+  try{return JSON.parse(Buffer.from(value,"base64url").toString("utf8")) as unknown;}catch{return null;}
+}).pipe(trainingMediaMetadataSchema);
 const internalAdminOperationalTeamNameSchema = z.string().max(80).transform((value) => value.trim().replace(/\s+/gu, " ")).pipe(z.string().min(1).max(80));
 const createInternalAdminBranchTeamStaffBodySchema = z.object({
   display_name: normalizedNameSchema,
@@ -2361,6 +2366,15 @@ function brandingError(error: unknown) {
   return new HttpError(503, "service_unavailable", "Branding storage is temporarily unavailable.");
 }
 
+function trainingMediaError(error:unknown){
+ if(error instanceof TrainingMediaInputError)return new HttpError(422,"unprocessable_entity","The Training image is invalid or unavailable.");
+ if(error instanceof TrainingMediaAccessError)return new HttpError(403,"forbidden","Access is denied.");
+ if(error instanceof TrainingMediaNotFoundError)return new HttpError(404,"not_found","The Training image is unavailable.");
+ if(error instanceof TrainingMediaConflictError)return new HttpError(409,"conflict","The Training draft changed or is no longer editable.");
+ if(error instanceof TrainingMediaUnavailableError)return new HttpError(503,"service_unavailable","Training image storage is temporarily unavailable.");
+ return new HttpError(503,"service_unavailable","Training image storage is temporarily unavailable.");
+}
+
 function operationalPurchaseError(error: unknown) {
   if (error instanceof OperationalInputError) return new HttpError(422, "unprocessable_entity", "The purchase log is invalid.");
   if (error instanceof OperationalConflictError) return new HttpError(409, "conflict", "The purchase log conflicts with current team data.");
@@ -2804,6 +2818,7 @@ export function createApp(
   const evidenceRawBody=express.raw({type:()=>true,limit:MAX_EVIDENCE_BYTES});
   const salesTrackingPhotoRawBody=express.raw({type:()=>true,limit:MAX_SALES_TRACKING_PHOTO_BYTES});
   const brandingRawBody=express.raw({type:()=>true,limit:MAX_BRANDING_BYTES});
+  const trainingMediaRawBody=express.raw({type:()=>true,limit:MAX_TRAINING_MEDIA_SOURCE_BYTES});
   const purchaseInvoiceRawBody=express.raw({type:()=>true,limit:MAX_PURCHASE_INVOICE_BYTES});
   const maintenanceReceiptRawBody=express.raw({type:()=>true,limit:MAX_PURCHASE_INVOICE_BYTES*MAX_MAINTENANCE_PURCHASE_PHOTOS*2});
   const maintenanceIssuePhotoRawBody=express.raw({
@@ -3344,6 +3359,83 @@ export function createApp(
         next(error instanceof HttpError ? error : brandingError(error));
       }
     },
+  );
+  app.get(
+    "/api/v1/internal-admin/organizations/:organizationId/training/draft-versions",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId);
+      if(!organizationId.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);
+      if(!dependencies.trainingMediaService)throw new TrainingMediaUnavailableError();
+      const versions=await dependencies.trainingMediaService.listDraftVersions(auth.userId,organizationId.data);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({versions});
+    }catch(error){next(error instanceof HttpError?error:trainingMediaError(error));}},
+  );
+  app.get(
+    "/api/v1/internal-admin/organizations/:organizationId/training/media",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),query=trainingMediaScopeQuerySchema.safeParse(request.query);
+      if(!organizationId.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);
+      if(!dependencies.trainingMediaService)throw new TrainingMediaUnavailableError();
+      const media=await dependencies.trainingMediaService.list({actorUserId:auth.userId,organizationId:organizationId.data,courseId:query.data.course,courseVersionId:query.data.version});
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({media});
+    }catch(error){next(error instanceof HttpError?error:trainingMediaError(error));}},
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/media",
+    protectedRateLimit,authenticate,trainingMediaRawBody,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),courseId=z.uuid().safeParse(request.params.courseId),versionId=z.uuid().safeParse(request.params.versionId),metadata=trainingMediaHeaderSchema.safeParse(request.header("x-training-media-metadata"));
+      if(!organizationId.success||!courseId.success||!versionId.success||!metadata.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);
+      if(!dependencies.trainingMediaService)throw new TrainingMediaUnavailableError();
+      const declaredMime=String(request.get("content-type")??"").split(";")[0]?.trim().toLowerCase()??"";
+      if(!Buffer.isBuffer(request.body)||request.body.length!==Number(request.header("content-length")))throw new TrainingMediaInputError();
+      const media=await dependencies.trainingMediaService.create({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data,requestId:request.id},{...metadata.data,bytes:request.body,declaredMime});
+      response.setHeader("Cache-Control","private, no-store");response.status(201).json({media});
+    }catch(error){next(error instanceof HttpError?error:trainingMediaError(error));}},
+  );
+  app.put(
+    "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/media/:assetId",
+    protectedRateLimit,authenticate,trainingMediaRawBody,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),courseId=z.uuid().safeParse(request.params.courseId),versionId=z.uuid().safeParse(request.params.versionId),assetId=z.uuid().safeParse(request.params.assetId),metadata=trainingMediaHeaderSchema.safeParse(request.header("x-training-media-metadata"));
+      if(!organizationId.success||!courseId.success||!versionId.success||!assetId.success||!metadata.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);if(!dependencies.trainingMediaService)throw new TrainingMediaUnavailableError();
+      const declaredMime=String(request.get("content-type")??"").split(";")[0]?.trim().toLowerCase()??"";
+      if(!Buffer.isBuffer(request.body)||request.body.length!==Number(request.header("content-length")))throw new TrainingMediaInputError();
+      const media=await dependencies.trainingMediaService.replace({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data,requestId:request.id},{assetId:assetId.data,...metadata.data,bytes:request.body,declaredMime});
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({media});
+    }catch(error){next(error instanceof HttpError?error:trainingMediaError(error));}},
+  );
+  app.patch(
+    "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/media/:assetId",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),courseId=z.uuid().safeParse(request.params.courseId),versionId=z.uuid().safeParse(request.params.versionId),assetId=z.uuid().safeParse(request.params.assetId),metadata=trainingMediaMetadataSchema.safeParse(request.body);
+      if(!organizationId.success||!courseId.success||!versionId.success||!assetId.success||!metadata.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);if(!dependencies.trainingMediaService)throw new TrainingMediaUnavailableError();
+      const media=await dependencies.trainingMediaService.updateMetadata({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data},{assetId:assetId.data,...metadata.data});
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({media});
+    }catch(error){next(error instanceof HttpError?error:trainingMediaError(error));}},
+  );
+  app.delete(
+    "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/media/:assetId",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),courseId=z.uuid().safeParse(request.params.courseId),versionId=z.uuid().safeParse(request.params.versionId),assetId=z.uuid().safeParse(request.params.assetId);
+      if(!organizationId.success||!courseId.success||!versionId.success||!assetId.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);if(!dependencies.trainingMediaService)throw new TrainingMediaUnavailableError();
+      await dependencies.trainingMediaService.retire({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data,requestId:request.id},assetId.data);
+      response.status(204).end();
+    }catch(error){next(error instanceof HttpError?error:trainingMediaError(error));}},
+  );
+  app.get(
+    "/api/v1/internal-admin/organizations/:organizationId/training/media/:assetId/read",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),assetId=z.uuid().safeParse(request.params.assetId),query=trainingMediaScopeQuerySchema.safeParse(request.query);
+      if(!organizationId.success||!assetId.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);if(!dependencies.trainingMediaService)throw new TrainingMediaUnavailableError();
+      const authorization=await dependencies.trainingMediaService.authorizeAdminRead({actorUserId:auth.userId,organizationId:organizationId.data,courseId:query.data.course,courseVersionId:query.data.version},assetId.data);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json(authorization);
+    }catch(error){next(error instanceof HttpError?error:trainingMediaError(error));}},
   );
   app.get(
     "/api/v1/internal-admin/organizations/:organizationId/maintenance-users",
