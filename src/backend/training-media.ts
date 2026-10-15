@@ -26,6 +26,13 @@ const mediaRow = z.object({
   height:z.number().int().positive(), approval_status:z.enum(["submitted","approved","rejected"]),
   status:z.enum(["ready","retired"]), created_at:z.string(), updated_at:z.string(),
 }).passthrough();
+export const trainingImageSlotRowSchema = z.object({
+  module_id:uuid,module_key:z.string(),module_position:z.number().int().nonnegative(),module_title_i18n:i18n,
+  lesson_id:uuid,lesson_key:z.string(),lesson_position:z.number().int().nonnegative(),lesson_title_i18n:i18n,
+  asset_key:z.string(),placement:z.string(),purpose_i18n:i18n,expected_alt_i18n:i18n,
+  media_id:uuid.nullable(),media_status:z.enum(["ready","retired"]).nullable(),approval_status:z.enum(["submitted","approved","rejected"]).nullable(),
+  width:z.number().int().positive().nullable(),height:z.number().int().positive().nullable(),preview_available:z.boolean(),
+}).strict();
 const draftVersionRow = z.object({ course_id:uuid,course_key:z.string(),course_version_id:uuid,version_number:z.number().int().positive(),title_i18n:z.record(z.string(),z.unknown()),supported_locales:z.array(z.string()),status:z.literal("draft") }).strict();
 const storageRow = z.object({storage_bucket:z.literal(TRAINING_MEDIA_BUCKET),storage_object_path:z.string(),mime_type:z.literal("image/webp")}).strict();
 
@@ -36,10 +43,12 @@ export class TrainingMediaNotFoundError extends Error {}
 export class TrainingMediaUnavailableError extends Error {}
 
 export type TrainingMediaDto = z.infer<typeof mediaRow> & { preview_url:string };
+export type TrainingImageSlotDto = z.infer<typeof trainingImageSlotRowSchema> & { preview_url:string|null };
 type Scope={actorUserId:string;organizationId:string;courseId:string;courseVersionId:string;requestId:string};
 export type TrainingMediaService = {
   listDraftVersions(actorUserId:string,organizationId:string):Promise<z.infer<typeof draftVersionRow>[]>;
   list(scope:Omit<Scope,"requestId">):Promise<TrainingMediaDto[]>;
+  listSlots(scope:Omit<Scope,"requestId">):Promise<TrainingImageSlotDto[]>;
   create(scope:Scope,input:z.infer<typeof trainingMediaMetadataSchema>&{bytes:Buffer;declaredMime:string}):Promise<TrainingMediaDto>;
   replace(scope:Scope,input:z.infer<typeof trainingMediaMetadataSchema>&{assetId:string;bytes:Buffer;declaredMime:string}):Promise<TrainingMediaDto>;
   updateMetadata(scope:Omit<Scope,"requestId">,input:z.infer<typeof trainingMediaMetadataSchema>&{assetId:string}):Promise<TrainingMediaDto>;
@@ -86,6 +95,7 @@ export function createTrainingMediaServiceFromClient(client:Client):TrainingMedi
     throw new TrainingMediaUnavailableError();}return result.data;}
   const args=(scope:Omit<Scope,"requestId">)=>({actor_user_id:scope.actorUserId,target_organization_id:scope.organizationId,target_course_id:scope.courseId,target_course_version_id:scope.courseVersionId});
   const preview=(scope:Omit<Scope,"requestId">,row:z.infer<typeof mediaRow>):TrainingMediaDto=>({...row,preview_url:`/api/internal-admin/training/media/${row.id}?organization=${scope.organizationId}&course=${scope.courseId}&version=${scope.courseVersionId}`});
+  const slotPreview=(scope:Omit<Scope,"requestId">,row:z.infer<typeof trainingImageSlotRowSchema>):TrainingImageSlotDto=>({...row,preview_url:row.preview_available&&row.media_id?`/api/internal-admin/training/media/${row.media_id}?organization=${scope.organizationId}&course=${scope.courseId}&version=${scope.courseVersionId}`:null});
   const log=(stage:string,outcome:string,safeCategory:string,sourceMime?:string,sourceBytes?:number,storedBytes?:number)=>console.warn("TRAINING_MEDIA_UPLOAD",{stage,outcome,safeCategory,sourceMime,sourceBytes,storedBytes});
   async function remove(path:string,stage:string){const result=await storage.remove([path]);if(result.error){log("cleanup","failed",stage);return false;}return true;}
   async function upload(scope:Scope,mediaId:string,source:Buffer,declaredMime:string){
@@ -98,6 +108,7 @@ export function createTrainingMediaServiceFromClient(client:Client):TrainingMedi
   return{
     async listDraftVersions(actorUserId,organizationId){return z.array(draftVersionRow).parse(await rpc("list_internal_admin_training_draft_versions",{actor_user_id:actorUserId,target_organization_id:organizationId}));},
     async list(scope){return z.array(mediaRow).parse(await rpc("list_internal_admin_training_media",args(scope))).map(row=>preview(scope,row));},
+    async listSlots(scope){return z.array(trainingImageSlotRowSchema).parse(await rpc("list_internal_admin_training_image_slots",args(scope))).map(row=>slotPreview(scope,row));},
     async create(scope,input){
       const metadata=trainingMediaMetadataSchema.parse({asset_key:input.asset_key,title_i18n:input.title_i18n,alt_i18n:input.alt_i18n}),mediaId=randomUUID();const saved=await upload(scope,mediaId,input.bytes,input.declaredMime);
       try{const rows=z.array(mediaRow).max(1).parse(await rpc("register_internal_admin_training_media",{...args(scope),target_media_id:mediaId,target_asset_key:metadata.asset_key,new_title_i18n:metadata.title_i18n,new_alt_i18n:metadata.alt_i18n,new_storage_object_path:saved.path,new_byte_size:saved.bytes.length,new_width:saved.width,new_height:saved.height,new_sha256:saved.sha256,new_source_mime_type:saved.sourceMime,new_source_byte_size:saved.sourceBytes,new_source_sha256:saved.sourceSha256}));if(!rows[0])throw new TrainingMediaUnavailableError();return preview(scope,rows[0]);}

@@ -3382,6 +3382,17 @@ export function createApp(
       response.setHeader("Cache-Control","private, no-store");response.status(200).json({media});
     }catch(error){next(error instanceof HttpError?error:trainingMediaError(error));}},
   );
+  app.get(
+    "/api/v1/internal-admin/organizations/:organizationId/training/image-slots",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),query=trainingMediaScopeQuerySchema.safeParse(request.query);
+      if(!organizationId.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);
+      if(!dependencies.trainingMediaService)throw new TrainingMediaUnavailableError();
+      const slots=await dependencies.trainingMediaService.listSlots({actorUserId:auth.userId,organizationId:organizationId.data,courseId:query.data.course,courseVersionId:query.data.version});
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({slots});
+    }catch(error){next(error instanceof HttpError?error:trainingMediaError(error));}},
+  );
   app.post(
     "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/media",
     protectedRateLimit,authenticate,trainingMediaRawBody,async(request,response,next)=>{try{

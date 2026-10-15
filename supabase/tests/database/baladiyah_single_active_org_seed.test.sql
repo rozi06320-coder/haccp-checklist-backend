@@ -28,9 +28,11 @@ select throws_ok(
 );
 rollback to multiple_active_organizations;
 
-select lives_ok(
+select throws_ok(
   $$select * from private.seed_baladiyah_single_active_organization()$$,
-  'exact seeded curriculum is an idempotent no-op'
+  '55000',
+  'Existing Baladiyah course/version conflicts with the approved draft manifest',
+  'historical seed cannot overwrite the normalized successor draft'
 );
 
 select is(
@@ -214,21 +216,22 @@ rollback to wrong_organization_course;
 
 savepoint conflicting_content;
 update public.training_lessons
-set title_i18n = jsonb_set(title_i18n, '{en}', '"Conflicting title"'::jsonb)
+set content_i18n = jsonb_set(content_i18n, '{en,image_slots}', '[]'::jsonb)
 where id = (
   select lesson.id
   from public.training_lessons lesson
   join public.training_course_versions version on version.id = lesson.course_version_id
   join public.training_courses course on course.id = version.course_id
   where course.course_key = 'baladiyah-food-safety-hygiene'
+    and lesson.stable_key = 'overview'
   order by lesson.id
   limit 1
 );
 select throws_ok(
-  $$select * from private.seed_baladiyah_single_active_organization()$$,
+  $$select private.normalize_baladiyah_training_image_slots()$$,
   '55000',
-  'Existing Baladiyah course/version conflicts with the approved draft manifest',
-  'a populated draft with changed content fails closed even when its stored hash is unchanged'
+  'Baladiyah normalized image-slot bindings have drifted',
+  'normalized successor helper fails closed when learner bindings drift'
 );
 rollback to conflicting_content;
 
@@ -287,8 +290,8 @@ select is(
    from public.training_course_versions version
    join public.training_courses course on course.id = version.course_id
    where course.course_key = 'baladiyah-food-safety-hygiene'),
-  0::bigint,
-  'draft revision follows the Phase 2A initial-version contract'
+  1::bigint,
+  'draft revision records the image-slot normalization successor'
 );
 
 select is(
