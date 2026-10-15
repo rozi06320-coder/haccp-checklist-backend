@@ -84,8 +84,8 @@ select is(
    join public.training_course_versions version on version.id = module.course_version_id
    join public.training_courses course on course.id = version.course_id
    where course.course_key = 'baladiyah-food-safety-hygiene'),
-  9,
-  'nine modules are seeded'
+  10,
+  'nine instructional modules and the final assessment module exist'
 );
 
 select is(
@@ -94,8 +94,8 @@ select is(
    join public.training_course_versions version on version.id = lesson.course_version_id
    join public.training_courses course on course.id = version.course_id
    where course.course_key = 'baladiyah-food-safety-hygiene'),
-  27,
-  'twenty-seven lessons are seeded'
+  19,
+  'eighteen instructional lessons and one final quiz exist'
 );
 
 select is(
@@ -123,7 +123,8 @@ select is(
     'storage-temperature-control',
     'cooking-holding-reheating',
     'waste-management',
-    'pest-prevention-escalation'
+    'pest-prevention-escalation',
+    'final-assessment'
   ]::text[],
   'all expected module stable keys are present in order'
 );
@@ -137,11 +138,18 @@ select is(
     join public.training_lessons lesson on lesson.module_id = module.id
     where course.course_key = 'baladiyah-food-safety-hygiene'
     group by module.id
-    having array_agg(lesson.stable_key order by lesson.position)
-      <> array['overview','practical-photo-guide','knowledge-check']::text[]
+    having (
+      module.stable_key <> 'final-assessment'
+      and array_agg(lesson.stable_key order by lesson.position)
+        <> array['overview','practical-photo-guide']::text[]
+    ) or (
+      module.stable_key = 'final-assessment'
+      and array_agg(lesson.stable_key order by lesson.position)
+        <> array['final-quiz']::text[]
+    )
   ) invalid_module),
   0,
-  'every module has the expected three lesson stable keys'
+  'instructional and final-assessment modules have the expected lesson keys'
 );
 
 select is(
@@ -228,10 +236,10 @@ where id = (
   limit 1
 );
 select throws_ok(
-  $$select private.normalize_baladiyah_training_image_slots()$$,
+  $$select private.restructure_baladiyah_final_assessment()$$,
   '55000',
-  'Baladiyah normalized image-slot bindings have drifted',
-  'normalized successor helper fails closed when learner bindings drift'
+  'Baladiyah final assessment target has drifted',
+  'final-assessment successor helper fails closed when learner bindings drift'
 );
 rollback to conflicting_content;
 
@@ -248,7 +256,7 @@ select is(
    join public.training_course_versions version on version.id = lesson.course_version_id
    join public.training_courses course on course.id = version.course_id
    where course.course_key = 'baladiyah-food-safety-hygiene'),
-  27,
+  19,
   'idempotency and conflict checks never duplicate lessons'
 );
 
@@ -290,8 +298,8 @@ select is(
    from public.training_course_versions version
    join public.training_courses course on course.id = version.course_id
    where course.course_key = 'baladiyah-food-safety-hygiene'),
-  1::bigint,
-  'draft revision records the image-slot normalization successor'
+  2::bigint,
+  'draft revision records the final-assessment successor'
 );
 
 select is(

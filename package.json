@@ -5,6 +5,7 @@
   "scripts": {
     "generate:training-draft": "node --import tsx scripts/generate-baladiyah-draft-seed.ts",
     "generate:training-single-org-seed": "node --import tsx scripts/generate-baladiyah-single-active-org-seed.ts",
+    "generate:training-final-assessment": "node --import tsx scripts/generate-baladiyah-final-assessment.ts",
     "validate:training-assets": "node --import tsx scripts/validate-baladiyah-photo-assets.ts",
     "dev:api": "node --env-file-if-exists=.env.backend.local --watch --import tsx src/backend/server.ts",
     "build:api": "tsc -p tsconfig.api.json",
