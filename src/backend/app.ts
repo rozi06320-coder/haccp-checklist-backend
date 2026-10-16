@@ -785,6 +785,14 @@ const trainingMediaScopeQuerySchema=z.object({course:z.uuid(),version:z.uuid()})
 const trainingMediaHeaderSchema=z.string().min(1).max(10000).transform((value)=>{
   try{return JSON.parse(Buffer.from(value,"base64url").toString("utf8")) as unknown;}catch{return null;}
 }).pipe(trainingMediaMetadataSchema);
+const trainingMediaReviewSchema=z.object({
+  revision:z.number().int().positive(),
+  decision:z.enum(["approved","rejected"]),
+  rejection_reason:z.string().trim().min(1).max(500).nullable().optional(),
+}).strict().superRefine((value,context)=>{
+  if(value.decision==="rejected"&&!value.rejection_reason)context.addIssue({code:"custom",path:["rejection_reason"],message:"A rejection reason is required."});
+  if(value.decision==="approved"&&value.rejection_reason)context.addIssue({code:"custom",path:["rejection_reason"],message:"Approval cannot include a rejection reason."});
+});
 const internalAdminOperationalTeamNameSchema = z.string().max(80).transform((value) => value.trim().replace(/\s+/gu, " ")).pipe(z.string().min(1).max(80));
 const createInternalAdminBranchTeamStaffBodySchema = z.object({
   display_name: normalizedNameSchema,
@@ -3575,6 +3583,16 @@ export function createApp(
       const auth=requireAuthContext(request);await requireInternalAdmin(request);if(!dependencies.trainingMediaService)throw new TrainingMediaUnavailableError();
       const media=await dependencies.trainingMediaService.updateMetadata({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data},{assetId:assetId.data,...metadata.data});
       response.setHeader("Cache-Control","private, no-store");response.status(200).json({media});
+    }catch(error){next(error instanceof HttpError?error:trainingMediaError(error));}},
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/media/:assetId/review",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),courseId=z.uuid().safeParse(request.params.courseId),versionId=z.uuid().safeParse(request.params.versionId),assetId=z.uuid().safeParse(request.params.assetId),review=trainingMediaReviewSchema.safeParse(request.body);
+      if(!organizationId.success||!courseId.success||!versionId.success||!assetId.success||!review.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);if(!dependencies.trainingMediaService)throw new TrainingMediaUnavailableError();
+      const reviewed=await dependencies.trainingMediaService.review({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data},{assetId:assetId.data,revision:review.data.revision,decision:review.data.decision,rejectionReason:review.data.rejection_reason??null});
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({review:reviewed});
     }catch(error){next(error instanceof HttpError?error:trainingMediaError(error));}},
   );
   app.delete(

@@ -80,9 +80,9 @@ select throws_like(format($call$select * from public.register_internal_admin_tra
  'organizations/'||(select organization_id from slot_scope)||'/courses/'||(select course_id from slot_scope)||'/versions/'||(select version_id from slot_scope)||'/assets/5d500000-0000-4000-8000-000000000002/5d600000-0000-4000-8000-000000000002.webp'),
  '%duplicate key value violates unique constraint "training_media_assets_version_asset_key_key"%','duplicate slot media is prevented');
 select is((select count(*)::integer from public.list_internal_admin_training_image_slots('5d100000-0000-4000-8000-000000000001',(select organization_id from slot_scope),(select course_id from slot_scope),(select version_id from slot_scope)) where approval_status='submitted'),1,'slot read model reports Submitted');
-update public.training_media_assets set approval_status='approved' where id='5d500000-0000-4000-8000-000000000001';
+update public.training_media_assets set approval_status='approved',reviewed_at=statement_timestamp(),reviewed_by='5d100000-0000-4000-8000-000000000001' where id='5d500000-0000-4000-8000-000000000001';
 select is((select count(*)::integer from public.list_internal_admin_training_image_slots('5d100000-0000-4000-8000-000000000001',(select organization_id from slot_scope),(select course_id from slot_scope),(select version_id from slot_scope)) where approval_status='approved'),1,'slot read model reports Approved');
-update public.training_media_assets set approval_status='rejected' where id='5d500000-0000-4000-8000-000000000001';
+update public.training_media_assets set approval_status='rejected',reviewed_at=statement_timestamp(),reviewed_by='5d100000-0000-4000-8000-000000000001',rejection_reason='Operational subject is unclear.' where id='5d500000-0000-4000-8000-000000000001';
 select is((select count(*)::integer from public.list_internal_admin_training_image_slots('5d100000-0000-4000-8000-000000000001',(select organization_id from slot_scope),(select course_id from slot_scope),(select version_id from slot_scope)) where approval_status='rejected'),1,'slot read model reports Rejected');
 
 select lives_ok(format($call$select * from public.replace_internal_admin_training_media(
@@ -93,21 +93,21 @@ select lives_ok(format($call$select * from public.replace_internal_admin_trainin
  (select organization_id from slot_scope),(select course_id from slot_scope),(select version_id from slot_scope),
  'organizations/'||(select organization_id from slot_scope)||'/courses/'||(select course_id from slot_scope)||'/versions/'||(select version_id from slot_scope)||'/assets/5d500000-0000-4000-8000-000000000001/5d600000-0000-4000-8000-000000000002.webp'),
  'replacement succeeds on the occupied slot');
-select ok((select asset_key='personal-hygiene-handwashing-wet' and approval_status='submitted' from public.training_media_assets where id='5d500000-0000-4000-8000-000000000001'),'replacement retains the key and resets status to Submitted');
+select ok((select asset_key='personal-hygiene-handwashing-wet' and approval_status='submitted' and reviewed_at is null and reviewed_by is null and rejection_reason is null from public.training_media_assets where id='5d500000-0000-4000-8000-000000000001'),'replacement retains the key and resets review state to Submitted');
 select throws_ok(format($call$select * from public.retire_internal_admin_training_media('5d100000-0000-4000-8000-000000000001',%L,%L,%L,'5d500000-0000-4000-8000-000000000001')$call$,(select organization_id from slot_scope),(select course_id from slot_scope),(select version_id from slot_scope)),'55000','Required Training image slots must be replaced, not removed','required slot media cannot be removed');
 select throws_ok(format($call$select * from public.validate_internal_admin_training_media_for_publish('5d100000-0000-4000-8000-000000000001',%L,%L,%L)$call$,(select organization_id from slot_scope),(select course_id from slot_scope),(select version_id from slot_scope)),'55000','Training media publication validation failed','missing and submitted slots block publication');
 
 insert into public.training_media_assets(
  id,organization_id,course_version_id,asset_key,media_type,title_i18n,alt_i18n,storage_object_path,mime_type,
- byte_size,width,height,sha256,source_mime_type,source_byte_size,source_sha256,approval_status,status
+ byte_size,width,height,sha256,source_mime_type,source_byte_size,source_sha256,approval_status,status,reviewed_at,reviewed_by
 )
 select md5('media-'||slot.asset_key)::uuid,scope.organization_id,scope.version_id,slot.asset_key,'image',slot.expected_alt_i18n,slot.expected_alt_i18n,
  'organizations/'||scope.organization_id||'/courses/'||scope.course_id||'/versions/'||scope.version_id||'/assets/'||md5('media-'||slot.asset_key)::uuid||'/'||md5('object-'||slot.asset_key)::uuid||'.webp',
- 'image/webp',100,1280,720,encode(digest(slot.asset_key,'sha256'),'hex'),'image/webp',100,encode(digest('source-'||slot.asset_key,'sha256'),'hex'),'approved','ready'
+ 'image/webp',100,1280,720,encode(digest(slot.asset_key,'sha256'),'hex'),'image/webp',100,encode(digest('source-'||slot.asset_key,'sha256'),'hex'),'approved','ready',statement_timestamp(),'5d100000-0000-4000-8000-000000000001'
 from slot_scope scope
 cross join private.training_image_slot_requirements(scope.organization_id,scope.version_id) slot
 where slot.asset_key<>'personal-hygiene-handwashing-wet';
-update public.training_media_assets set approval_status='approved' where id='5d500000-0000-4000-8000-000000000001';
+update public.training_media_assets set approval_status='approved',reviewed_at=statement_timestamp(),reviewed_by='5d100000-0000-4000-8000-000000000001',rejection_reason=null where id='5d500000-0000-4000-8000-000000000001';
 
 select is((select referenced_asset_count from public.validate_internal_admin_training_media_for_publish('5d100000-0000-4000-8000-000000000001',(select organization_id from slot_scope),(select course_id from slot_scope),(select version_id from slot_scope))),40,'forty approved assets satisfy publication media validation');
 select lives_ok(format($call$update public.training_course_versions set status='published',published_at=statement_timestamp(),published_by='5d100000-0000-4000-8000-000000000001' where id=%L$call$,(select version_id from slot_scope)),'fully approved draft can publish');

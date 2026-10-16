@@ -35,14 +35,16 @@ const mediaRow = z.object({
   id:uuid, asset_key:z.string(), media_type:z.literal("image"), title_i18n:i18n, alt_i18n:i18n,
   mime_type:z.literal("image/webp"), byte_size:z.number().int().positive(), width:z.number().int().positive(),
   height:z.number().int().positive(), approval_status:z.enum(["submitted","approved","rejected"]),
-  status:z.enum(["ready","retired"]), created_at:z.string(), updated_at:z.string(),
+  status:z.enum(["ready","retired"]), created_at:z.string(), updated_at:z.string(),revision:z.number().int().positive(),
+  reviewed_at:z.string().nullable(),rejection_reason:z.string().max(500).nullable(),
 }).passthrough();
 export const trainingImageSlotRowSchema = z.object({
   module_id:uuid,module_key:z.string(),module_position:z.number().int().nonnegative(),module_title_i18n:i18n,
   lesson_id:uuid,lesson_key:z.string(),lesson_position:z.number().int().nonnegative(),lesson_title_i18n:i18n,
-  asset_key:z.string(),placement:z.string(),purpose_i18n:i18n,expected_alt_i18n:i18n,
+  asset_key:z.string(),placement:z.string(),purpose_i18n:i18n,expected_alt_i18n:i18n,media_alt_i18n:i18n.nullable(),
   media_id:uuid.nullable(),media_status:z.enum(["ready","retired"]).nullable(),approval_status:z.enum(["submitted","approved","rejected"]).nullable(),
   width:z.number().int().positive().nullable(),height:z.number().int().positive().nullable(),preview_available:z.boolean(),
+  revision:z.number().int().positive().nullable(),reviewed_at:z.string().nullable(),rejection_reason:z.string().max(500).nullable(),
 }).strict();
 const draftPreviewRowSchema=z.object({
   organization_id:uuid,course_id:uuid,course_key:z.literal("baladiyah-food-safety-hygiene"),course_version_id:uuid,
@@ -55,6 +57,15 @@ const draftPreviewRowSchema=z.object({
 }).strict();
 const draftVersionRow = z.object({ course_id:uuid,course_key:z.string(),course_version_id:uuid,version_number:z.number().int().positive(),title_i18n:z.record(z.string(),z.unknown()),supported_locales:z.array(z.string()),status:z.literal("draft") }).strict();
 const storageRow = z.object({storage_bucket:z.literal(TRAINING_MEDIA_BUCKET),storage_object_path:z.string(),mime_type:z.literal("image/webp")}).strict();
+const reviewCandidateRow=z.object({
+  storage_bucket:z.literal(TRAINING_MEDIA_BUCKET),storage_object_path:z.string().min(1),mime_type:z.literal("image/webp"),
+  byte_size:z.number().int().positive(),width:z.number().int().positive(),height:z.number().int().positive(),sha256:z.string().regex(/^[0-9a-f]{64}$/),
+  revision:z.number().int().positive(),approval_status:z.enum(["submitted","approved","rejected"]),status:z.literal("ready"),
+}).strict();
+const reviewResultRow=z.object({
+  id:uuid,approval_status:z.enum(["approved","rejected"]),reviewed_at:z.string(),rejection_reason:z.string().max(500).nullable(),
+  revision:z.number().int().positive(),updated_at:z.string(),
+}).strict();
 
 export class TrainingMediaAccessError extends Error {}
 export class TrainingMediaInputError extends Error {}
@@ -78,6 +89,7 @@ export type TrainingMediaService = {
   create(scope:Scope,input:z.infer<typeof trainingMediaMetadataSchema>&{bytes:Buffer;declaredMime:string}):Promise<TrainingMediaDto>;
   replace(scope:Scope,input:z.infer<typeof trainingMediaMetadataSchema>&{assetId:string;bytes:Buffer;declaredMime:string}):Promise<TrainingMediaDto>;
   updateMetadata(scope:Omit<Scope,"requestId">,input:z.infer<typeof trainingMediaMetadataSchema>&{assetId:string}):Promise<TrainingMediaDto>;
+  review(scope:Omit<Scope,"requestId">,input:{assetId:string;revision:number;decision:"approved"|"rejected";rejectionReason?:string|null}):Promise<z.infer<typeof reviewResultRow>>;
   retire(scope:Scope,assetId:string):Promise<void>;
   authorizeAdminRead(scope:Omit<Scope,"requestId">,assetId:string):Promise<{signed_url:string;mime_type:"image/webp";expires_in:number}>;
 };
@@ -85,6 +97,7 @@ export type TrainingMediaService = {
 type Client={rpc:(name:string,args?:Record<string,unknown>)=>PromiseLike<{data:unknown;error:{code?:string}|null}>;storage:{from:(bucket:string)=>{
   upload:(path:string,bytes:Buffer,options:Record<string,unknown>)=>PromiseLike<{data:unknown;error:unknown}>;
   remove:(paths:string[])=>PromiseLike<{data:unknown;error:unknown}>;
+  download:(path:string)=>PromiseLike<{data:Blob|null;error:unknown}>;
   createSignedUrl:(path:string,seconds:number)=>PromiseLike<{data:{signedUrl?:string}|null;error:unknown}>;
 }}};
 const clientOptions={auth:{autoRefreshToken:false,detectSessionInUrl:false,persistSession:false}} as const;
@@ -116,7 +129,7 @@ export function createTrainingMediaServiceFromClient(client:Client):TrainingMedi
   async function rpc(name:string,args:Record<string,unknown>){const result=await client.rpc(name,args);if(result.error){
     if(result.error.code==="42501")throw new TrainingMediaAccessError();
     if(result.error.code==="22023")throw new TrainingMediaInputError();
-    if(result.error.code==="23505"||result.error.code==="55000")throw new TrainingMediaConflictError();
+    if(result.error.code==="23505"||result.error.code==="40001"||result.error.code==="55000")throw new TrainingMediaConflictError();
     if(result.error.code==="P0002")throw new TrainingMediaNotFoundError();
     throw new TrainingMediaUnavailableError();}return result.data;}
   const args=(scope:Omit<Scope,"requestId">)=>({actor_user_id:scope.actorUserId,target_organization_id:scope.organizationId,target_course_id:scope.courseId,target_course_version_id:scope.courseVersionId});
@@ -130,6 +143,16 @@ export function createTrainingMediaServiceFromClient(client:Client):TrainingMedi
     const result=await storage.upload(path,normalized.bytes,{contentType:"image/webp",cacheControl:"300",upsert:false});
     if(result.error){log("storage_upload","failed","storage_unavailable",declaredMime,source.length,normalized.bytes.length);throw new TrainingMediaUnavailableError();}
     return{...normalized,path};
+  }
+  async function verifyReviewCandidate(candidate:z.infer<typeof reviewCandidateRow>){
+    const result=await storage.download(candidate.storage_object_path);
+    if(result.error||!result.data)throw new TrainingMediaUnavailableError();
+    const bytes=Buffer.from(await result.data.arrayBuffer());
+    if(bytes.length!==candidate.byte_size||hash(bytes)!==candidate.sha256)throw new TrainingMediaConflictError();
+    try{
+      const metadata=await sharp(bytes,{failOn:"error",limitInputPixels:MAX_TRAINING_MEDIA_PIXELS,animated:true}).metadata();
+      if(metadata.format!=="webp"||metadata.width!==candidate.width||metadata.height!==candidate.height||(metadata.pages??1)!==1||metadata.exif||metadata.xmp||metadata.icc)throw new TrainingMediaConflictError();
+    }catch(error){if(error instanceof TrainingMediaConflictError)throw error;throw new TrainingMediaConflictError();}
   }
   return{
     async listDraftVersions(actorUserId,organizationId){return z.array(draftVersionRow).parse(await rpc("list_internal_admin_training_draft_versions",{actor_user_id:actorUserId,target_organization_id:organizationId}));},
@@ -178,6 +201,17 @@ export function createTrainingMediaServiceFromClient(client:Client):TrainingMedi
       catch(error){await remove(saved.path,"replace_compensation");throw error;}
     },
     async updateMetadata(scope,input){uuid.parse(input.assetId);const metadata=trainingMediaMetadataSchema.parse({asset_key:input.asset_key,title_i18n:input.title_i18n,alt_i18n:input.alt_i18n});const rows=z.array(mediaRow).max(1).parse(await rpc("update_internal_admin_training_media_metadata",{...args(scope),target_media_id:input.assetId,new_title_i18n:metadata.title_i18n,new_alt_i18n:metadata.alt_i18n}));if(!rows[0])throw new TrainingMediaNotFoundError();return preview(scope,rows[0]);},
+    async review(scope,input){
+      uuid.parse(input.assetId);const revision=z.number().int().positive().parse(input.revision);
+      const decision=z.enum(["approved","rejected"]).parse(input.decision);
+      const rejectionReason=decision==="rejected"?z.string().trim().min(1).max(500).parse(input.rejectionReason):null;
+      const candidates=z.array(reviewCandidateRow).max(1).parse(await rpc("get_internal_admin_training_media_review_candidate",{...args(scope),target_media_id:input.assetId}));
+      const candidate=candidates[0];if(!candidate)throw new TrainingMediaNotFoundError();
+      if(candidate.revision!==revision||candidate.approval_status!=="submitted")throw new TrainingMediaConflictError();
+      if(decision==="approved")await verifyReviewCandidate(candidate);
+      const reviewed=z.array(reviewResultRow).max(1).parse(await rpc("review_internal_admin_training_media",{...args(scope),target_media_id:input.assetId,expected_revision:revision,review_decision:decision,new_rejection_reason:rejectionReason}));
+      if(!reviewed[0])throw new TrainingMediaNotFoundError();return reviewed[0];
+    },
     async retire(scope,assetId){uuid.parse(assetId);const rows=z.array(z.object({id:uuid,retired_storage_object_path:z.string()}).strict()).max(1).parse(await rpc("retire_internal_admin_training_media",{...args(scope),target_media_id:assetId}));if(!rows[0])throw new TrainingMediaNotFoundError();await remove(rows[0].retired_storage_object_path,"retire_object");},
     async authorizeAdminRead(scope,assetId){uuid.parse(assetId);const rows=z.array(storageRow).max(1).parse(await rpc("authorize_internal_admin_training_media_read",{...args(scope),target_media_id:assetId}));if(!rows[0])throw new TrainingMediaNotFoundError();const signed=await storage.createSignedUrl(rows[0].storage_object_path,TRAINING_MEDIA_SIGNED_URL_SECONDS);if(signed.error||!signed.data?.signedUrl)throw new TrainingMediaUnavailableError();return{signed_url:signed.data.signedUrl,mime_type:"image/webp",expires_in:TRAINING_MEDIA_SIGNED_URL_SECONDS};},
   };
