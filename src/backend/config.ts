@@ -41,6 +41,7 @@ const environmentSchema = z
     SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET: z.string().min(32).max(4_096).optional(),
     TRAINING_ORGANIZATION_SLUG: z.string().trim().toLowerCase().min(1).max(120).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional(),
     TRAINING_LEARNER_AUTH_ENABLED: disabledByDefaultFlag,
+    TRAINING_DB_CURRICULUM_ENABLED: disabledByDefaultFlag,
     TRAINING_LEARNER_ALLOWED_ORIGIN: z.url().transform((value) => new URL(value).origin).optional(),
   })
   .superRefine((environment, context) => {
@@ -68,7 +69,7 @@ const environmentSchema = z
       });
     }
 
-    if (environment.TRAINING_LEARNER_AUTH_ENABLED && !environment.TRAINING_LEARNER_ALLOWED_ORIGIN) {
+    if ((environment.TRAINING_LEARNER_AUTH_ENABLED || environment.TRAINING_DB_CURRICULUM_ENABLED) && !environment.TRAINING_LEARNER_ALLOWED_ORIGIN) {
       context.addIssue({
         code: "custom",
         path: ["TRAINING_LEARNER_ALLOWED_ORIGIN"],
@@ -96,6 +97,7 @@ export type BackendConfig = {
   supervisorNotificationSchedulerSecret?: string;
   trainingOrganizationSlug?: string;
   trainingLearnerAuthEnabled?: boolean;
+  trainingDbCurriculumEnabled?: boolean;
   trainingLearnerAllowedOrigin?: string;
 };
 
@@ -139,6 +141,7 @@ export function loadBackendConfig(
     supervisorNotificationSchedulerSecret: result.data.SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET,
     trainingOrganizationSlug: result.data.TRAINING_ORGANIZATION_SLUG,
     trainingLearnerAuthEnabled: result.data.TRAINING_LEARNER_AUTH_ENABLED,
+    trainingDbCurriculumEnabled: result.data.TRAINING_DB_CURRICULUM_ENABLED,
     trainingLearnerAllowedOrigin: result.data.TRAINING_LEARNER_ALLOWED_ORIGIN,
   };
 }

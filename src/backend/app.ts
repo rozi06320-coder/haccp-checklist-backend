@@ -23,6 +23,7 @@ import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, Evidenc
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
 import { MaintenancePushAccessError, MaintenancePushConflictError, MaintenancePushInputError, MaintenancePushUnavailableError } from "./maintenance-push";
 import { MAX_TRAINING_MEDIA_SOURCE_BYTES, TrainingMediaAccessError, TrainingMediaConflictError, TrainingMediaInputError, TrainingMediaNotFoundError, TrainingMediaUnavailableError, trainingMediaMetadataSchema } from "./training-media";
+import { TrainingProgressAccessError, TrainingProgressConflictError, TrainingProgressNotFoundError, TrainingProgressUnavailableError } from "./training-progress";
 import type { UserContext } from "./user-context";
 import { validateDailyAuditGrant } from "./daily-audit-grant";
 import { decodeUploadFilename } from "../lib/internal-api/upload-filename";
@@ -935,6 +936,15 @@ const trainingEmployeeCodeSchema = z.string()
 const trainingEmployeeSelectBodySchema = z.object({
   employee_code: trainingEmployeeCodeSchema,
 }).strict();
+const trainingEnrollmentIdSchema=z.uuid();
+const trainingLessonIdSchema=z.uuid();
+const trainingAttemptIdSchema=z.uuid();
+const trainingProgressEmptyBodySchema=z.object({}).strict();
+const trainingQuizStartBodySchema=z.object({locale:z.enum(["en","ar","id","hi","fil"]),idempotency_key:z.uuid()}).strict();
+const trainingQuizAnswerBodySchema=z.object({question_key:z.string().min(1).max(120).regex(/^[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?$/),option_key:z.string().min(1).max(40).regex(/^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$/)}).strict();
+const trainingQuizSubmitBodySchema=z.object({idempotency_key:z.uuid(),answers:z.array(trainingQuizAnswerBodySchema).length(27)}).strict().superRefine((value,context)=>{
+  if(new Set(value.answers.map(answer=>answer.question_key)).size!==27)context.addIssue({code:"custom",path:["answers"],message:"Question answers must be unique."});
+});
 const trainingLearnerLoginBodySchema = z.object({
   employee_code: trainingEmployeeCodeSchema,
   personal_pin: trainingPinSchema,
@@ -2861,6 +2871,11 @@ export function createApp(
       next(new HttpError(429, "rate_limited", "Unable to update the Personal Training PIN."));
     },
   });
+  const trainingProgressMutationRateLimit = rateLimit({
+    windowMs:60_000,limit:config.nodeEnv==="test"?1_000:60,standardHeaders:"draft-8",legacyHeaders:false,
+    validate:{trustProxy:false,xForwardedForHeader:false},keyGenerator(request){return ipKeyGenerator(request.ip??"unknown");},
+    handler(_request,_response,next){next(new HttpError(429,"rate_limited","Unable to update Training progress."));},
+  });
   function requireTrainingLearnerMutationOrigin(request: Request) {
     const expected = config.trainingLearnerAllowedOrigin;
     const supplied = request.header("Origin");
@@ -2971,6 +2986,20 @@ export function createApp(
       expires_at: new Date(parsed.expiresAt).toISOString(),
       expires_at_ms: parsed.expiresAt,
     };
+  }
+
+  async function loadLegacyTrainingProgressIdentity(request:Request){
+    if(!config.trainingDbCurriculumEnabled)throw new HttpError(404,"not_found","The requested resource was not found.");
+    const session=await loadTrainingBranchSession(request);
+    if(session.employee_invalidated||!session.employee)throw new HttpError(401,"unauthorized","Training employee access is required.");
+    return{organizationId:session.organization_id,branchId:session.branch_id,employeeId:session.employee.employee_id};
+  }
+
+  function trainingProgressError(error:unknown){
+    if(error instanceof TrainingProgressAccessError)return new HttpError(403,"forbidden","Training access is denied.");
+    if(error instanceof TrainingProgressNotFoundError)return new HttpError(404,"not_found","Training content is unavailable.");
+    if(error instanceof TrainingProgressConflictError)return new HttpError(409,"conflict","Training content is unavailable.");
+    return new HttpError(503,"service_unavailable","Training progress is temporarily unavailable.");
   }
 
   async function resolveInternalAdminTrainingEmployee(
@@ -3822,6 +3851,137 @@ export function createApp(
         else next(new HttpError(503, "service_unavailable", "Unable to clear Training access."));
       }
     },
+  );
+  app.post(
+    "/api/v1/training/enrollment",
+    trainingProgressMutationRateLimit,
+    async(request,response,next)=>{try{
+      if(!config.trainingDbCurriculumEnabled)throw new HttpError(404,"not_found","The requested resource was not found.");
+      requireTrainingLearnerMutationOrigin(request);
+      if(!emptyQuerySchema.safeParse(request.query).success||!trainingProgressEmptyBodySchema.safeParse(request.body??{}).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const identity=await loadLegacyTrainingProgressIdentity(request),service=dependencies.trainingProgressService;
+      if(!service)throw new TrainingProgressUnavailableError();
+      const enrollment=await service.initialize(identity,"baladiyah-food-safety-hygiene");
+      const progress=await service.getProgress(identity,enrollment.id);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({enrollment:{id:enrollment.id,course_id:enrollment.course_id,course_version_id:enrollment.course_version_id,status:enrollment.status,enrolled_at:enrollment.enrolled_at,identity_assurance:"internal_learning_branch_pin_employee_code"},progress});
+    }catch(error){next(error instanceof HttpError?error:trainingProgressError(error));}},
+  );
+  app.get(
+    "/api/v1/training/enrollments/:enrollmentId/progress",
+    trainingBranchDiscoveryRateLimit,
+    async(request,response,next)=>{try{
+      const enrollmentId=trainingEnrollmentIdSchema.safeParse(request.params.enrollmentId);
+      if(!enrollmentId.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const identity=await loadLegacyTrainingProgressIdentity(request),service=dependencies.trainingProgressService;
+      if(!service)throw new TrainingProgressUnavailableError();
+      const progress=await service.getProgress(identity,enrollmentId.data);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({progress});
+    }catch(error){next(error instanceof HttpError?error:trainingProgressError(error));}},
+  );
+  app.get(
+    "/api/v1/training/enrollments/:enrollmentId/curriculum",
+    trainingBranchDiscoveryRateLimit,
+    async(request,response,next)=>{try{
+      const enrollmentId=trainingEnrollmentIdSchema.safeParse(request.params.enrollmentId);
+      if(!enrollmentId.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const identity=await loadLegacyTrainingProgressIdentity(request),service=dependencies.trainingProgressService;
+      if(!service)throw new TrainingProgressUnavailableError();
+      const curriculum=await service.getCurriculum(identity,enrollmentId.data);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({curriculum});
+    }catch(error){next(error instanceof HttpError?error:trainingProgressError(error));}},
+  );
+  app.post(
+    "/api/v1/training/enrollments/:enrollmentId/lessons/:lessonId/start",
+    trainingProgressMutationRateLimit,
+    async(request,response,next)=>{try{
+      if(!config.trainingDbCurriculumEnabled)throw new HttpError(404,"not_found","The requested resource was not found.");
+      requireTrainingLearnerMutationOrigin(request);
+      const enrollmentId=trainingEnrollmentIdSchema.safeParse(request.params.enrollmentId),lessonId=trainingLessonIdSchema.safeParse(request.params.lessonId);
+      if(!enrollmentId.success||!lessonId.success||!emptyQuerySchema.safeParse(request.query).success||!trainingProgressEmptyBodySchema.safeParse(request.body??{}).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const identity=await loadLegacyTrainingProgressIdentity(request),service=dependencies.trainingProgressService;
+      if(!service)throw new TrainingProgressUnavailableError();
+      const lesson=await service.startLesson(identity,enrollmentId.data,lessonId.data),progress=await service.getProgress(identity,enrollmentId.data);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({lesson:{lesson_id:lesson.lesson_id,status:lesson.status,started_at:lesson.started_at,completed_at:lesson.completed_at},progress});
+    }catch(error){next(error instanceof HttpError?error:trainingProgressError(error));}},
+  );
+  app.post(
+    "/api/v1/training/enrollments/:enrollmentId/lessons/:lessonId/complete",
+    trainingProgressMutationRateLimit,
+    async(request,response,next)=>{try{
+      if(!config.trainingDbCurriculumEnabled)throw new HttpError(404,"not_found","The requested resource was not found.");
+      requireTrainingLearnerMutationOrigin(request);
+      const enrollmentId=trainingEnrollmentIdSchema.safeParse(request.params.enrollmentId),lessonId=trainingLessonIdSchema.safeParse(request.params.lessonId);
+      if(!enrollmentId.success||!lessonId.success||!emptyQuerySchema.safeParse(request.query).success||!trainingProgressEmptyBodySchema.safeParse(request.body??{}).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const identity=await loadLegacyTrainingProgressIdentity(request),service=dependencies.trainingProgressService;
+      if(!service)throw new TrainingProgressUnavailableError();
+      const lesson=await service.completeLesson(identity,enrollmentId.data,lessonId.data),progress=await service.getProgress(identity,enrollmentId.data);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({lesson:{lesson_id:lesson.lesson_id,status:lesson.status,started_at:lesson.started_at,completed_at:lesson.completed_at},progress});
+    }catch(error){next(error instanceof HttpError?error:trainingProgressError(error));}},
+  );
+  app.get(
+    "/api/v1/training/enrollments/:enrollmentId/final-assessment",
+    trainingBranchDiscoveryRateLimit,
+    async(request,response,next)=>{try{
+      const enrollmentId=trainingEnrollmentIdSchema.safeParse(request.params.enrollmentId);
+      if(!enrollmentId.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const identity=await loadLegacyTrainingProgressIdentity(request),service=dependencies.trainingProgressService;
+      if(!service)throw new TrainingProgressUnavailableError();
+      const assessment=await service.getAssessmentStatus(identity,enrollmentId.data);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({assessment});
+    }catch(error){next(error instanceof HttpError?error:trainingProgressError(error));}},
+  );
+  app.post(
+    "/api/v1/training/enrollments/:enrollmentId/final-assessment/attempts",
+    trainingProgressMutationRateLimit,
+    async(request,response,next)=>{try{
+      if(!config.trainingDbCurriculumEnabled)throw new HttpError(404,"not_found","The requested resource was not found.");
+      requireTrainingLearnerMutationOrigin(request);
+      const enrollmentId=trainingEnrollmentIdSchema.safeParse(request.params.enrollmentId),body=trainingQuizStartBodySchema.safeParse(request.body);
+      if(!enrollmentId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const identity=await loadLegacyTrainingProgressIdentity(request),service=dependencies.trainingProgressService;
+      if(!service)throw new TrainingProgressUnavailableError();
+      const attempt=await service.startQuizAttempt(identity,enrollmentId.data,body.data.locale,body.data.idempotency_key);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({attempt});
+    }catch(error){next(error instanceof HttpError?error:trainingProgressError(error));}},
+  );
+  app.get(
+    "/api/v1/training/enrollments/:enrollmentId/final-assessment/attempts/:attemptId",
+    trainingBranchDiscoveryRateLimit,
+    async(request,response,next)=>{try{
+      const enrollmentId=trainingEnrollmentIdSchema.safeParse(request.params.enrollmentId),attemptId=trainingAttemptIdSchema.safeParse(request.params.attemptId);
+      if(!enrollmentId.success||!attemptId.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const identity=await loadLegacyTrainingProgressIdentity(request),service=dependencies.trainingProgressService;
+      if(!service)throw new TrainingProgressUnavailableError();
+      const attempt=await service.getQuizAttempt(identity,enrollmentId.data,attemptId.data);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({attempt});
+    }catch(error){next(error instanceof HttpError?error:trainingProgressError(error));}},
+  );
+  app.post(
+    "/api/v1/training/enrollments/:enrollmentId/final-assessment/attempts/:attemptId/submit",
+    trainingProgressMutationRateLimit,
+    async(request,response,next)=>{try{
+      if(!config.trainingDbCurriculumEnabled)throw new HttpError(404,"not_found","The requested resource was not found.");
+      requireTrainingLearnerMutationOrigin(request);
+      const enrollmentId=trainingEnrollmentIdSchema.safeParse(request.params.enrollmentId),attemptId=trainingAttemptIdSchema.safeParse(request.params.attemptId),body=trainingQuizSubmitBodySchema.safeParse(request.body);
+      if(!enrollmentId.success||!attemptId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const identity=await loadLegacyTrainingProgressIdentity(request),service=dependencies.trainingProgressService;
+      if(!service)throw new TrainingProgressUnavailableError();
+      const result=await service.submitQuizAttempt(identity,enrollmentId.data,attemptId.data,body.data.idempotency_key,body.data.answers);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({result});
+    }catch(error){next(error instanceof HttpError?error:trainingProgressError(error));}},
+  );
+  app.get(
+    "/api/v1/training/media/:assetId",
+    trainingBranchDiscoveryRateLimit,
+    async(request,response,next)=>{try{
+      const mediaId=z.uuid().safeParse(request.params.assetId),query=z.object({enrollment:z.uuid()}).strict().safeParse(request.query);
+      if(!mediaId.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const identity=await loadLegacyTrainingProgressIdentity(request),service=dependencies.trainingProgressService;
+      if(!service)throw new TrainingProgressUnavailableError();
+      const authorized=await service.authorizeMedia(identity,query.data.enrollment,mediaId.data);
+      if(!authorized)throw new HttpError(404,"not_found","Training image is unavailable.");
+      response.setHeader("Cache-Control","private, no-store");response.redirect(302,authorized.signed_url);
+    }catch(error){next(error instanceof HttpError?error:trainingProgressError(error));}},
   );
   app.post(
     "/api/v1/training/learner/login",

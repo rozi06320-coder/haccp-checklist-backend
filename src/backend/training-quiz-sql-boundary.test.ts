@@ -1,0 +1,12 @@
+import assert from "node:assert/strict";
+import {readFile} from "node:fs/promises";
+import {describe,it} from "node:test";
+
+const migration=new URL("../../supabase/migrations/20261016233000_training_quiz_attempts_completion.sql",import.meta.url);
+describe("Training Phase 3C SQL boundary",()=>{
+ it("keeps attempts, answers, and completion organization scoped",async()=>{const sql=await readFile(migration,"utf8");for(const table of ["training_quiz_attempts","training_quiz_attempt_answers","training_course_completions"])assert.match(sql,new RegExp(`create table public\\.${table}`));assert.match(sql,/foreign key\(enrollment_id, organization_id, employee_id, course_version_id\)/);assert.match(sql,/foreign key\(passing_attempt_id, organization_id, enrollment_id, employee_id, course_version_id, quiz_lesson_id\)/);});
+ it("enforces unlock and performs scoring only in hardened SQL",async()=>{const sql=await readFile(migration,"utf8");assert.match(sql,/private\.training_assert_final_quiz_unlocked/);assert.match(sql,/correct_total\*10000>=attempt\.question_count\*attempt\.pass_threshold_bps/);assert.match(sql,/security definer set search_path=''/g);assert.match(sql,/grant execute on function public\.submit_training_final_quiz_attempt[\s\S]*to service_role/);});
+ it("returns sanitized question fields without answer keys or explanations",async()=>{const sql=await readFile(migration,"utf8");const safe=sql.slice(sql.indexOf("create or replace function private.training_safe_quiz_questions"),sql.indexOf("create or replace function public.start_training_final_quiz_attempt"));assert.match(safe,/'question_key'.*'prompt'[\s\S]*'options'/);assert.doesNotMatch(safe,/'explanation'/);assert.doesNotMatch(safe,/'correct'/);});
+ it("makes submitted evidence and first completion immutable",async()=>{const sql=await readFile(migration,"utf8");assert.match(sql,/if tg_op='DELETE' or old\.status='submitted'/);assert.match(sql,/Training attempt answers are immutable/);assert.match(sql,/Training completion is immutable/);assert.match(sql,/on conflict on constraint training_course_completions_enrollment_key do nothing/);});
+ it("leaves publication, feature flags, and curriculum media untouched",async()=>{const sql=await readFile(migration,"utf8");assert.doesNotMatch(sql,/update public\.training_course_versions set status/i);assert.doesNotMatch(sql,/insert into public\.training_media_assets/i);assert.doesNotMatch(sql,/training_image_slot/i);});
+});

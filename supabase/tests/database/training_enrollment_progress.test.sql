@@ -1,0 +1,30 @@
+begin;
+select plan(24);
+
+select has_table('public','training_enrollments','training enrollments table exists');
+select has_table('public','training_lesson_progress','training lesson progress table exists');
+select has_column('public','training_enrollments','employee_id','enrollment owns stable employee identity');
+select has_column('public','training_enrollments','course_version_id','enrollment pins a course version');
+select has_column('public','training_enrollments','branch_id_at_enrollment','branch attribution is snapshotted');
+select has_column('public','training_enrollments','operational_team_id_at_enrollment','team attribution is snapshotted');
+select has_column('public','training_enrollments','last_accessed_lesson_id','last accessed lesson is separate');
+select has_column('public','training_lesson_progress','completed_at','lesson completion timestamp exists');
+select has_column('public','training_lesson_progress','status','lesson progress state exists');
+select has_column('public','training_lesson_progress','enrollment_id','progress belongs to enrollment');
+select has_pk('public','training_enrollments','training enrollments has a primary key');
+select has_pk('public','training_lesson_progress','training progress has a primary key');
+select has_index('public','training_enrollments','training_enrollments_employee_status_idx','employee enrollment lookup is indexed');
+select has_index('public','training_enrollments','training_enrollments_version_status_idx','version reporting is indexed');
+select has_index('public','training_lesson_progress','training_lesson_progress_enrollment_status_idx','enrollment progress is indexed');
+select has_index('public','training_lesson_progress','training_lesson_progress_employee_version_idx','employee version progress is indexed');
+select ok((select relrowsecurity from pg_catalog.pg_class where oid='public.training_enrollments'::regclass),'enrollment RLS is enabled');
+select ok((select relrowsecurity from pg_catalog.pg_class where oid='public.training_lesson_progress'::regclass),'progress RLS is enabled');
+select ok(not has_table_privilege('service_role','public.training_enrollments','select') and not has_table_privilege('anon','public.training_enrollments','select') and not has_table_privilege('authenticated','public.training_enrollments','select'),'enrollment direct reads are revoked');
+select ok(not has_table_privilege('service_role','public.training_lesson_progress','select') and not has_table_privilege('anon','public.training_lesson_progress','select') and not has_table_privilege('authenticated','public.training_lesson_progress','select'),'progress direct reads are revoked');
+select is((select count(*)::integer from pg_catalog.pg_proc procedure join pg_catalog.pg_namespace namespace on namespace.oid=procedure.pronamespace where namespace.nspname='public' and procedure.proname in('initialize_training_enrollment','start_training_lesson','complete_training_lesson','get_training_enrollment_progress','get_training_published_curriculum','list_training_lesson_progress','authorize_legacy_training_media_read')),7,'all learner progress RPCs exist');
+select is((select count(*)::integer from pg_catalog.pg_proc procedure join pg_catalog.pg_namespace namespace on namespace.oid=procedure.pronamespace where namespace.nspname='public' and procedure.proname in('initialize_training_enrollment','start_training_lesson','complete_training_lesson','get_training_enrollment_progress','get_training_published_curriculum','list_training_lesson_progress','authorize_legacy_training_media_read') and procedure.prosecdef),7,'all learner progress RPCs are SECURITY DEFINER');
+select is((select count(*)::integer from pg_catalog.pg_proc procedure join pg_catalog.pg_namespace namespace on namespace.oid=procedure.pronamespace where namespace.nspname='public' and procedure.proname in('initialize_training_enrollment','start_training_lesson','complete_training_lesson','get_training_enrollment_progress','get_training_published_curriculum','list_training_lesson_progress','authorize_legacy_training_media_read') and procedure.proconfig @> array['search_path=""']),7,'all learner progress RPCs have an empty search path');
+select has_table('public','training_course_completions','Phase 3C successor adds completion without altering Phase 3B progress tables');
+
+select * from finish();
+rollback;

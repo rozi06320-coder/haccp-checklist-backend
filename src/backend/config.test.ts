@@ -21,9 +21,17 @@ describe("backend configuration", () => {
     assert.equal(config.trustProxy, false);
     assert.equal(config.nodeEnv, "test");
     assert.equal(config.trainingLearnerAuthEnabled, false);
+    assert.equal(config.trainingDbCurriculumEnabled, false);
     assert.equal(config.trainingLearnerAllowedOrigin, undefined);
     assert.equal(config.supervisorNotificationSchedulerSecret, undefined);
     assert.equal(loadBackendConfig({ ...validEnvironment, SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET: "test-supervisor-notification-scheduler-secret" }).supervisorNotificationSchedulerSecret, "test-supervisor-notification-scheduler-secret");
+  });
+
+  it("keeps database curriculum disabled by default and requires an allowed origin when enabled",()=>{
+    assert.throws(()=>loadBackendConfig({...validEnvironment,TRAINING_DB_CURRICULUM_ENABLED:"true"}),BackendConfigurationError);
+    const enabled=loadBackendConfig({...validEnvironment,TRAINING_DB_CURRICULUM_ENABLED:"true",TRAINING_LEARNER_ALLOWED_ORIGIN:"https://training.example.invalid"});
+    assert.equal(enabled.trainingDbCurriculumEnabled,true);
+    assert.equal(enabled.trainingLearnerAuthEnabled,false);
   });
 
   it("keeps learner authentication disabled by default and requires an exact allowed origin when enabled", () => {
