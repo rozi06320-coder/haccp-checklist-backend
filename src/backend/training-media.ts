@@ -14,6 +14,17 @@ const locales = ["en", "ar", "id", "hi", "fil"] as const;
 
 const uuid = z.uuid();
 const i18n = z.object({ en:z.string().trim().min(1).max(500), ar:z.string().trim().min(1).max(500), id:z.string().trim().min(1).max(500), hi:z.string().trim().min(1).max(500), fil:z.string().trim().min(1).max(500) }).strict();
+const trainingContentItemSchema=z.object({
+  fact_key:z.string().min(1),presentation:z.enum(["overview","key_point","step","warning","scenario","corrective_action"]),
+  position:z.number().int().positive(),text:z.string().trim().min(1),
+  provenance_classification:z.enum(["baladiyah_explicit","existing_training_supporting","internal_operational"]),
+}).strict();
+const trainingContentImageSlotSchema=z.object({asset_key:z.string().min(1),placement:z.string().min(1),slot_position:z.number().int().positive(),label:z.string().trim().min(1)}).strict();
+const localizedLessonContentSchema=z.object({
+  content_schema_version:z.literal(1),layout:z.literal("photo_first"),mode:z.enum(["reference","procedure"]),
+  items:z.array(trainingContentItemSchema),image_slots:z.array(trainingContentImageSlotSchema),
+}).strict();
+const lessonContentI18nSchema=z.object({en:localizedLessonContentSchema,ar:localizedLessonContentSchema,id:localizedLessonContentSchema,hi:localizedLessonContentSchema,fil:localizedLessonContentSchema}).strict();
 export const trainingMediaMetadataSchema = z.object({
   asset_key:z.string().trim().min(1).max(160).regex(/^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$/),
   title_i18n:i18n,
@@ -33,6 +44,15 @@ export const trainingImageSlotRowSchema = z.object({
   media_id:uuid.nullable(),media_status:z.enum(["ready","retired"]).nullable(),approval_status:z.enum(["submitted","approved","rejected"]).nullable(),
   width:z.number().int().positive().nullable(),height:z.number().int().positive().nullable(),preview_available:z.boolean(),
 }).strict();
+const draftPreviewRowSchema=z.object({
+  organization_id:uuid,course_id:uuid,course_key:z.literal("baladiyah-food-safety-hygiene"),course_version_id:uuid,
+  version_number:z.literal(1),version_status:z.literal("draft"),revision:z.literal(2),content_hash:z.literal("9bfb8467b8a43dc61db87833d0532403d14ecc6d3f63cb57e37582ea32d634d3"),
+  default_locale:z.literal("en"),supported_locales:z.tuple([z.literal("en"),z.literal("ar"),z.literal("id"),z.literal("hi"),z.literal("fil")]),
+  course_title_i18n:i18n,course_description_i18n:i18n,module_id:uuid,module_key:z.string().min(1),module_position:z.number().int().positive(),
+  module_title_i18n:i18n,module_description_i18n:i18n,lesson_id:uuid,lesson_key:z.string().min(1),lesson_position:z.number().int().positive(),
+  lesson_type:z.enum(["reading","key_points","quiz"]),required:z.literal(true),lesson_title_i18n:i18n,lesson_objective_i18n:i18n,
+  lesson_content_i18n:lessonContentI18nSchema.nullable(),question_count:z.number().int().positive().nullable(),pass_threshold_bps:z.number().int().nullable(),
+}).strict();
 const draftVersionRow = z.object({ course_id:uuid,course_key:z.string(),course_version_id:uuid,version_number:z.number().int().positive(),title_i18n:z.record(z.string(),z.unknown()),supported_locales:z.array(z.string()),status:z.literal("draft") }).strict();
 const storageRow = z.object({storage_bucket:z.literal(TRAINING_MEDIA_BUCKET),storage_object_path:z.string(),mime_type:z.literal("image/webp")}).strict();
 
@@ -44,11 +64,17 @@ export class TrainingMediaUnavailableError extends Error {}
 
 export type TrainingMediaDto = z.infer<typeof mediaRow> & { preview_url:string };
 export type TrainingImageSlotDto = z.infer<typeof trainingImageSlotRowSchema> & { preview_url:string|null };
+export type TrainingDraftPreviewDto={
+  course:{organization_id:string;course_id:string;course_key:"baladiyah-food-safety-hygiene";course_version_id:string;version_number:1;status:"draft";revision:2;content_hash:string;default_locale:"en";supported_locales:["en","ar","id","hi","fil"];title_i18n:z.infer<typeof i18n>;description_i18n:z.infer<typeof i18n>};
+  instructional_modules:Array<{id:string;stable_key:string;position:number;title_i18n:z.infer<typeof i18n>;description_i18n:z.infer<typeof i18n>;lessons:Array<{id:string;stable_key:"overview"|"practical-photo-guide";position:1|2;lesson_type:"reading"|"key_points";required:true;title_i18n:z.infer<typeof i18n>;objective_i18n:z.infer<typeof i18n>;content_i18n:z.infer<typeof lessonContentI18nSchema>;images:TrainingImageSlotDto[]}>}>;
+  final_assessment:{module_id:string;module_key:"final-assessment";module_position:10;module_title_i18n:z.infer<typeof i18n>;lesson_id:string;lesson_key:"final-quiz";lesson_title_i18n:z.infer<typeof i18n>;question_count:27;pass_threshold_bps:8000;minimum_correct_count:22;locked:true;submission_available:false};
+};
 type Scope={actorUserId:string;organizationId:string;courseId:string;courseVersionId:string;requestId:string};
 export type TrainingMediaService = {
   listDraftVersions(actorUserId:string,organizationId:string):Promise<z.infer<typeof draftVersionRow>[]>;
   list(scope:Omit<Scope,"requestId">):Promise<TrainingMediaDto[]>;
   listSlots(scope:Omit<Scope,"requestId">):Promise<TrainingImageSlotDto[]>;
+  getDraftPreview(scope:Omit<Scope,"requestId">):Promise<TrainingDraftPreviewDto>;
   create(scope:Scope,input:z.infer<typeof trainingMediaMetadataSchema>&{bytes:Buffer;declaredMime:string}):Promise<TrainingMediaDto>;
   replace(scope:Scope,input:z.infer<typeof trainingMediaMetadataSchema>&{assetId:string;bytes:Buffer;declaredMime:string}):Promise<TrainingMediaDto>;
   updateMetadata(scope:Omit<Scope,"requestId">,input:z.infer<typeof trainingMediaMetadataSchema>&{assetId:string}):Promise<TrainingMediaDto>;
@@ -109,6 +135,38 @@ export function createTrainingMediaServiceFromClient(client:Client):TrainingMedi
     async listDraftVersions(actorUserId,organizationId){return z.array(draftVersionRow).parse(await rpc("list_internal_admin_training_draft_versions",{actor_user_id:actorUserId,target_organization_id:organizationId}));},
     async list(scope){return z.array(mediaRow).parse(await rpc("list_internal_admin_training_media",args(scope))).map(row=>preview(scope,row));},
     async listSlots(scope){return z.array(trainingImageSlotRowSchema).parse(await rpc("list_internal_admin_training_image_slots",args(scope))).map(row=>slotPreview(scope,row));},
+    async getDraftPreview(scope){
+      const [rawRows,slots]=await Promise.all([
+        rpc("get_internal_admin_training_draft_preview",args(scope)),
+        this.listSlots(scope),
+      ]);
+      const rows=z.array(draftPreviewRowSchema).length(19).parse(rawRows);
+      if(slots.length!==40||new Set(slots.map(slot=>slot.asset_key)).size!==40)throw new TrainingMediaConflictError();
+      const first=rows[0];
+      if(!first)throw new TrainingMediaConflictError();
+      const instructionalRows=rows.filter(row=>row.module_position<=9);
+      const assessmentRows=rows.filter(row=>row.module_position===10);
+      if(instructionalRows.length!==18||assessmentRows.length!==1)throw new TrainingMediaConflictError();
+      const modules=Array.from(new Map(instructionalRows.map(row=>[row.module_id,row])).values()).map(moduleRow=>{
+        const lessons=instructionalRows.filter(row=>row.module_id===moduleRow.module_id);
+        if(lessons.length!==2||lessons[0]?.lesson_key!=="overview"||lessons[0]?.lesson_position!==1||lessons[0]?.lesson_type!=="reading"||lessons[1]?.lesson_key!=="practical-photo-guide"||lessons[1]?.lesson_position!==2||lessons[1]?.lesson_type!=="key_points")throw new TrainingMediaConflictError();
+        return{id:moduleRow.module_id,stable_key:moduleRow.module_key,position:moduleRow.module_position,title_i18n:moduleRow.module_title_i18n,description_i18n:moduleRow.module_description_i18n,lessons:lessons.map(row=>{
+          if(!row.lesson_content_i18n||row.question_count!==null||row.pass_threshold_bps!==null)throw new TrainingMediaConflictError();
+          const images=slots.filter(slot=>slot.lesson_id===row.lesson_id);
+          const declared=new Set(row.lesson_content_i18n.en.image_slots.map(slot=>slot.asset_key));
+          if(images.length!==declared.size||images.some(image=>!declared.has(image.asset_key)))throw new TrainingMediaConflictError();
+          return{id:row.lesson_id,stable_key:row.lesson_key as "overview"|"practical-photo-guide",position:row.lesson_position as 1|2,lesson_type:row.lesson_type as "reading"|"key_points",required:true as const,title_i18n:row.lesson_title_i18n,objective_i18n:row.lesson_objective_i18n,content_i18n:row.lesson_content_i18n,images};
+        })};
+      });
+      if(modules.length!==9||modules.some((module,index)=>module.position!==index+1))throw new TrainingMediaConflictError();
+      const assessment=assessmentRows[0];
+      if(!assessment||assessment.module_key!=="final-assessment"||assessment.lesson_key!=="final-quiz"||assessment.lesson_type!=="quiz"||assessment.lesson_content_i18n!==null||assessment.question_count!==27||assessment.pass_threshold_bps!==8000)throw new TrainingMediaConflictError();
+      return{
+        course:{organization_id:first.organization_id,course_id:first.course_id,course_key:first.course_key,course_version_id:first.course_version_id,version_number:1,status:"draft",revision:2,content_hash:first.content_hash,default_locale:"en",supported_locales:first.supported_locales,title_i18n:first.course_title_i18n,description_i18n:first.course_description_i18n},
+        instructional_modules:modules,
+        final_assessment:{module_id:assessment.module_id,module_key:"final-assessment",module_position:10,module_title_i18n:assessment.module_title_i18n,lesson_id:assessment.lesson_id,lesson_key:"final-quiz",lesson_title_i18n:assessment.lesson_title_i18n,question_count:27,pass_threshold_bps:8000,minimum_correct_count:22,locked:true,submission_available:false},
+      };
+    },
     async create(scope,input){
       const metadata=trainingMediaMetadataSchema.parse({asset_key:input.asset_key,title_i18n:input.title_i18n,alt_i18n:input.alt_i18n}),mediaId=randomUUID();const saved=await upload(scope,mediaId,input.bytes,input.declaredMime);
       try{const rows=z.array(mediaRow).max(1).parse(await rpc("register_internal_admin_training_media",{...args(scope),target_media_id:mediaId,target_asset_key:metadata.asset_key,new_title_i18n:metadata.title_i18n,new_alt_i18n:metadata.alt_i18n,new_storage_object_path:saved.path,new_byte_size:saved.bytes.length,new_width:saved.width,new_height:saved.height,new_sha256:saved.sha256,new_source_mime_type:saved.sourceMime,new_source_byte_size:saved.sourceBytes,new_source_sha256:saved.sourceSha256}));if(!rows[0])throw new TrainingMediaUnavailableError();return preview(scope,rows[0]);}
