@@ -12,6 +12,7 @@ const localizedContent = z.object({
 
 const enrollmentRow = z.object({
   id:uuid,organization_id:uuid,employee_id:uuid,course_id:uuid,course_version_id:uuid,
+  program_course_id:uuid.nullable(),
   status:z.literal("active"),branch_id_at_enrollment:uuid,branch_name_at_enrollment:z.string(),
   operational_team_id_at_enrollment:uuid,operational_team_name_at_enrollment:z.string(),
   identity_method:z.literal("branch_pin_employee_code"),compliance_identity_verified:z.literal(false),
@@ -63,11 +64,35 @@ const quizResultRow=z.object({
   question_count:z.literal(27),score_bps:z.number().int().min(0).max(10000),passed:z.boolean(),submitted_at:z.string(),
   course_completed:z.boolean(),course_completed_at:z.string().nullable(),
 }).strict();
+const programCategoryRow=z.object({
+  program_id:uuid,program_key:z.literal("restaurant-training"),program_title_i18n:localizedText,program_description_i18n:localizedText,
+  program_course_id:uuid,category_position:z.number().int().positive(),category_label_i18n:localizedText,category_required:z.boolean(),
+  course_id:uuid,course_key:z.string().min(1),course_available:z.boolean(),locked:z.boolean(),
+  lock_reason:z.literal("prerequisite_incomplete").nullable(),category_status:z.enum(["content_unavailable","locked","available","in_progress","completed"]),
+  enrollment_id:uuid.nullable(),required_lesson_count:z.number().int().nonnegative(),completed_lesson_count:z.number().int().nonnegative(),
+  final_assessment_status:z.enum(["not_configured","locked","available","in_progress","failed","passed"]),
+  course_completed:z.boolean(),course_completed_at:z.string().nullable(),
+}).strict();
+export const trainingProgramResponseSchema=z.object({
+  program:z.object({
+    id:uuid,key:z.literal("restaurant-training"),title_i18n:localizedText,description_i18n:localizedText,
+    categories:z.array(z.object({
+      program_course_id:uuid,position:z.number().int().min(1).max(2),label_i18n:localizedText,required:z.boolean(),
+      course_id:uuid,course_key:z.enum(["baladiyah-food-safety-hygiene","restaurant-sop"]),course_available:z.boolean(),
+      locked:z.boolean(),lock_reason:z.literal("prerequisite_incomplete").nullable(),status:z.enum(["content_unavailable","locked","available","in_progress","completed"]),
+      enrollment_id:uuid.nullable(),required_lesson_count:z.number().int().nonnegative(),completed_lesson_count:z.number().int().nonnegative(),
+      final_assessment_status:z.enum(["not_configured","locked","available","in_progress","failed","passed"]),
+      completed:z.boolean(),completed_at:z.string().nullable(),
+    }).strict()).length(2),
+  }).strict(),
+}).strict();
 export type TrainingQuizAnswer={question_key:string;option_key:string};
 
 export type LegacyTrainingIdentity={organizationId:string;branchId:string;employeeId:string};
 export type TrainingProgressService={
   initialize(identity:LegacyTrainingIdentity,courseKey:string):Promise<z.infer<typeof enrollmentRow>>;
+  initializeProgramCourse(identity:LegacyTrainingIdentity,programCourseId:string):Promise<z.infer<typeof enrollmentRow>>;
+  getProgram(identity:LegacyTrainingIdentity):Promise<z.infer<typeof trainingProgramResponseSchema>["program"]>;
   getProgress(identity:LegacyTrainingIdentity,enrollmentId:string):Promise<z.infer<typeof summaryRow>>;
   startLesson(identity:LegacyTrainingIdentity,enrollmentId:string,lessonId:string):Promise<z.infer<typeof progressRow>>;
   completeLesson(identity:LegacyTrainingIdentity,enrollmentId:string,lessonId:string):Promise<z.infer<typeof progressRow>>;
@@ -109,6 +134,30 @@ export function createTrainingProgressService(url:string,secretKey:string):Train
     async initialize(identity,courseKey){
       if(!/^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$/.test(courseKey))throw new TrainingProgressConflictError();
       return one(enrollmentRow,await rpc("initialize_training_enrollment",{...args(identity),target_course_key:courseKey}));
+    },
+    async initializeProgramCourse(identity,programCourseId){
+      uuid.parse(programCourseId);
+      return one(enrollmentRow,await rpc("initialize_training_program_enrollment",{...args(identity),target_program_course_id:programCourseId}));
+    },
+    async getProgram(identity){
+      const rows=z.array(programCategoryRow).length(2).parse(await rpc("get_training_program_status",{...args(identity),target_program_key:"restaurant-training"}));
+      const ordered=[...rows].sort((left,right)=>left.category_position-right.category_position);
+      if(ordered[0]?.category_position!==1||ordered[0].course_key!=="baladiyah-food-safety-hygiene"
+        ||ordered[1]?.category_position!==2||ordered[1].course_key!=="restaurant-sop"
+        ||new Set(ordered.map(category=>category.program_course_id)).size!==2
+        ||ordered.some(category=>category.completed_lesson_count>category.required_lesson_count)
+        ||ordered.some(category=>category.locked!==(category.lock_reason==="prerequisite_incomplete")))throw new TrainingProgressConflictError();
+      const first=ordered[0];
+      return trainingProgramResponseSchema.shape.program.parse({
+        id:first.program_id,key:first.program_key,title_i18n:first.program_title_i18n,description_i18n:first.program_description_i18n,
+        categories:ordered.map(category=>({
+          program_course_id:category.program_course_id,position:category.category_position,label_i18n:category.category_label_i18n,required:category.category_required,
+          course_id:category.course_id,course_key:category.course_key,course_available:category.course_available,locked:category.locked,
+          lock_reason:category.lock_reason,status:category.category_status,enrollment_id:category.enrollment_id,
+          required_lesson_count:category.required_lesson_count,completed_lesson_count:category.completed_lesson_count,
+          final_assessment_status:category.final_assessment_status,completed:category.course_completed,completed_at:category.course_completed_at,
+        })),
+      });
     },
     getProgress,
     getAssessmentStatus,

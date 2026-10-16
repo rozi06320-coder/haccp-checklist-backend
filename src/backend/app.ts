@@ -945,6 +945,7 @@ const trainingEmployeeSelectBodySchema = z.object({
   employee_code: trainingEmployeeCodeSchema,
 }).strict();
 const trainingEnrollmentIdSchema=z.uuid();
+const trainingProgramCourseIdSchema=z.uuid();
 const trainingLessonIdSchema=z.uuid();
 const trainingAttemptIdSchema=z.uuid();
 const trainingProgressEmptyBodySchema=z.object({}).strict();
@@ -3869,6 +3870,33 @@ export function createApp(
         else next(new HttpError(503, "service_unavailable", "Unable to clear Training access."));
       }
     },
+  );
+  app.post(
+    "/api/v1/training/program/courses/:programCourseId/enrollment",
+    trainingProgressMutationRateLimit,
+    async(request,response,next)=>{try{
+      if(!config.trainingDbCurriculumEnabled)throw new HttpError(404,"not_found","The requested resource was not found.");
+      requireTrainingLearnerMutationOrigin(request);
+      const programCourseId=trainingProgramCourseIdSchema.safeParse(request.params.programCourseId);
+      if(!programCourseId.success||!emptyQuerySchema.safeParse(request.query).success||!trainingProgressEmptyBodySchema.safeParse(request.body??{}).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const identity=await loadLegacyTrainingProgressIdentity(request),service=dependencies.trainingProgressService;
+      if(!service)throw new TrainingProgressUnavailableError();
+      const enrollment=await service.initializeProgramCourse(identity,programCourseId.data);
+      const progress=await service.getProgress(identity,enrollment.id);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({enrollment:{id:enrollment.id,program_course_id:enrollment.program_course_id,course_id:enrollment.course_id,course_version_id:enrollment.course_version_id,status:enrollment.status,enrolled_at:enrollment.enrolled_at,identity_assurance:"internal_learning_branch_pin_employee_code"},progress});
+    }catch(error){next(error instanceof HttpError?error:trainingProgressError(error));}},
+  );
+  app.get(
+    "/api/v1/training/program",
+    trainingBranchDiscoveryRateLimit,
+    async(request,response,next)=>{try{
+      if(!config.trainingDbCurriculumEnabled)throw new HttpError(404,"not_found","The requested resource was not found.");
+      if(!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const identity=await loadLegacyTrainingProgressIdentity(request),service=dependencies.trainingProgressService;
+      if(!service)throw new TrainingProgressUnavailableError();
+      const program=await service.getProgram(identity);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({program});
+    }catch(error){next(error instanceof HttpError?error:trainingProgressError(error));}},
   );
   app.post(
     "/api/v1/training/enrollment",
