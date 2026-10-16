@@ -5,6 +5,11 @@ const trustProxySetting = z
   .default("false")
   .transform((value) => (value === "loopback" ? "loopback" : false));
 
+const disabledByDefaultFlag = z
+  .enum(["true", "false"])
+  .default("false")
+  .transform((value) => value === "true");
+
 function isStrongEncodedGrantSecret(value: string) {
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length % 4 !== 0) {
     return false;
@@ -35,6 +40,8 @@ const environmentSchema = z
     VAPID_SUBJECT: z.string().trim().min(1).max(512).optional(),
     SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET: z.string().min(32).max(4_096).optional(),
     TRAINING_ORGANIZATION_SLUG: z.string().trim().toLowerCase().min(1).max(120).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional(),
+    TRAINING_LEARNER_AUTH_ENABLED: disabledByDefaultFlag,
+    TRAINING_LEARNER_ALLOWED_ORIGIN: z.url().transform((value) => new URL(value).origin).optional(),
   })
   .superRefine((environment, context) => {
     const protocol = new URL(environment.SUPABASE_URL).protocol;
@@ -60,6 +67,14 @@ const environmentSchema = z
             : "must be canonical base64 encoding of at least 32 high-diversity bytes",
       });
     }
+
+    if (environment.TRAINING_LEARNER_AUTH_ENABLED && !environment.TRAINING_LEARNER_ALLOWED_ORIGIN) {
+      context.addIssue({
+        code: "custom",
+        path: ["TRAINING_LEARNER_ALLOWED_ORIGIN"],
+        message: "is required when secure Training learner authentication is enabled",
+      });
+    }
   });
 
 export type BackendConfig = {
@@ -80,6 +95,8 @@ export type BackendConfig = {
   };
   supervisorNotificationSchedulerSecret?: string;
   trainingOrganizationSlug?: string;
+  trainingLearnerAuthEnabled?: boolean;
+  trainingLearnerAllowedOrigin?: string;
 };
 
 export class BackendConfigurationError extends Error {
@@ -121,5 +138,7 @@ export function loadBackendConfig(
     },
     supervisorNotificationSchedulerSecret: result.data.SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET,
     trainingOrganizationSlug: result.data.TRAINING_ORGANIZATION_SLUG,
+    trainingLearnerAuthEnabled: result.data.TRAINING_LEARNER_AUTH_ENABLED,
+    trainingLearnerAllowedOrigin: result.data.TRAINING_LEARNER_ALLOWED_ORIGIN,
   };
 }

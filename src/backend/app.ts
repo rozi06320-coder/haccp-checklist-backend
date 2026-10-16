@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import express, { type Express, type NextFunction, type Request, type Response } from "express";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
@@ -935,10 +935,29 @@ const trainingEmployeeCodeSchema = z.string()
 const trainingEmployeeSelectBodySchema = z.object({
   employee_code: trainingEmployeeCodeSchema,
 }).strict();
+const trainingLearnerLoginBodySchema = z.object({
+  employee_code: trainingEmployeeCodeSchema,
+  personal_pin: trainingPinSchema,
+}).strict();
+const trainingCredentialScopeQuerySchema = z.object({
+  branch_id: z.uuid(),
+}).strict();
+const trainingCredentialStoreBodySchema = z.object({
+  branch_id: z.uuid(),
+  pin: trainingPinSchema,
+  pin_confirmation: trainingPinSchema,
+}).strict().refine((value) => value.pin === value.pin_confirmation, {
+  path: ["pin_confirmation"],
+  message: "PIN values must match.",
+});
+const trainingCredentialRevokeBodySchema = z.object({
+  branch_id: z.uuid(),
+}).strict();
 const DAILY_AUDIT_COOKIE_PATH = "/api/daily-audit";
 const MAINTENANCE_ACCESS_COOKIE_PATH = "/maintenance";
 const TRAINING_ACCESS_COOKIE_PATH = "/";
 const LEGACY_TRAINING_ACCESS_COOKIE_PATH = "/training";
+const TRAINING_LEARNER_SESSION_COOKIE = "training_learner_session";
 export function serializeDailyAuditGrantCookie(
   value: string,
   nodeEnv: BackendConfig["nodeEnv"],
@@ -981,6 +1000,16 @@ function serializeTrainingAccessCookieHeaders(
 function setTrainingAccessCookie(response: Response, value: string, nodeEnv: BackendConfig["nodeEnv"], maxAge: number) {
   response.setHeader("Set-Cookie", serializeTrainingAccessCookieHeaders(value, nodeEnv, maxAge));
 }
+export function serializeTrainingLearnerSessionCookie(
+  value: string,
+  nodeEnv: BackendConfig["nodeEnv"],
+  maxAge: number,
+) {
+  return `${TRAINING_LEARNER_SESSION_COOKIE}=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Strict; Priority=High${nodeEnv === "production" ? "; Secure" : ""}`;
+}
+function setTrainingLearnerSessionCookie(response: Response, value: string, nodeEnv: BackendConfig["nodeEnv"], maxAge: number) {
+  response.setHeader("Set-Cookie", serializeTrainingLearnerSessionCookie(value, nodeEnv, maxAge));
+}
 function readCookie(header: string | undefined, name: string) {
   if (!header) return null;
   for (const part of header.split(";")) {
@@ -988,6 +1017,9 @@ function readCookie(header: string | undefined, name: string) {
     if (rawKey === name) return rawValue.join("=") || "";
   }
   return null;
+}
+function trainingLearnerTokenDigest(token: string) {
+  return createHash("sha256").update(token, "utf8").digest("hex");
 }
 const userListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).max(1000000).default(1),
@@ -2802,6 +2834,49 @@ export function createApp(
       next(new HttpError(429, "rate_limited", "Unable to verify Training access."));
     },
   });
+  const trainingLearnerLoginRateLimit = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: config.nodeEnv === "test" ? 1_000 : 20,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    validate: { trustProxy: false, xForwardedForHeader: false },
+    keyGenerator(request) {
+      return ipKeyGenerator(request.ip ?? "unknown");
+    },
+    handler(_request, response, next) {
+      setTrainingLearnerSessionCookie(response, "", config.nodeEnv, 0);
+      next(new HttpError(429, "rate_limited", "Unable to authenticate Training learner."));
+    },
+  });
+  const trainingCredentialMutationRateLimit = rateLimit({
+    windowMs: 15 * 60_000,
+    limit: config.nodeEnv === "test" ? 1_000 : 20,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    validate: { trustProxy: false, xForwardedForHeader: false },
+    keyGenerator(request) {
+      return ipKeyGenerator(request.ip ?? "unknown");
+    },
+    handler(_request, _response, next) {
+      next(new HttpError(429, "rate_limited", "Unable to update the Personal Training PIN."));
+    },
+  });
+  function requireTrainingLearnerMutationOrigin(request: Request) {
+    const expected = config.trainingLearnerAllowedOrigin;
+    const supplied = request.header("Origin");
+    if (!expected || !supplied) {
+      throw new HttpError(403, "forbidden", "Unable to authenticate Training learner.");
+    }
+    let normalized: string;
+    try {
+      normalized = new URL(supplied).origin;
+    } catch {
+      throw new HttpError(403, "forbidden", "Unable to authenticate Training learner.");
+    }
+    if (normalized !== expected || supplied !== normalized) {
+      throw new HttpError(403, "forbidden", "Unable to authenticate Training learner.");
+    }
+  }
   const evidenceUploadRateLimit = rateLimit({
     windowMs:60_000,limit:12,standardHeaders:"draft-8",legacyHeaders:false,
     validate:{trustProxy:false,xForwardedForHeader:false},
@@ -2896,6 +2971,40 @@ export function createApp(
       expires_at: new Date(parsed.expiresAt).toISOString(),
       expires_at_ms: parsed.expiresAt,
     };
+  }
+
+  async function resolveInternalAdminTrainingEmployee(
+    actorUserId: string,
+    organizationId: string,
+    branchId: string,
+    employeeId: string,
+  ) {
+    const listTeams = dependencies.managementAdmin.listBranchTeamsForInternalAdmin;
+    if (!listTeams) throw new HttpError(503, "service_unavailable", "Personal Training PIN management is unavailable.");
+    const teams = await listTeams(actorUserId, organizationId);
+    const matches = teams.flatMap((team) => {
+      if (!team.active || team.organization_id !== organizationId || team.branch_id !== branchId) return [];
+      return team.staff
+        .filter((staff) => staff.staff_id === employeeId && staff.operational_team_id === team.team_id)
+        .map((staff) => ({
+          employee_id: staff.staff_id,
+          display_name: staff.display_name,
+          employee_code: staff.staff_code,
+          employment_status: staff.employment_status,
+          branch_id: team.branch_id,
+          branch_name: team.branch_name,
+          branch_name_ar: team.branch_name_ar ?? null,
+          team_id: team.team_id,
+          team_name: team.team_name,
+          operational_roles: staff.operational_roles,
+        }));
+    });
+    if (matches.length !== 1) throw new AdminNotFoundError();
+    const employee = matches[0];
+    if (employee.employment_status !== "active" || !employee.employee_code) {
+      throw new AdminConflictError();
+    }
+    return employee;
   }
 
   app.get(
@@ -3700,6 +3809,283 @@ export function createApp(
       } catch (error) {
         if (error instanceof HttpError) next(error);
         else next(new HttpError(503, "service_unavailable", "Unable to clear Training access."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/training/learner/login",
+    trainingLearnerLoginRateLimit,
+    async (request, response, next) => {
+      try {
+        if (!config.trainingLearnerAuthEnabled) {
+          throw new HttpError(404, "not_found", "The requested resource was not found.");
+        }
+        requireTrainingLearnerMutationOrigin(request);
+        const body = trainingLearnerLoginBodySchema.safeParse(request.body);
+        if (!body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "Unable to authenticate Training learner.");
+        }
+        const branchSession = await loadTrainingBranchSession(request);
+        const learnerAuth = dependencies.trainingLearnerAuthService;
+        if (!learnerAuth) {
+          throw new HttpError(503, "service_unavailable", "Training learner authentication is temporarily unavailable.");
+        }
+
+        const credential = await learnerAuth.getLoginCredential({
+          organizationId: branchSession.organization_id,
+          branchId: branchSession.branch_id,
+          employeeCode: body.data.employee_code,
+        });
+        let pinMatches = false;
+        if (credential) {
+          pinMatches = await dependencies.pinCrypto.verify(body.data.personal_pin, credential);
+        } else {
+          // Keep the scrypt work factor for unknown, inactive, and
+          // unconfigured employees so this response is not an identity oracle.
+          await dependencies.pinCrypto.hash(body.data.personal_pin);
+        }
+
+        const rawToken = randomBytes(32).toString("base64url");
+        const session = credential
+          ? await learnerAuth.completeLogin({
+            organizationId: branchSession.organization_id,
+            branchId: branchSession.branch_id,
+            employeeId: credential.employee_id,
+            credentialVersion: credential.credential_version,
+            authenticationSucceeded: pinMatches,
+            tokenDigest: trainingLearnerTokenDigest(rawToken),
+          })
+          : null;
+
+        if (!session) {
+          setTrainingLearnerSessionCookie(response, "", config.nodeEnv, 0);
+          throw new HttpError(403, "forbidden", "Unable to authenticate Training learner.");
+        }
+
+        response.setHeader("Cache-Control", "private, no-store");
+        setTrainingLearnerSessionCookie(response, rawToken, config.nodeEnv, 12 * 60 * 60);
+        response.status(200).json({
+          verified: true,
+          auth_mode: "branch_pin_employee_pin",
+          expires_at: session.expires_at,
+          idle_expires_at: session.idle_expires_at,
+          organization: {
+            id: session.organization_id,
+            name: session.organization_name,
+            name_ar: session.organization_name_ar,
+          },
+          branch: {
+            id: session.branch_id,
+            name: session.branch_name,
+            name_ar: session.branch_name_ar,
+          },
+          employee: {
+            employee_id: session.employee_id,
+            display_name: session.display_name,
+            employee_code: session.employee_code,
+          },
+        });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else next(new HttpError(503, "service_unavailable", "Training learner authentication is temporarily unavailable."));
+      }
+    },
+  );
+  app.get(
+    "/api/v1/training/learner/session",
+    trainingBranchDiscoveryRateLimit,
+    async (request, response, next) => {
+      try {
+        if (!config.trainingLearnerAuthEnabled) {
+          throw new HttpError(404, "not_found", "The requested resource was not found.");
+        }
+        if (!emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const rawToken = readCookie(request.headers.cookie, TRAINING_LEARNER_SESSION_COOKIE);
+        if (!rawToken || !/^[A-Za-z0-9_-]{43}$/.test(rawToken)) {
+          setTrainingLearnerSessionCookie(response, "", config.nodeEnv, 0);
+          throw new HttpError(401, "unauthorized", "Training learner authentication is required.");
+        }
+        const learnerAuth = dependencies.trainingLearnerAuthService;
+        if (!learnerAuth) {
+          throw new HttpError(503, "service_unavailable", "Training learner authentication is temporarily unavailable.");
+        }
+        const session = await learnerAuth.validateSession(trainingLearnerTokenDigest(rawToken));
+        if (!session) {
+          setTrainingLearnerSessionCookie(response, "", config.nodeEnv, 0);
+          throw new HttpError(401, "unauthorized", "Training learner authentication is required.");
+        }
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({
+          verified: true,
+          auth_mode: "branch_pin_employee_pin",
+          expires_at: session.expires_at,
+          idle_expires_at: session.idle_expires_at,
+          organization: {
+            id: session.organization_id,
+            name: session.organization_name,
+            name_ar: session.organization_name_ar,
+          },
+          branch: {
+            id: session.branch_id,
+            name: session.branch_name,
+            name_ar: session.branch_name_ar,
+          },
+          employee: {
+            employee_id: session.employee_id,
+            display_name: session.display_name,
+            employee_code: session.employee_code,
+          },
+        });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else next(new HttpError(503, "service_unavailable", "Training learner authentication is temporarily unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/training/learner/logout",
+    trainingBranchDiscoveryRateLimit,
+    async (request, response, next) => {
+      try {
+        if (!config.trainingLearnerAuthEnabled) {
+          throw new HttpError(404, "not_found", "The requested resource was not found.");
+        }
+        requireTrainingLearnerMutationOrigin(request);
+        if (!emptyQuerySchema.safeParse(request.query).success || !emptyQuerySchema.safeParse(request.body ?? {}).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const rawToken = readCookie(request.headers.cookie, TRAINING_LEARNER_SESSION_COOKIE);
+        const learnerAuth = dependencies.trainingLearnerAuthService;
+        if (!learnerAuth) {
+          throw new HttpError(503, "service_unavailable", "Training learner authentication is temporarily unavailable.");
+        }
+        if (rawToken && /^[A-Za-z0-9_-]{43}$/.test(rawToken)) {
+          await learnerAuth.revokeSession(trainingLearnerTokenDigest(rawToken));
+        }
+        response.setHeader("Cache-Control", "private, no-store");
+        response.setHeader("Set-Cookie", serializeTrainingLearnerSessionCookie("", config.nodeEnv, 0));
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else next(new HttpError(503, "service_unavailable", "Unable to end the Training session."));
+      }
+    },
+  );
+  app.get(
+    "/api/v1/internal-admin/organizations/:organizationId/training/employee-credentials/:employeeId",
+    protectedRateLimit,
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const employeeId = staffIdSchema.safeParse(request.params.employeeId);
+        const query = trainingCredentialScopeQuerySchema.safeParse(request.query);
+        if (!organizationId.success || !employeeId.success || !query.success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        const credentialAdmin = dependencies.trainingCredentialAdmin;
+        if (!credentialAdmin) throw new HttpError(503, "service_unavailable", "Personal Training PIN management is unavailable.");
+        const employee = await resolveInternalAdminTrainingEmployee(
+          auth.userId,
+          organizationId.data,
+          query.data.branch_id,
+          employeeId.data,
+        );
+        const credential = await credentialAdmin.getStatus({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          employeeId: employeeId.data,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ employee, credential });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Employee credential was not found."));
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "This employee is not eligible for a Personal Training PIN."));
+        else next(new HttpError(503, "service_unavailable", "Personal Training PIN management is unavailable."));
+      }
+    },
+  );
+  app.put(
+    "/api/v1/internal-admin/organizations/:organizationId/training/employee-credentials/:employeeId",
+    trainingCredentialMutationRateLimit,
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const employeeId = staffIdSchema.safeParse(request.params.employeeId);
+        const body = trainingCredentialStoreBodySchema.safeParse(request.body);
+        if (!organizationId.success || !employeeId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "Enter matching 4-12 digit PIN values.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        const credentialAdmin = dependencies.trainingCredentialAdmin;
+        if (!credentialAdmin) throw new HttpError(503, "service_unavailable", "Personal Training PIN management is unavailable.");
+        const employee = await resolveInternalAdminTrainingEmployee(
+          auth.userId,
+          organizationId.data,
+          body.data.branch_id,
+          employeeId.data,
+        );
+        const credential = await credentialAdmin.store({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          employeeId: employeeId.data,
+          credential: await dependencies.pinCrypto.hash(body.data.pin),
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ employee, credential });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Employee credential was not found."));
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "This employee is not eligible for a Personal Training PIN."));
+        else if (error instanceof AdminInputError) next(new HttpError(400, "bad_request", "Unable to update the Personal Training PIN."));
+        else next(new HttpError(503, "service_unavailable", "Unable to update the Personal Training PIN."));
+      }
+    },
+  );
+  app.delete(
+    "/api/v1/internal-admin/organizations/:organizationId/training/employee-credentials/:employeeId",
+    trainingCredentialMutationRateLimit,
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const employeeId = staffIdSchema.safeParse(request.params.employeeId);
+        const body = trainingCredentialRevokeBodySchema.safeParse(request.body);
+        if (!organizationId.success || !employeeId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        const credentialAdmin = dependencies.trainingCredentialAdmin;
+        if (!credentialAdmin) throw new HttpError(503, "service_unavailable", "Personal Training PIN management is unavailable.");
+        const employee = await resolveInternalAdminTrainingEmployee(
+          auth.userId,
+          organizationId.data,
+          body.data.branch_id,
+          employeeId.data,
+        );
+        const credential = await credentialAdmin.revoke({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          employeeId: employeeId.data,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ employee, credential });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Employee credential was not found."));
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "This employee is not eligible for a Personal Training PIN."));
+        else next(new HttpError(503, "service_unavailable", "Unable to revoke the Personal Training PIN."));
       }
     },
   );
