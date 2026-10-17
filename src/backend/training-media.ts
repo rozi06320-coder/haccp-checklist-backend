@@ -66,6 +66,14 @@ const reviewResultRow=z.object({
   id:uuid,approval_status:z.enum(["approved","rejected"]),reviewed_at:z.string(),rejection_reason:z.string().max(500).nullable(),
   revision:z.number().int().positive(),updated_at:z.string(),
 }).strict();
+const publicationReadinessRow=z.object({
+  course_key:z.literal("baladiyah-food-safety-hygiene"),course_title_i18n:i18n,version_number:z.literal(1),version_status:z.literal("draft"),revision:z.literal(2),
+  curriculum_valid:z.literal(true),instructional_module_count:z.literal(9),instructional_lesson_count:z.literal(18),final_assessment_count:z.literal(1),final_quiz_count:z.literal(1),quiz_question_count:z.literal(27),pass_threshold_bps:z.literal(8000),
+  required_image_count:z.literal(40),uploaded_image_count:z.number().int().min(0).max(40),submitted_image_count:z.number().int().min(0).max(40),approved_image_count:z.number().int().min(0).max(40),rejected_image_count:z.number().int().min(0).max(40),missing_image_count:z.number().int().min(0).max(40),
+  image_metadata_valid:z.boolean(),image_database_ready:z.boolean(),locale_structure_complete:z.boolean(),conflicting_published_version:z.boolean(),
+  translation_review_status:z.object({en:z.literal("pending"),ar:z.literal("pending"),id:z.literal("pending"),hi:z.literal("pending"),fil:z.literal("pending")}).strict(),
+  content_review_status:z.literal("pending"),regulatory_review_status:z.literal("pending"),review_workflow_available:z.literal(false),
+}).strict();
 
 export class TrainingMediaAccessError extends Error {}
 export class TrainingMediaInputError extends Error {}
@@ -80,12 +88,21 @@ export type TrainingDraftPreviewDto={
   instructional_modules:Array<{id:string;stable_key:string;position:number;title_i18n:z.infer<typeof i18n>;description_i18n:z.infer<typeof i18n>;lessons:Array<{id:string;stable_key:"overview"|"practical-photo-guide";position:1|2;lesson_type:"reading"|"key_points";required:true;title_i18n:z.infer<typeof i18n>;objective_i18n:z.infer<typeof i18n>;content_i18n:z.infer<typeof lessonContentI18nSchema>;images:TrainingImageSlotDto[]}>}>;
   final_assessment:{module_id:string;module_key:"final-assessment";module_position:10;module_title_i18n:z.infer<typeof i18n>;lesson_id:string;lesson_key:"final-quiz";lesson_title_i18n:z.infer<typeof i18n>;question_count:27;pass_threshold_bps:8000;minimum_correct_count:22;locked:true;submission_available:false};
 };
+export type TrainingPublicationReadinessDto={
+  course:{course_key:"baladiyah-food-safety-hygiene";title_i18n:z.infer<typeof i18n>;version_number:1;status:"draft";revision:2};
+  curriculum:{valid:true;instructional_modules:9;instructional_lessons:18;final_assessments:1;final_quizzes:1;quiz_questions:27;pass_threshold_bps:8000;locale_structure_complete:boolean;conflicting_published_version:boolean};
+  images:{required:40;uploaded:number;submitted:number;approved:number;rejected:number;missing:number;metadata_valid:boolean;database_ready:boolean;storage_verified:number;storage_invalid:number;storage_ready:boolean};
+  reviews:{workflow_available:false;translations:{en:"pending";ar:"pending";id:"pending";hi:"pending";fil:"pending"};content:"pending";regulatory:"pending"};
+  overall_status:"not_ready"|"ready";
+  blockers:Array<{code:string;category:"curriculum"|"images"|"translations"|"content";message:string;href:string}>;
+};
 type Scope={actorUserId:string;organizationId:string;courseId:string;courseVersionId:string;requestId:string};
 export type TrainingMediaService = {
   listDraftVersions(actorUserId:string,organizationId:string):Promise<z.infer<typeof draftVersionRow>[]>;
   list(scope:Omit<Scope,"requestId">):Promise<TrainingMediaDto[]>;
   listSlots(scope:Omit<Scope,"requestId">):Promise<TrainingImageSlotDto[]>;
   getDraftPreview(scope:Omit<Scope,"requestId">):Promise<TrainingDraftPreviewDto>;
+  getPublicationReadiness(scope:Omit<Scope,"requestId">):Promise<TrainingPublicationReadinessDto>;
   create(scope:Scope,input:z.infer<typeof trainingMediaMetadataSchema>&{bytes:Buffer;declaredMime:string}):Promise<TrainingMediaDto>;
   replace(scope:Scope,input:z.infer<typeof trainingMediaMetadataSchema>&{assetId:string;bytes:Buffer;declaredMime:string}):Promise<TrainingMediaDto>;
   updateMetadata(scope:Omit<Scope,"requestId">,input:z.infer<typeof trainingMediaMetadataSchema>&{assetId:string}):Promise<TrainingMediaDto>;
@@ -154,6 +171,11 @@ export function createTrainingMediaServiceFromClient(client:Client):TrainingMedi
       if(metadata.format!=="webp"||metadata.width!==candidate.width||metadata.height!==candidate.height||(metadata.pages??1)!==1||metadata.exif||metadata.xmp||metadata.icc)throw new TrainingMediaConflictError();
     }catch(error){if(error instanceof TrainingMediaConflictError)throw error;throw new TrainingMediaConflictError();}
   }
+  async function withTimeout<T>(work:Promise<T>,milliseconds=5_000):Promise<T>{
+    let timer:NodeJS.Timeout|undefined;
+    try{return await Promise.race([work,new Promise<T>((_resolve,reject)=>{timer=setTimeout(()=>reject(new TrainingMediaUnavailableError()),milliseconds);})]);}
+    finally{if(timer)clearTimeout(timer);}
+  }
   return{
     async listDraftVersions(actorUserId,organizationId){return z.array(draftVersionRow).parse(await rpc("list_internal_admin_training_draft_versions",{actor_user_id:actorUserId,target_organization_id:organizationId}));},
     async list(scope){return z.array(mediaRow).parse(await rpc("list_internal_admin_training_media",args(scope))).map(row=>preview(scope,row));},
@@ -188,6 +210,52 @@ export function createTrainingMediaServiceFromClient(client:Client):TrainingMedi
         course:{organization_id:first.organization_id,course_id:first.course_id,course_key:first.course_key,course_version_id:first.course_version_id,version_number:1,status:"draft",revision:2,content_hash:first.content_hash,default_locale:"en",supported_locales:first.supported_locales,title_i18n:first.course_title_i18n,description_i18n:first.course_description_i18n},
         instructional_modules:modules,
         final_assessment:{module_id:assessment.module_id,module_key:"final-assessment",module_position:10,module_title_i18n:assessment.module_title_i18n,lesson_id:assessment.lesson_id,lesson_key:"final-quiz",lesson_title_i18n:assessment.lesson_title_i18n,question_count:27,pass_threshold_bps:8000,minimum_correct_count:22,locked:true,submission_available:false},
+      };
+    },
+    async getPublicationReadiness(scope){
+      const [rawReadiness,slots]=await Promise.all([
+        rpc("get_internal_admin_training_publication_readiness",args(scope)),
+        this.listSlots(scope),
+      ]);
+      const rows=z.array(publicationReadinessRow).length(1).parse(rawReadiness),row=rows[0];
+      if(!row||slots.length!==40||new Set(slots.map(slot=>slot.asset_key)).size!==40)throw new TrainingMediaConflictError();
+      const approvedSlots=slots.filter(slot=>slot.media_status==="ready"&&slot.approval_status==="approved"&&slot.media_id);
+      let cursor=0,storageVerified=0,storageInvalid=0;
+      const workers=Array.from({length:Math.min(4,approvedSlots.length)},async()=>{
+        while(cursor<approvedSlots.length){
+          const slot=approvedSlots[cursor++];
+          if(!slot?.media_id){storageInvalid+=1;continue;}
+          try{
+            const candidates=z.array(reviewCandidateRow).length(1).parse(await rpc("get_internal_admin_training_media_review_candidate",{...args(scope),target_media_id:slot.media_id}));
+            await withTimeout(verifyReviewCandidate(candidates[0]));storageVerified+=1;
+          }catch{storageInvalid+=1;}
+        }
+      });
+      let verificationTimer:NodeJS.Timeout|undefined;
+      const verificationCompleted=await Promise.race([
+        Promise.all(workers).then(()=>true),
+        new Promise<false>(resolve=>{verificationTimer=setTimeout(()=>resolve(false),12_000);}),
+      ]);
+      if(verificationTimer)clearTimeout(verificationTimer);
+      if(!verificationCompleted)storageInvalid=Math.max(storageInvalid,approvedSlots.length-storageVerified);
+      const blockers:TrainingPublicationReadinessDto["blockers"]=[];
+      if(row.conflicting_published_version)blockers.push({code:"published_version_conflict",category:"curriculum",message:"Another version of this course is already published.",href:"/internal-admin/training"});
+      if(row.missing_image_count>0)blockers.push({code:"images_missing",category:"images",message:`${row.missing_image_count} required Training image${row.missing_image_count===1?" is":"s are"} missing.`,href:"/internal-admin/training?tab=library"});
+      if(row.submitted_image_count>0)blockers.push({code:"images_awaiting_review",category:"images",message:`${row.submitted_image_count} Training image${row.submitted_image_count===1?" is":"s are"} awaiting review.`,href:"/internal-admin/training?tab=library"});
+      if(row.rejected_image_count>0)blockers.push({code:"images_rejected",category:"images",message:`${row.rejected_image_count} Training image${row.rejected_image_count===1?" was":"s were"} rejected.`,href:"/internal-admin/training?tab=library"});
+      if(!row.image_metadata_valid)blockers.push({code:"image_metadata_invalid",category:"images",message:"One or more Training image records have invalid publication metadata.",href:"/internal-admin/training?tab=library"});
+      if(storageInvalid>0)blockers.push({code:"image_storage_invalid",category:"images",message:`${storageInvalid} approved Training image object${storageInvalid===1?" could":"s could"} not be verified.`,href:"/internal-admin/training?tab=library"});
+      for(const locale of ["en","ar","id","hi","fil"] as const)blockers.push({code:`translation_review_${locale}`,category:"translations",message:`${({en:"English",ar:"Arabic",id:"Indonesian",hi:"Hindi",fil:"Filipino"} as const)[locale]} translation review is pending.`,href:"/internal-admin/training/preview"});
+      blockers.push({code:"content_review_pending",category:"content",message:"Curriculum content approval is pending; no authoritative review workflow exists yet.",href:"/internal-admin/training/preview"});
+      blockers.push({code:"regulatory_review_pending",category:"content",message:"Supporting regulatory content verification is pending.",href:"/internal-admin/training/preview"});
+      const storageReady=approvedSlots.length===40&&storageVerified===40&&storageInvalid===0;
+      const overallReady=blockers.length===0&&row.image_database_ready&&storageReady;
+      return{
+        course:{course_key:row.course_key,title_i18n:row.course_title_i18n,version_number:1,status:"draft",revision:2},
+        curriculum:{valid:true,instructional_modules:9,instructional_lessons:18,final_assessments:1,final_quizzes:1,quiz_questions:27,pass_threshold_bps:8000,locale_structure_complete:row.locale_structure_complete,conflicting_published_version:row.conflicting_published_version},
+        images:{required:40,uploaded:row.uploaded_image_count,submitted:row.submitted_image_count,approved:row.approved_image_count,rejected:row.rejected_image_count,missing:row.missing_image_count,metadata_valid:row.image_metadata_valid,database_ready:row.image_database_ready,storage_verified:storageVerified,storage_invalid:storageInvalid,storage_ready:storageReady},
+        reviews:{workflow_available:false,translations:row.translation_review_status,content:row.content_review_status,regulatory:row.regulatory_review_status},
+        overall_status:overallReady?"ready":"not_ready",blockers,
       };
     },
     async create(scope,input){

@@ -3551,6 +3551,17 @@ export function createApp(
       response.setHeader("Cache-Control","private, no-store");response.status(200).json({preview});
     }catch(error){next(error instanceof HttpError?error:trainingMediaError(error));}},
   );
+  app.get(
+    "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/publication-readiness",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),courseId=z.uuid().safeParse(request.params.courseId),versionId=z.uuid().safeParse(request.params.versionId);
+      if(!organizationId.success||!courseId.success||!versionId.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);
+      if(!dependencies.trainingMediaService)throw new TrainingMediaUnavailableError();
+      const readiness=await dependencies.trainingMediaService.getPublicationReadiness({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data});
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({readiness});
+    }catch(error){next(error instanceof HttpError?error:trainingMediaError(error));}},
+  );
   app.post(
     "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/media",
     protectedRateLimit,authenticate,trainingMediaRawBody,async(request,response,next)=>{try{

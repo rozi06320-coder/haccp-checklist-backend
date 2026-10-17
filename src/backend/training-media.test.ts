@@ -84,3 +84,21 @@ describe("Training media review lifecycle",()=>{
   assert.equal(result.rejection_reason,"Operational subject is unclear.");assert.equal(storageCalls,0);
  });
 });
+
+describe("Training publication readiness Storage verification",()=>{
+ it("verifies all approved objects with bounded safe output and fails closed on a checksum mismatch",async()=>{
+  const bytes=await image("webp"),sha256=(await import("node:crypto")).createHash("sha256").update(bytes).digest("hex");
+  const slots=Array.from({length:40},(_,index)=>({module_id:"55555555-5555-4555-8555-555555555551",module_key:"personal-hygiene-health",module_position:1,module_title_i18n:i18n,lesson_id:"55555555-5555-4555-8555-555555555552",lesson_key:"practical-photo-guide",lesson_position:2,lesson_title_i18n:i18n,asset_key:`asset-${index+1}`,placement:"procedure-step",purpose_i18n:i18n,expected_alt_i18n:i18n,media_alt_i18n:i18n,media_id:`${String(index+100).padStart(8,"0")}-0000-4000-8000-000000000001`,media_status:"ready" as const,approval_status:"approved" as const,width:1280,height:720,preview_available:true,revision:1,reviewed_at:"2026-10-17T00:00:00Z",rejection_reason:null}));
+  const readiness={course_key:"baladiyah-food-safety-hygiene",course_title_i18n:i18n,version_number:1,version_status:"draft",revision:2,curriculum_valid:true,instructional_module_count:9,instructional_lesson_count:18,final_assessment_count:1,final_quiz_count:1,quiz_question_count:27,pass_threshold_bps:8000,required_image_count:40,uploaded_image_count:40,submitted_image_count:0,approved_image_count:40,rejected_image_count:0,missing_image_count:0,image_metadata_valid:true,image_database_ready:true,locale_structure_complete:true,conflicting_published_version:false,translation_review_status:{en:"pending",ar:"pending",id:"pending",hi:"pending",fil:"pending"},content_review_status:"pending",regulatory_review_status:"pending",review_workflow_available:false};
+  let candidateIndex=0;
+  const client={storage:{from:()=>({upload:async()=>({data:null,error:null}),remove:async()=>({data:null,error:null}),download:async()=>({data:new Blob([bytes]),error:null}),createSignedUrl:async()=>({data:null,error:null})})},rpc:async(name:string)=>{
+   if(name==="get_internal_admin_training_publication_readiness")return{data:[readiness],error:null};
+   if(name==="list_internal_admin_training_image_slots")return{data:slots,error:null};
+   if(name==="get_internal_admin_training_media_review_candidate"){candidateIndex+=1;return{data:[{storage_bucket:"training-media",storage_object_path:`private/${candidateIndex}.webp`,mime_type:"image/webp",byte_size:bytes.length,width:1280,height:720,sha256:candidateIndex===40?"0".repeat(64):sha256,revision:1,approval_status:"approved",status:"ready"}],error:null};}
+   return{data:[],error:null};
+  }};
+  const result=await createTrainingMediaServiceFromClient(client as never).getPublicationReadiness(scope);
+  assert.equal(result.images.storage_verified,39);assert.equal(result.images.storage_invalid,1);assert.equal(result.images.storage_ready,false);assert.equal(result.overall_status,"not_ready");assert.ok(result.blockers.some(blocker=>blocker.code==="image_storage_invalid"));
+  assert.equal("storage_object_path" in result,false);assert.equal("sha256" in result,false);
+ });
+});
