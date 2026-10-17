@@ -42,6 +42,7 @@ const environmentSchema = z
     TRAINING_ORGANIZATION_SLUG: z.string().trim().toLowerCase().min(1).max(120).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional(),
     TRAINING_LEARNER_AUTH_ENABLED: disabledByDefaultFlag,
     TRAINING_DB_CURRICULUM_ENABLED: disabledByDefaultFlag,
+    TRAINING_EMPLOYEE_DRAFT_PREVIEW_ENABLED: disabledByDefaultFlag,
     TRAINING_LEARNER_ALLOWED_ORIGIN: z.url().transform((value) => new URL(value).origin).optional(),
   })
   .superRefine((environment, context) => {
@@ -98,6 +99,7 @@ export type BackendConfig = {
   trainingOrganizationSlug?: string;
   trainingLearnerAuthEnabled?: boolean;
   trainingDbCurriculumEnabled?: boolean;
+  trainingEmployeeDraftPreviewEnabled?: boolean;
   trainingLearnerAllowedOrigin?: string;
 };
 
@@ -142,6 +144,7 @@ export function loadBackendConfig(
     trainingOrganizationSlug: result.data.TRAINING_ORGANIZATION_SLUG,
     trainingLearnerAuthEnabled: result.data.TRAINING_LEARNER_AUTH_ENABLED,
     trainingDbCurriculumEnabled: result.data.TRAINING_DB_CURRICULUM_ENABLED,
+    trainingEmployeeDraftPreviewEnabled: result.data.TRAINING_EMPLOYEE_DRAFT_PREVIEW_ENABLED,
     trainingLearnerAllowedOrigin: result.data.TRAINING_LEARNER_ALLOWED_ORIGIN,
   };
 }

@@ -24,6 +24,7 @@ import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_
 import { MaintenancePushAccessError, MaintenancePushConflictError, MaintenancePushInputError, MaintenancePushUnavailableError } from "./maintenance-push";
 import { MAX_TRAINING_MEDIA_SOURCE_BYTES, TrainingMediaAccessError, TrainingMediaConflictError, TrainingMediaInputError, TrainingMediaNotFoundError, TrainingMediaUnavailableError, trainingMediaMetadataSchema } from "./training-media";
 import { TrainingProgressAccessError, TrainingProgressConflictError, TrainingProgressNotFoundError, TrainingProgressUnavailableError } from "./training-progress";
+import {TrainingEmployeePreviewAccessError,TrainingEmployeePreviewConflictError,TrainingEmployeePreviewNotFoundError,TrainingEmployeePreviewUnavailableError} from "./training-employee-preview";
 import type { UserContext } from "./user-context";
 import { validateDailyAuditGrant } from "./daily-audit-grant";
 import { decodeUploadFilename } from "../lib/internal-api/upload-filename";
@@ -3004,6 +3005,20 @@ export function createApp(
     return{organizationId:session.organization_id,branchId:session.branch_id,employeeId:session.employee.employee_id};
   }
 
+  async function loadTrainingEmployeePreviewIdentity(request:Request){
+    if(!config.trainingEmployeeDraftPreviewEnabled)throw new HttpError(404,"not_found","The requested resource was not found.");
+    const session=await loadTrainingBranchSession(request);
+    if(session.employee_invalidated||!session.employee)throw new HttpError(401,"unauthorized","Training employee access is required.");
+    return{organizationId:session.organization_id,branchId:session.branch_id,employeeId:session.employee.employee_id};
+  }
+
+  function trainingEmployeePreviewError(error:unknown){
+    if(error instanceof TrainingEmployeePreviewAccessError)return new HttpError(403,"forbidden","Training preview access is denied.");
+    if(error instanceof TrainingEmployeePreviewNotFoundError)return new HttpError(404,"not_found","Training preview is unavailable.");
+    if(error instanceof TrainingEmployeePreviewConflictError)return new HttpError(409,"conflict","Training preview is unavailable.");
+    return new HttpError(503,"service_unavailable","Training preview is temporarily unavailable.");
+  }
+
   function trainingProgressError(error:unknown){
     if(error instanceof TrainingProgressAccessError)return new HttpError(403,"forbidden","Training access is denied.");
     if(error instanceof TrainingProgressNotFoundError)return new HttpError(404,"not_found","Training content is unavailable.");
@@ -3881,6 +3896,30 @@ export function createApp(
         else next(new HttpError(503, "service_unavailable", "Unable to clear Training access."));
       }
     },
+  );
+  app.get(
+    "/api/v1/training/preview/baladiyah",
+    trainingBranchDiscoveryRateLimit,
+    async(request,response,next)=>{try{
+      if(!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const identity=await loadTrainingEmployeePreviewIdentity(request),service=dependencies.trainingEmployeePreviewService;
+      if(!service)throw new TrainingEmployeePreviewUnavailableError();
+      const preview=await service.getPreview(identity);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({preview});
+    }catch(error){next(error instanceof HttpError?error:trainingEmployeePreviewError(error));}},
+  );
+  app.get(
+    "/api/v1/training/preview/media/:mediaId",
+    trainingBranchDiscoveryRateLimit,
+    async(request,response,next)=>{try{
+      const mediaId=z.uuid().safeParse(request.params.mediaId);
+      if(!mediaId.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const identity=await loadTrainingEmployeePreviewIdentity(request),service=dependencies.trainingEmployeePreviewService;
+      if(!service)throw new TrainingEmployeePreviewUnavailableError();
+      const authorized=await service.authorizeMedia(identity,mediaId.data);
+      if(!authorized)throw new HttpError(404,"not_found","Training image is unavailable.");
+      response.setHeader("Cache-Control","private, no-store");response.redirect(302,authorized.signed_url);
+    }catch(error){next(error instanceof HttpError?error:trainingEmployeePreviewError(error));}},
   );
   app.post(
     "/api/v1/training/program/courses/:programCourseId/enrollment",

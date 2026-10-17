@@ -22,9 +22,17 @@ describe("backend configuration", () => {
     assert.equal(config.nodeEnv, "test");
     assert.equal(config.trainingLearnerAuthEnabled, false);
     assert.equal(config.trainingDbCurriculumEnabled, false);
+    assert.equal(config.trainingEmployeeDraftPreviewEnabled, false);
     assert.equal(config.trainingLearnerAllowedOrigin, undefined);
     assert.equal(config.supervisorNotificationSchedulerSecret, undefined);
     assert.equal(loadBackendConfig({ ...validEnvironment, SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET: "test-supervisor-notification-scheduler-secret" }).supervisorNotificationSchedulerSecret, "test-supervisor-notification-scheduler-secret");
+  });
+
+  it("keeps employee draft preview independently disabled by default",()=>{
+    const enabled=loadBackendConfig({...validEnvironment,TRAINING_EMPLOYEE_DRAFT_PREVIEW_ENABLED:"true"});
+    assert.equal(enabled.trainingEmployeeDraftPreviewEnabled,true);
+    assert.equal(enabled.trainingDbCurriculumEnabled,false);
+    assert.equal(enabled.trainingLearnerAuthEnabled,false);
   });
 
   it("keeps database curriculum disabled by default and requires an allowed origin when enabled",()=>{
