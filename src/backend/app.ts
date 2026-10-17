@@ -24,7 +24,7 @@ import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_
 import { MaintenancePushAccessError, MaintenancePushConflictError, MaintenancePushInputError, MaintenancePushUnavailableError } from "./maintenance-push";
 import { MAX_TRAINING_MEDIA_SOURCE_BYTES, TrainingMediaAccessError, TrainingMediaConflictError, TrainingMediaInputError, TrainingMediaNotFoundError, TrainingMediaUnavailableError, trainingMediaMetadataSchema } from "./training-media";
 import { TrainingProgressAccessError, TrainingProgressConflictError, TrainingProgressNotFoundError, TrainingProgressUnavailableError } from "./training-progress";
-import {TrainingEmployeePreviewAccessError,TrainingEmployeePreviewConflictError,TrainingEmployeePreviewNotFoundError,TrainingEmployeePreviewUnavailableError} from "./training-employee-preview";
+import {getTrainingEmployeePreviewDiagnostic,TrainingEmployeePreviewAccessError,TrainingEmployeePreviewConflictError,TrainingEmployeePreviewNotFoundError,TrainingEmployeePreviewUnavailableError,type TrainingEmployeePreviewFailureStage} from "./training-employee-preview";
 import type { UserContext } from "./user-context";
 import { validateDailyAuditGrant } from "./daily-audit-grant";
 import { decodeUploadFilename } from "../lib/internal-api/upload-filename";
@@ -2967,7 +2967,8 @@ export function createApp(
     return auth.userId;
   }
 
-  async function loadTrainingBranchSession(request: Request) {
+  async function loadTrainingBranchSession(request: Request,onPreviewStage?:(stage:TrainingEmployeePreviewFailureStage)=>void) {
+    onPreviewStage?.("session_validation");
     const grant = readCookie(request.headers.cookie, "training_access");
     const parsed = grant && dependencies.pinCrypto.verifyTrainingGrant?.(grant);
     const trainingAdmin = dependencies.trainingBranchAccessAdmin;
@@ -2980,6 +2981,7 @@ export function createApp(
       credentialVersion: parsed.credentialVersion,
     });
     if (!session) throw new HttpError(401, "unauthorized", "Training access is required.");
+    onPreviewStage?.("employee_validation");
     const employee = parsed.employeeId
       ? await trainingAdmin.validateEmployee({
         organizationId: parsed.organizationId,
@@ -3005,9 +3007,9 @@ export function createApp(
     return{organizationId:session.organization_id,branchId:session.branch_id,employeeId:session.employee.employee_id};
   }
 
-  async function loadTrainingEmployeePreviewIdentity(request:Request){
+  async function loadTrainingEmployeePreviewIdentity(request:Request,onStage?:(stage:TrainingEmployeePreviewFailureStage)=>void){
     if(!config.trainingEmployeeDraftPreviewEnabled)throw new HttpError(404,"not_found","The requested resource was not found.");
-    const session=await loadTrainingBranchSession(request);
+    const session=await loadTrainingBranchSession(request,onStage);
     if(session.employee_invalidated||!session.employee)throw new HttpError(401,"unauthorized","Training employee access is required.");
     return{organizationId:session.organization_id,branchId:session.branch_id,employeeId:session.employee.employee_id};
   }
@@ -3017,6 +3019,12 @@ export function createApp(
     if(error instanceof TrainingEmployeePreviewNotFoundError)return new HttpError(404,"not_found","Training preview is unavailable.");
     if(error instanceof TrainingEmployeePreviewConflictError)return new HttpError(409,"conflict","Training preview is unavailable.");
     return new HttpError(503,"service_unavailable","Training preview is temporarily unavailable.");
+  }
+
+  function logTrainingEmployeePreviewFailure(request:Request,error:unknown,fallbackStage:TrainingEmployeePreviewFailureStage){
+    const diagnostic=getTrainingEmployeePreviewDiagnostic(error,fallbackStage);
+    console.error("TRAINING_EMPLOYEE_PREVIEW",{requestId:request.id,...diagnostic});
+    request.safeFailureLogged=true;
   }
 
   function trainingProgressError(error:unknown){
@@ -3900,13 +3908,14 @@ export function createApp(
   app.get(
     "/api/v1/training/preview/baladiyah",
     trainingBranchDiscoveryRateLimit,
-    async(request,response,next)=>{try{
+    async(request,response,next)=>{let failureStage:TrainingEmployeePreviewFailureStage="session_validation";try{
       if(!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
-      const identity=await loadTrainingEmployeePreviewIdentity(request),service=dependencies.trainingEmployeePreviewService;
-      if(!service)throw new TrainingEmployeePreviewUnavailableError();
+      const identity=await loadTrainingEmployeePreviewIdentity(request,stage=>{failureStage=stage;}),service=dependencies.trainingEmployeePreviewService;
+      failureStage="preview_rpc";
+      if(!service)throw new TrainingEmployeePreviewUnavailableError({failureStage:"preview_rpc",safeCategory:"unexpected_error"});
       const preview=await service.getPreview(identity);
       response.setHeader("Cache-Control","private, no-store");response.status(200).json({preview});
-    }catch(error){next(error instanceof HttpError?error:trainingEmployeePreviewError(error));}},
+    }catch(error){if(!(error instanceof HttpError))logTrainingEmployeePreviewFailure(request,error,failureStage);next(error instanceof HttpError?error:trainingEmployeePreviewError(error));}},
   );
   app.get(
     "/api/v1/training/preview/media/:mediaId",
