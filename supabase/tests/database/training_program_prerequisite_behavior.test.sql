@@ -53,6 +53,7 @@ select is(private.training_program_prerequisite_satisfied('4c200000-0000-4000-80
 select throws_ok($$select * from public.initialize_training_program_enrollment('4c200000-0000-4000-8000-000000000001','4c300000-0000-4000-8000-000000000001','4c600000-0000-4000-8000-000000000001','4cd00000-0000-4000-8000-000000000002')$$,'42501','Training course prerequisite is incomplete','direct SOP enrollment is rejected');
 select * from public.initialize_training_program_enrollment('4c200000-0000-4000-8000-000000000001','4c300000-0000-4000-8000-000000000001','4c600000-0000-4000-8000-000000000001','4cd00000-0000-4000-8000-000000000001');
 select set_config('test.phase4b_enrollment',(select id::text from public.training_enrollments where employee_id='4c600000-0000-4000-8000-000000000001'),false);
+select public.start_training_lesson('4c200000-0000-4000-8000-000000000001','4c300000-0000-4000-8000-000000000001','4c600000-0000-4000-8000-000000000001',current_setting('test.phase4b_enrollment')::uuid,'4cb00000-0000-4000-8000-000000000001');
 select public.complete_training_lesson('4c200000-0000-4000-8000-000000000001','4c300000-0000-4000-8000-000000000001','4c600000-0000-4000-8000-000000000001',current_setting('test.phase4b_enrollment')::uuid,'4cb00000-0000-4000-8000-000000000001');
 select is(private.training_program_prerequisite_satisfied('4c200000-0000-4000-8000-000000000001','4c600000-0000-4000-8000-000000000001','4cd00000-0000-4000-8000-000000000002'),false,'lesson completion alone does not unlock SOP');
 

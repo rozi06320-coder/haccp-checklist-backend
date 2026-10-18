@@ -35,8 +35,23 @@ select * from public.initialize_training_enrollment('3c200000-0000-4000-8000-000
 select set_config('test.phase3c_enrollment',(select id::text from public.training_enrollments where employee_id='3c600000-0000-4000-8000-000000000001'),false);
 
 select throws_ok($$select * from public.start_training_final_quiz_attempt('3c200000-0000-4000-8000-000000000001','3c300000-0000-4000-8000-000000000001','3c600000-0000-4000-8000-000000000001',current_setting('test.phase3c_enrollment')::uuid,'en','3cc00000-0000-4000-8000-000000000001')$$,'55000','Final assessment is locked','quiz is locked at 0/18');
-select public.complete_training_lesson('3c200000-0000-4000-8000-000000000001','3c300000-0000-4000-8000-000000000001','3c600000-0000-4000-8000-000000000001',current_setting('test.phase3c_enrollment')::uuid,id) from public.training_lessons where course_version_id='3c900000-0000-4000-8000-000000000001' and lesson_type<>'quiz' and position<=17;
+do $$
+declare selected record;
+begin
+  for selected in
+    select lesson.id
+    from public.training_modules module
+    join public.training_lessons lesson on lesson.module_id=module.id
+    where lesson.course_version_id='3c900000-0000-4000-8000-000000000001'
+      and lesson.lesson_type<>'quiz' and lesson.position<=17
+    order by module.position,lesson.position,module.id,lesson.id
+  loop
+    perform public.start_training_lesson('3c200000-0000-4000-8000-000000000001','3c300000-0000-4000-8000-000000000001','3c600000-0000-4000-8000-000000000001',current_setting('test.phase3c_enrollment')::uuid,selected.id);
+    perform public.complete_training_lesson('3c200000-0000-4000-8000-000000000001','3c300000-0000-4000-8000-000000000001','3c600000-0000-4000-8000-000000000001',current_setting('test.phase3c_enrollment')::uuid,selected.id);
+  end loop;
+end $$;
 select throws_ok($$select * from public.start_training_final_quiz_attempt('3c200000-0000-4000-8000-000000000001','3c300000-0000-4000-8000-000000000001','3c600000-0000-4000-8000-000000000001',current_setting('test.phase3c_enrollment')::uuid,'en','3cc00000-0000-4000-8000-000000000001')$$,'55000','Final assessment is locked','quiz is locked at 17/18');
+select public.start_training_lesson('3c200000-0000-4000-8000-000000000001','3c300000-0000-4000-8000-000000000001','3c600000-0000-4000-8000-000000000001',current_setting('test.phase3c_enrollment')::uuid,id) from public.training_lessons where course_version_id='3c900000-0000-4000-8000-000000000001' and lesson_type<>'quiz' and position=18;
 select public.complete_training_lesson('3c200000-0000-4000-8000-000000000001','3c300000-0000-4000-8000-000000000001','3c600000-0000-4000-8000-000000000001',current_setting('test.phase3c_enrollment')::uuid,id) from public.training_lessons where course_version_id='3c900000-0000-4000-8000-000000000001' and lesson_type<>'quiz' and position=18;
 select lives_ok($$select * from public.start_training_final_quiz_attempt('3c200000-0000-4000-8000-000000000001','3c300000-0000-4000-8000-000000000001','3c600000-0000-4000-8000-000000000001',current_setting('test.phase3c_enrollment')::uuid,'en','3cc00000-0000-4000-8000-000000000001')$$,'quiz unlocks at 18/18');
 select set_config('test.phase3c_attempt',(select id::text from public.training_quiz_attempts where enrollment_id=current_setting('test.phase3c_enrollment')::uuid),false);
