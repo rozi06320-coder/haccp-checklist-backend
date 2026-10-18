@@ -4,10 +4,14 @@ select plan(29);
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 values
  ('00000000-0000-0000-0000-000000000000','7a100000-0000-4000-8000-000000000001','authenticated','authenticated','training-review-admin@example.invalid','{}','{}',now(),now()),
- ('00000000-0000-0000-0000-000000000000','7a100000-0000-4000-8000-000000000002','authenticated','authenticated','training-review-user@example.invalid','{}','{}',now(),now());
+ ('00000000-0000-0000-0000-000000000000','7a100000-0000-4000-8000-000000000002','authenticated','authenticated','training-review-independent@example.invalid','{}','{}',now(),now()),
+ ('00000000-0000-0000-0000-000000000000','7a100000-0000-4000-8000-000000000003','authenticated','authenticated','training-review-user@example.invalid','{}','{}',now(),now());
 update public.profiles set full_name='Training Review Admin',must_change_password=false where id='7a100000-0000-4000-8000-000000000001';
 update public.profiles set full_name='Training Review User',must_change_password=false where id='7a100000-0000-4000-8000-000000000002';
-insert into public.internal_admin_memberships(user_id,active) values('7a100000-0000-4000-8000-000000000001',true);
+update public.profiles set full_name='Training Review User',must_change_password=false where id='7a100000-0000-4000-8000-000000000003';
+insert into public.internal_admin_memberships(user_id,active) values
+ ('7a100000-0000-4000-8000-000000000001',true),
+ ('7a100000-0000-4000-8000-000000000002',true);
 
 create temporary table review_scope as
 select course.organization_id,course.id as course_id,version.id as version_id
@@ -26,7 +30,7 @@ select ok(has_function_privilege('service_role','public.review_internal_admin_tr
 select ok(not has_function_privilege('authenticated','public.review_internal_admin_training_media(uuid,uuid,uuid,uuid,uuid,integer,text,text)','execute') and not has_function_privilege('anon','public.review_internal_admin_training_media(uuid,uuid,uuid,uuid,uuid,integer,text,text)','execute'),'browser roles cannot execute review RPC');
 
 select throws_ok(format($call$select * from public.review_internal_admin_training_media(
- '7a100000-0000-4000-8000-000000000002',%L,%L,%L,'7a500000-0000-4000-8000-000000000001',1,'approved',null)$call$,
+ '7a100000-0000-4000-8000-000000000003',%L,%L,%L,'7a500000-0000-4000-8000-000000000001',1,'approved',null)$call$,
  (select organization_id from review_scope),(select course_id from review_scope),(select version_id from review_scope)),
  '42501','Training media access denied','non-admin review is denied');
 select throws_ok(format($call$select * from public.review_internal_admin_training_media(
@@ -62,20 +66,35 @@ select lives_ok(format($call$select * from public.replace_internal_admin_trainin
  'organizations/'||(select organization_id from review_scope)||'/courses/'||(select course_id from review_scope)||'/versions/'||(select version_id from review_scope)||'/assets/7a500000-0000-4000-8000-000000000001/7a600000-0000-4000-8000-000000000002.webp'),
  'rejected image can be replaced');
 select ok((select approval_status='submitted' and revision=3 and reviewed_at is null and reviewed_by is null and rejection_reason is null from public.training_media_assets where id='7a500000-0000-4000-8000-000000000001'),'replacement resets review state and increments revision');
-select lives_ok(format($call$select * from public.review_internal_admin_training_media('7a100000-0000-4000-8000-000000000001',%L,%L,%L,'7a500000-0000-4000-8000-000000000001',3,'approved',null)$call$,(select organization_id from review_scope),(select course_id from review_scope),(select version_id from review_scope)),'submitted replacement can be approved');
-select ok((select approval_status='approved' and revision=4 and reviewed_at is not null and reviewed_by='7a100000-0000-4000-8000-000000000001' and rejection_reason is null from public.training_media_assets where id='7a500000-0000-4000-8000-000000000001'),'approval records audit metadata without changing the image metadata');
+select lives_ok(format($call$select * from public.review_internal_admin_training_media('7a100000-0000-4000-8000-000000000002',%L,%L,%L,'7a500000-0000-4000-8000-000000000001',3,'approved',null)$call$,(select organization_id from review_scope),(select course_id from review_scope),(select version_id from review_scope)),'submitted replacement can be independently approved');
+select ok((select approval_status='approved' and revision=4 and reviewed_at is not null and reviewed_by='7a100000-0000-4000-8000-000000000002' and rejection_reason is null from public.training_media_assets where id='7a500000-0000-4000-8000-000000000001'),'approval records an independent actor without changing image metadata');
 select throws_ok(format($call$select * from public.review_internal_admin_training_media('7a100000-0000-4000-8000-000000000001',%L,%L,%L,'7a500000-0000-4000-8000-000000000001',3,'rejected','Changed decision')$call$,(select organization_id from review_scope),(select course_id from review_scope),(select version_id from review_scope)),'40001','Training media review is stale','second review with the consumed revision is rejected');
 select throws_ok(format($call$select * from public.validate_internal_admin_training_media_for_publish('7a100000-0000-4000-8000-000000000001',%L,%L,%L)$call$,(select organization_id from review_scope),(select course_id from review_scope),(select version_id from review_scope)),'55000','Training media publication validation failed','missing media still blocks publication');
 
 insert into public.training_media_assets(
  id,organization_id,course_version_id,asset_key,media_type,title_i18n,alt_i18n,storage_object_path,mime_type,
- byte_size,width,height,sha256,source_mime_type,source_byte_size,source_sha256,approval_status,status,reviewed_at,reviewed_by
+ byte_size,width,height,sha256,source_mime_type,source_byte_size,source_sha256,approval_status,status,created_by,updated_by
 )
 select md5('review-media-'||slot.asset_key)::uuid,scope.organization_id,scope.version_id,slot.asset_key,'image',slot.expected_alt_i18n,slot.expected_alt_i18n,
- 'organizations/'||scope.organization_id||'/courses/'||scope.course_id||'/versions/'||scope.version_id||'/assets/'||md5('review-media-'||slot.asset_key)::uuid||'/'||md5('review-object-'||slot.asset_key)::uuid||'.webp',
- 'image/webp',100,1280,720,encode(digest(slot.asset_key,'sha256'),'hex'),'image/webp',100,encode(digest('source-'||slot.asset_key,'sha256'),'hex'),'approved','ready',statement_timestamp(),'7a100000-0000-4000-8000-000000000001'
+ 'organizations/'||scope.organization_id||'/courses/'||scope.course_id||'/versions/'||scope.version_id||'/assets/'||md5('review-media-'||slot.asset_key)::uuid||'/00000000-0000-4000-8000-'||substring(md5('review-object-'||slot.asset_key) from 1 for 12)||'.webp',
+ 'image/webp',100,1280,720,encode(digest(slot.asset_key,'sha256'),'hex'),'image/webp',100,encode(digest('source-'||slot.asset_key,'sha256'),'hex'),'submitted','ready','7a100000-0000-4000-8000-000000000001','7a100000-0000-4000-8000-000000000001'
 from review_scope scope cross join private.training_image_slot_requirements(scope.organization_id,scope.version_id) slot
 where slot.asset_key<>'personal-hygiene-handwashing-wet';
+
+do $approve_remaining_media$
+declare asset record;
+begin
+  for asset in select * from public.training_media_assets
+    where course_version_id=(select version_id from review_scope)
+      and approval_status='submitted' order by asset_key
+  loop
+    perform * from public.review_internal_admin_training_media(
+      '7a100000-0000-4000-8000-000000000002',asset.organization_id,
+      (select course_id from review_scope),asset.course_version_id,asset.id,asset.revision,'approved',null
+    );
+  end loop;
+end;
+$approve_remaining_media$;
 
 select lives_ok(format($call$select * from public.validate_internal_admin_training_media_for_publish('7a100000-0000-4000-8000-000000000001',%L,%L,%L)$call$,(select organization_id from review_scope),(select course_id from review_scope),(select version_id from review_scope)),'forty audited approvals satisfy publication validation');
 select lives_ok(format($call$update public.training_course_versions set status='published',published_at=statement_timestamp(),published_by='7a100000-0000-4000-8000-000000000001' where id=%L$call$,(select version_id from review_scope)),'fully reviewed version can publish');

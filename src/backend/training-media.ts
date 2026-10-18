@@ -71,8 +71,8 @@ const publicationReadinessRow=z.object({
   curriculum_valid:z.literal(true),instructional_module_count:z.literal(9),instructional_lesson_count:z.literal(18),final_assessment_count:z.literal(1),final_quiz_count:z.literal(1),quiz_question_count:z.literal(27),pass_threshold_bps:z.literal(8000),
   required_image_count:z.literal(40),uploaded_image_count:z.number().int().min(0).max(40),submitted_image_count:z.number().int().min(0).max(40),approved_image_count:z.number().int().min(0).max(40),rejected_image_count:z.number().int().min(0).max(40),missing_image_count:z.number().int().min(0).max(40),
   image_metadata_valid:z.boolean(),image_database_ready:z.boolean(),locale_structure_complete:z.boolean(),conflicting_published_version:z.boolean(),
-  translation_review_status:z.object({en:z.literal("pending"),ar:z.literal("pending"),id:z.literal("pending"),hi:z.literal("pending"),fil:z.literal("pending")}).strict(),
-  content_review_status:z.literal("pending"),regulatory_review_status:z.literal("pending"),review_workflow_available:z.literal(false),
+  translation_review_status:z.object({en:z.enum(["pending","approved","rejected","revoked"]),ar:z.enum(["pending","approved","rejected","revoked"]),id:z.enum(["pending","approved","rejected","revoked"]),hi:z.enum(["pending","approved","rejected","revoked"]),fil:z.enum(["pending","approved","rejected","revoked"])}).strict(),
+  content_review_status:z.enum(["pending","approved","rejected","revoked"]),regulatory_review_status:z.enum(["pending","approved","rejected","revoked"]),review_workflow_available:z.boolean(),
 }).strict();
 
 export class TrainingMediaAccessError extends Error {}
@@ -92,7 +92,7 @@ export type TrainingPublicationReadinessDto={
   course:{course_key:"baladiyah-food-safety-hygiene";title_i18n:z.infer<typeof i18n>;version_number:1;status:"draft";revision:2};
   curriculum:{valid:true;instructional_modules:9;instructional_lessons:18;final_assessments:1;final_quizzes:1;quiz_questions:27;pass_threshold_bps:8000;locale_structure_complete:boolean;conflicting_published_version:boolean};
   images:{required:40;uploaded:number;submitted:number;approved:number;rejected:number;missing:number;metadata_valid:boolean;database_ready:boolean;storage_verified:number;storage_invalid:number;storage_ready:boolean};
-  reviews:{workflow_available:false;translations:{en:"pending";ar:"pending";id:"pending";hi:"pending";fil:"pending"};content:"pending";regulatory:"pending"};
+  reviews:{workflow_available:boolean;translations:{en:"pending"|"approved"|"rejected"|"revoked";ar:"pending"|"approved"|"rejected"|"revoked";id:"pending"|"approved"|"rejected"|"revoked";hi:"pending"|"approved"|"rejected"|"revoked";fil:"pending"|"approved"|"rejected"|"revoked"};content:"pending"|"approved"|"rejected"|"revoked";regulatory:"pending"|"approved"|"rejected"|"revoked"};
   overall_status:"not_ready"|"ready";
   blockers:Array<{code:string;category:"curriculum"|"images"|"translations"|"content";message:string;href:string}>;
 };
@@ -245,16 +245,16 @@ export function createTrainingMediaServiceFromClient(client:Client):TrainingMedi
       if(row.rejected_image_count>0)blockers.push({code:"images_rejected",category:"images",message:`${row.rejected_image_count} Training image${row.rejected_image_count===1?" was":"s were"} rejected.`,href:"/internal-admin/training?tab=library"});
       if(!row.image_metadata_valid)blockers.push({code:"image_metadata_invalid",category:"images",message:"One or more Training image records have invalid publication metadata.",href:"/internal-admin/training?tab=library"});
       if(storageInvalid>0)blockers.push({code:"image_storage_invalid",category:"images",message:`${storageInvalid} approved Training image object${storageInvalid===1?" could":"s could"} not be verified.`,href:"/internal-admin/training?tab=library"});
-      for(const locale of ["en","ar","id","hi","fil"] as const)blockers.push({code:`translation_review_${locale}`,category:"translations",message:`${({en:"English",ar:"Arabic",id:"Indonesian",hi:"Hindi",fil:"Filipino"} as const)[locale]} translation review is pending.`,href:"/internal-admin/training/preview"});
-      blockers.push({code:"content_review_pending",category:"content",message:"Curriculum content approval is pending; no authoritative review workflow exists yet.",href:"/internal-admin/training/preview"});
-      blockers.push({code:"regulatory_review_pending",category:"content",message:"Supporting regulatory content verification is pending.",href:"/internal-admin/training/preview"});
+      for(const locale of ["en","ar","id","hi","fil"] as const)if(row.translation_review_status[locale]!=="approved")blockers.push({code:`translation_review_${locale}`,category:"translations",message:`${({en:"English",ar:"Arabic",id:"Indonesian",hi:"Hindi",fil:"Filipino"} as const)[locale]} translation review is ${row.translation_review_status[locale]}.`,href:"/internal-admin/training/preview"});
+      if(row.content_review_status!=="approved")blockers.push({code:"content_review_pending",category:"content",message:`Curriculum content review is ${row.content_review_status}.`,href:"/internal-admin/training/preview"});
+      if(row.regulatory_review_status!=="approved")blockers.push({code:"regulatory_review_pending",category:"content",message:`Internal training material review is ${row.regulatory_review_status}.`,href:"/internal-admin/training/preview"});
       const storageReady=approvedSlots.length===40&&storageVerified===40&&storageInvalid===0;
       const overallReady=blockers.length===0&&row.image_database_ready&&storageReady;
       return{
         course:{course_key:row.course_key,title_i18n:row.course_title_i18n,version_number:1,status:"draft",revision:2},
         curriculum:{valid:true,instructional_modules:9,instructional_lessons:18,final_assessments:1,final_quizzes:1,quiz_questions:27,pass_threshold_bps:8000,locale_structure_complete:row.locale_structure_complete,conflicting_published_version:row.conflicting_published_version},
         images:{required:40,uploaded:row.uploaded_image_count,submitted:row.submitted_image_count,approved:row.approved_image_count,rejected:row.rejected_image_count,missing:row.missing_image_count,metadata_valid:row.image_metadata_valid,database_ready:row.image_database_ready,storage_verified:storageVerified,storage_invalid:storageInvalid,storage_ready:storageReady},
-        reviews:{workflow_available:false,translations:row.translation_review_status,content:row.content_review_status,regulatory:row.regulatory_review_status},
+        reviews:{workflow_available:row.review_workflow_available,translations:row.translation_review_status,content:row.content_review_status,regulatory:row.regulatory_review_status},
         overall_status:overallReady?"ready":"not_ready",blockers,
       };
     },

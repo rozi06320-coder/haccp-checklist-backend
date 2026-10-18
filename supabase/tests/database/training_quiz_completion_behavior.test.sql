@@ -30,7 +30,10 @@ with questions as (select jsonb_agg(jsonb_build_object('stable_key','q-'||n,'pro
 insert into public.training_lessons(id,organization_id,course_version_id,module_id,stable_key,position,lesson_type,required,title_i18n,objective_i18n,content_i18n,pass_threshold_bps,max_attempts,retry_delay_seconds,metadata,created_by)
 select '3cb00000-0000-4000-8000-000000000001','3c200000-0000-4000-8000-000000000001','3c900000-0000-4000-8000-000000000001','3ca00000-0000-4000-8000-000000000002','final-quiz',1,'quiz',true,jsonb_build_object('en','Final','ar','النهائي','id','Final','hi','अंतिम','fil','Panghuli'),jsonb_build_object('en','Assess','ar','قيّم','id','Nilai','hi','आकलन','fil','Suriin'),
   (select jsonb_object_agg(locale,jsonb_build_object('questions',questions.value)) from unnest(array['en','ar','id','hi','fil']) locale cross join questions),8000,null,0,jsonb_build_object('assessment_scope','course','answer_key_by_question',answers.value),'3c100000-0000-4000-8000-000000000001' from answers;
+-- Fixture-only bypass: this test exercises Phase 3C quiz behavior, not publication.
+alter table public.training_course_versions disable trigger training_course_versions_05_media_publication;
 update public.training_course_versions set status='published',published_at=statement_timestamp(),published_by='3c100000-0000-4000-8000-000000000001' where id='3c900000-0000-4000-8000-000000000001';
+alter table public.training_course_versions enable trigger training_course_versions_05_media_publication;
 select * from public.initialize_training_enrollment('3c200000-0000-4000-8000-000000000001','3c300000-0000-4000-8000-000000000001','3c600000-0000-4000-8000-000000000001','phase3c-course');
 select set_config('test.phase3c_enrollment',(select id::text from public.training_enrollments where employee_id='3c600000-0000-4000-8000-000000000001'),false);
 

@@ -43,11 +43,15 @@ with questions as (select jsonb_agg(jsonb_build_object('stable_key','q-'||n,'pro
 insert into public.training_lessons(id,organization_id,course_version_id,module_id,stable_key,position,lesson_type,required,title_i18n,objective_i18n,content_i18n,pass_threshold_bps,retry_delay_seconds,metadata)
 select '4cb00000-0000-4000-8000-000000000002','4c200000-0000-4000-8000-000000000001','4c900000-0000-4000-8000-000000000001','4ca00000-0000-4000-8000-000000000002','final-quiz',1,'quiz',true,'{"en":"Final"}','{"en":"Assess"}',
   (select jsonb_object_agg(locale,jsonb_build_object('questions',questions.value)) from unnest(array['en','ar','id','hi','fil']) locale cross join questions),8000,0,jsonb_build_object('assessment_scope','course','answer_key_by_question',answers.value) from answers;
+-- Fixture-only bypass: this test exercises Phase 4B prerequisite behavior, not publication.
+alter table public.training_course_versions disable trigger training_course_versions_05_media_publication;
 update public.training_course_versions set status='published',published_at=statement_timestamp(),published_by='4c100000-0000-4000-8000-000000000001' where id in('4c900000-0000-4000-8000-000000000001','4c900000-0000-4000-8000-000000000002');
+alter table public.training_course_versions enable trigger training_course_versions_05_media_publication;
 
-insert into public.training_programs(id,organization_id,program_key,status,title_i18n,description_i18n) values('4cc00000-0000-4000-8000-000000000001','4c200000-0000-4000-8000-000000000001','restaurant-training','active','{"en":"Training"}','{"en":"Training"}');
+insert into public.training_programs(id,organization_id,program_key,status,title_i18n,description_i18n) values('4cc00000-0000-4000-8000-000000000001','4c200000-0000-4000-8000-000000000001','restaurant-training','draft','{"en":"Training"}','{"en":"Training"}');
 insert into public.training_program_courses(id,organization_id,program_id,course_id,position,label_i18n) values('4cd00000-0000-4000-8000-000000000001','4c200000-0000-4000-8000-000000000001','4cc00000-0000-4000-8000-000000000001','4c800000-0000-4000-8000-000000000001',1,'{"en":"Baladiyah"}');
 insert into public.training_program_courses(id,organization_id,program_id,course_id,position,label_i18n,prerequisite_program_course_id) values('4cd00000-0000-4000-8000-000000000002','4c200000-0000-4000-8000-000000000001','4cc00000-0000-4000-8000-000000000001','4c800000-0000-4000-8000-000000000002',2,'{"en":"SOP"}','4cd00000-0000-4000-8000-000000000001');
+update public.training_programs set status='active' where id='4cc00000-0000-4000-8000-000000000001';
 
 select is(private.training_program_prerequisite_satisfied('4c200000-0000-4000-8000-000000000001','4c600000-0000-4000-8000-000000000001','4cd00000-0000-4000-8000-000000000002'),false,'SOP starts locked');
 select throws_ok($$select * from public.initialize_training_program_enrollment('4c200000-0000-4000-8000-000000000001','4c300000-0000-4000-8000-000000000001','4c600000-0000-4000-8000-000000000001','4cd00000-0000-4000-8000-000000000002')$$,'42501','Training course prerequisite is incomplete','direct SOP enrollment is rejected');
