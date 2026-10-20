@@ -10,6 +10,7 @@
     "dev:api": "node --env-file-if-exists=.env.backend.local --watch --import tsx src/backend/server.ts",
     "build:api": "tsc -p tsconfig.api.json",
     "start:api": "node --env-file-if-exists=.env.backend.local dist-api/server.js",
+    "start:training-verifier": "node --env-file-if-exists=.env.training-verifier.local dist-api/backend/training-storage-verifier-server.js",
     "test:api": "node --import tsx --test src/backend/**/*.test.ts"
   },
   "dependencies": {
@@ -17,7 +18,7 @@
     "express": "5.2.1",
     "express-rate-limit": "8.6.1",
     "helmet": "8.3.0",
-    "sharp": "^0.34.4",
+    "sharp": "^0.35.5",
     "web-push": "3.6.7",
     "zod": "4.4.3"
   },

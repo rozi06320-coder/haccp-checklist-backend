@@ -4,6 +4,7 @@ dist-api/
 .env
 .env.*
 !.env.backend.example
+!.env.training-verifier.example
 
 .DS_Store
 Thumbs.db

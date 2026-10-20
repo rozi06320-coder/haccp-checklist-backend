@@ -44,6 +44,9 @@ const environmentSchema = z
     TRAINING_DB_CURRICULUM_ENABLED: disabledByDefaultFlag,
     TRAINING_EMPLOYEE_DRAFT_PREVIEW_ENABLED: disabledByDefaultFlag,
     TRAINING_LEARNER_ALLOWED_ORIGIN: z.url().transform((value) => new URL(value).origin).optional(),
+    TRAINING_PUBLICATION_SIGNING_PRIVATE_KEY_BASE64: z.string().min(1).optional(),
+    TRAINING_PUBLICATION_AUDIENCE: z.string().regex(/^[a-z0-9][a-z0-9._:/-]{2,127}$/).optional(),
+    TRAINING_PUBLICATION_SIGNING_KEY_ID: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/).optional(),
   })
   .superRefine((environment, context) => {
     const protocol = new URL(environment.SUPABASE_URL).protocol;
@@ -77,6 +80,12 @@ const environmentSchema = z
         message: "is required when secure Training learner authentication is enabled",
       });
     }
+    const publicationSigningValues=[environment.TRAINING_PUBLICATION_SIGNING_PRIVATE_KEY_BASE64,
+      environment.TRAINING_PUBLICATION_AUDIENCE,environment.TRAINING_PUBLICATION_SIGNING_KEY_ID];
+    if(publicationSigningValues.some(Boolean)&&!publicationSigningValues.every(Boolean)){
+      context.addIssue({code:"custom",path:["TRAINING_PUBLICATION_SIGNING_PRIVATE_KEY_BASE64"],
+        message:"publication signing key, audience, and key id must be configured together"});
+    }
   });
 
 export type BackendConfig = {
@@ -101,6 +110,9 @@ export type BackendConfig = {
   trainingDbCurriculumEnabled?: boolean;
   trainingEmployeeDraftPreviewEnabled?: boolean;
   trainingLearnerAllowedOrigin?: string;
+  trainingPublicationSigningPrivateKey?: string;
+  trainingPublicationAudience?: string;
+  trainingPublicationSigningKeyId?: string;
 };
 
 export class BackendConfigurationError extends Error {
@@ -146,5 +158,10 @@ export function loadBackendConfig(
     trainingDbCurriculumEnabled: result.data.TRAINING_DB_CURRICULUM_ENABLED,
     trainingEmployeeDraftPreviewEnabled: result.data.TRAINING_EMPLOYEE_DRAFT_PREVIEW_ENABLED,
     trainingLearnerAllowedOrigin: result.data.TRAINING_LEARNER_ALLOWED_ORIGIN,
+    trainingPublicationSigningPrivateKey: result.data.TRAINING_PUBLICATION_SIGNING_PRIVATE_KEY_BASE64
+      ? Buffer.from(result.data.TRAINING_PUBLICATION_SIGNING_PRIVATE_KEY_BASE64,"base64").toString("utf8")
+      : undefined,
+    trainingPublicationAudience: result.data.TRAINING_PUBLICATION_AUDIENCE,
+    trainingPublicationSigningKeyId: result.data.TRAINING_PUBLICATION_SIGNING_KEY_ID,
   };
 }

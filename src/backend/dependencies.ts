@@ -32,6 +32,7 @@ import { createTrainingLearnerAuthService, type TrainingLearnerAuthService } fro
 import { createTrainingCredentialAdmin, type TrainingCredentialAdmin } from "./training-credential-admin";
 import { createTrainingProgressService, type TrainingProgressService } from "./training-progress";
 import {createTrainingEmployeePreviewService,type TrainingEmployeePreviewService} from "./training-employee-preview";
+import {createTrainingPublicationService,type TrainingPublicationService} from "./training-publication";
 
 export type AuthVerifier = {
   verify(token: string): Promise<{ userId: string; email: string } | null>;
@@ -72,6 +73,7 @@ export type BackendDependencies = {
   trainingCredentialAdmin?: TrainingCredentialAdmin;
   trainingProgressService?: TrainingProgressService;
   trainingEmployeePreviewService?: TrainingEmployeePreviewService;
+  trainingPublicationService?: TrainingPublicationService;
   now?: () => Date;
 };
 
@@ -153,6 +155,11 @@ export function createDefaultDependencies(
     trainingCredentialAdmin: createTrainingCredentialAdmin(config.supabase.url, config.supabase.secretKey),
     trainingProgressService: createTrainingProgressService(config.supabase.url, config.supabase.secretKey),
     trainingEmployeePreviewService: createTrainingEmployeePreviewService(config.supabase.url, config.supabase.secretKey),
+    trainingPublicationService: createTrainingPublicationService(config.supabase.url,config.supabase.secretKey,{
+      privateKeyPem:config.trainingPublicationSigningPrivateKey,
+      audience:config.trainingPublicationAudience,
+      keyId:config.trainingPublicationSigningKeyId,
+    }),
     now: () => new Date(),
     authVerifier: createSupabaseClaimsAuthVerifier(authClient),
     async checkReadiness() {

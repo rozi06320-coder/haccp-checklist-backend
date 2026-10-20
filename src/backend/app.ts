@@ -23,6 +23,7 @@ import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, Evidenc
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
 import { MaintenancePushAccessError, MaintenancePushConflictError, MaintenancePushInputError, MaintenancePushUnavailableError } from "./maintenance-push";
 import { MAX_TRAINING_MEDIA_SOURCE_BYTES, TrainingMediaAccessError, TrainingMediaConflictError, TrainingMediaInputError, TrainingMediaNotFoundError, TrainingMediaUnavailableError, trainingMediaMetadataSchema } from "./training-media";
+import {TrainingPublicationAccessError,TrainingPublicationConflictError,TrainingPublicationInputError,TrainingPublicationNotFoundError,TrainingPublicationUnavailableError} from "./training-publication";
 import { TrainingProgressAccessError, TrainingProgressConflictError, TrainingProgressNotFoundError, TrainingProgressUnavailableError } from "./training-progress";
 import {getTrainingEmployeePreviewDiagnostic,TrainingEmployeePreviewAccessError,TrainingEmployeePreviewConflictError,TrainingEmployeePreviewNotFoundError,TrainingEmployeePreviewUnavailableError,type TrainingEmployeePreviewFailureStage} from "./training-employee-preview";
 import type { UserContext } from "./user-context";
@@ -811,6 +812,17 @@ const changeInternalAdminOperationalTeamPrimarySupervisorBodySchema = z.object({
   destination_supervisor_user_id: z.uuid(),
   expected_current_primary_assignment_id: z.uuid(),
 }).strict();
+const trainingPublicationFingerprintSchema=z.string().regex(/^[0-9a-f]{64}$/);
+const trainingPublicationSubmitSchema=z.object({expected_revision:z.number().int().nonnegative(),content_fingerprint:trainingPublicationFingerprintSchema,action_request_id:z.uuid()}).strict();
+const trainingPublicationReviewSchema=z.object({submission_id:z.uuid(),expected_revision:z.number().int().nonnegative(),content_fingerprint:trainingPublicationFingerprintSchema,review_type:z.enum(["content","translation","internal_regulatory"]),locale:z.enum(["en","ar","id","hi","fil"]).nullable().default(null),decision:z.enum(["approved","rejected"]),reason:z.string().trim().min(1).max(1000).nullable().default(null),action_request_id:z.uuid()}).strict().superRefine((value,context)=>{
+  if((value.review_type==="translation")!==Boolean(value.locale))context.addIssue({code:"custom",path:["locale"],message:"Locale does not match review type."});
+  if((value.decision==="approved")!== (value.reason===null))context.addIssue({code:"custom",path:["reason"],message:"Reason does not match decision."});
+});
+const trainingPublicationRevokeSchema=z.object({submission_id:z.uuid(),review_type:z.enum(["content","translation","internal_regulatory"]),locale:z.enum(["en","ar","id","hi","fil"]).nullable().default(null),reason:z.string().trim().min(1).max(1000),action_request_id:z.uuid()}).strict().superRefine((value,context)=>{if((value.review_type==="translation")!==Boolean(value.locale))context.addIssue({code:"custom",path:["locale"],message:"Locale does not match review type."});});
+const trainingStorageVerificationSchema=z.object({submission_id:z.uuid(),expected_revision:z.number().int().nonnegative(),content_fingerprint:trainingPublicationFingerprintSchema,action_request_id:z.uuid()}).strict();
+const trainingPublicationRequestSchema=trainingStorageVerificationSchema.extend({verification_run_id:z.uuid()}).strict();
+const trainingRetirementSchema=z.object({reason:z.string().trim().min(1).max(1000),action_request_id:z.uuid()}).strict();
+const trainingProgramActivationSchema=z.object({action_request_id:z.uuid()}).strict();
 const createInternalAdminBranchTeamBodySchema = z.object({
   team_name: internalAdminOperationalTeamNameSchema.optional(),
   company_name: companyNameSchema,
@@ -2426,6 +2438,14 @@ function trainingMediaError(error:unknown){
  if(error instanceof TrainingMediaUnavailableError)return new HttpError(503,"service_unavailable","Training image storage is temporarily unavailable.");
  return new HttpError(503,"service_unavailable","Training image storage is temporarily unavailable.");
 }
+function trainingPublicationError(error:unknown){
+ if(error instanceof TrainingPublicationInputError)return new HttpError(400,"bad_request","The Training publication request is invalid.");
+ if(error instanceof TrainingPublicationAccessError)return new HttpError(403,"forbidden","Access is denied.");
+ if(error instanceof TrainingPublicationConflictError)return new HttpError(409,"conflict","The Training publication state has changed or is not ready.");
+ if(error instanceof TrainingPublicationNotFoundError)return new HttpError(404,"not_found","The requested Training publication record was not found.");
+ if(error instanceof TrainingPublicationUnavailableError)return new HttpError(503,"service_unavailable","Training publication is temporarily unavailable.");
+ return new HttpError(503,"service_unavailable","Training publication is temporarily unavailable.");
+}
 
 function operationalPurchaseError(error: unknown) {
   if (error instanceof OperationalInputError) return new HttpError(422, "unprocessable_entity", "The purchase log is invalid.");
@@ -3584,6 +3604,96 @@ export function createApp(
       const readiness=await dependencies.trainingMediaService.getPublicationReadiness({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data});
       response.setHeader("Cache-Control","private, no-store");response.status(200).json({readiness});
     }catch(error){next(error instanceof HttpError?error:trainingMediaError(error));}},
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/review-submissions",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),courseId=z.uuid().safeParse(request.params.courseId),versionId=z.uuid().safeParse(request.params.versionId),body=trainingPublicationSubmitSchema.safeParse(request.body);
+      if(!organizationId.success||!courseId.success||!versionId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);const service=dependencies.trainingPublicationService;if(!service)throw new TrainingPublicationUnavailableError();
+      const submission=await service.submit({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data},{expectedRevision:body.data.expected_revision,contentFingerprint:body.data.content_fingerprint,requestId:body.data.action_request_id});
+      response.setHeader("Cache-Control","private, no-store");response.status(201).json({submission});
+    }catch(error){next(error instanceof HttpError?error:trainingPublicationError(error));}},
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/reviews",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),courseId=z.uuid().safeParse(request.params.courseId),versionId=z.uuid().safeParse(request.params.versionId),body=trainingPublicationReviewSchema.safeParse(request.body);
+      if(!organizationId.success||!courseId.success||!versionId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);const service=dependencies.trainingPublicationService;if(!service)throw new TrainingPublicationUnavailableError();
+      const review=await service.review({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data},{submissionId:body.data.submission_id,expectedRevision:body.data.expected_revision,contentFingerprint:body.data.content_fingerprint,reviewType:body.data.review_type,locale:body.data.locale,decision:body.data.decision,reason:body.data.reason,requestId:body.data.action_request_id});
+      response.setHeader("Cache-Control","private, no-store");response.status(201).json({review});
+    }catch(error){next(error instanceof HttpError?error:trainingPublicationError(error));}},
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/review-revocations",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),courseId=z.uuid().safeParse(request.params.courseId),versionId=z.uuid().safeParse(request.params.versionId),body=trainingPublicationRevokeSchema.safeParse(request.body);
+      if(!organizationId.success||!courseId.success||!versionId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);const service=dependencies.trainingPublicationService;if(!service)throw new TrainingPublicationUnavailableError();
+      const review=await service.revoke({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data},{submissionId:body.data.submission_id,reviewType:body.data.review_type,locale:body.data.locale,reason:body.data.reason,requestId:body.data.action_request_id});
+      response.setHeader("Cache-Control","private, no-store");response.status(201).json({review});
+    }catch(error){next(error instanceof HttpError?error:trainingPublicationError(error));}},
+  );
+  app.get(
+    "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/publication-history",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),courseId=z.uuid().safeParse(request.params.courseId),versionId=z.uuid().safeParse(request.params.versionId);
+      if(!organizationId.success||!courseId.success||!versionId.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);const service=dependencies.trainingPublicationService;if(!service)throw new TrainingPublicationUnavailableError();
+      const history=await service.history({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data});
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({history});
+    }catch(error){next(error instanceof HttpError?error:trainingPublicationError(error));}},
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/storage-verifications",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),courseId=z.uuid().safeParse(request.params.courseId),versionId=z.uuid().safeParse(request.params.versionId),body=trainingStorageVerificationSchema.safeParse(request.body);
+      if(!organizationId.success||!courseId.success||!versionId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);const service=dependencies.trainingPublicationService;if(!service)throw new TrainingPublicationUnavailableError();
+      const verification=await service.beginVerification({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data},{submissionId:body.data.submission_id,expectedRevision:body.data.expected_revision,contentFingerprint:body.data.content_fingerprint,requestId:body.data.action_request_id});
+      response.setHeader("Cache-Control","private, no-store");response.status(202).json({verification});
+    }catch(error){next(error instanceof HttpError?error:trainingPublicationError(error));}},
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/publish",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),courseId=z.uuid().safeParse(request.params.courseId),versionId=z.uuid().safeParse(request.params.versionId),body=trainingPublicationRequestSchema.safeParse(request.body);
+      if(!organizationId.success||!courseId.success||!versionId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);const service=dependencies.trainingPublicationService;if(!service)throw new TrainingPublicationUnavailableError();
+      const publication=await service.requestPublication({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data},{submissionId:body.data.submission_id,verificationRunId:body.data.verification_run_id,expectedRevision:body.data.expected_revision,contentFingerprint:body.data.content_fingerprint,requestId:body.data.action_request_id});
+      response.setHeader("Cache-Control","private, no-store");response.status(202).json({publication});
+    }catch(error){next(error instanceof HttpError?error:trainingPublicationError(error));}},
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/retirement",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),courseId=z.uuid().safeParse(request.params.courseId),versionId=z.uuid().safeParse(request.params.versionId),body=trainingRetirementSchema.safeParse(request.body);
+      if(!organizationId.success||!courseId.success||!versionId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);const service=dependencies.trainingPublicationService;if(!service)throw new TrainingPublicationUnavailableError();
+      await service.retireCourse({actorUserId:auth.userId,organizationId:organizationId.data,courseId:courseId.data,courseVersionId:versionId.data},{reason:body.data.reason,requestId:body.data.action_request_id});
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({status:"retired"});
+    }catch(error){next(error instanceof HttpError?error:trainingPublicationError(error));}},
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/training/programs/:programId/activation",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),programId=z.uuid().safeParse(request.params.programId),body=trainingProgramActivationSchema.safeParse(request.body);
+      if(!organizationId.success||!programId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);const service=dependencies.trainingPublicationService;if(!service)throw new TrainingPublicationUnavailableError();
+      await service.activateProgram(auth.userId,organizationId.data,programId.data,body.data.action_request_id);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({status:"active"});
+    }catch(error){next(error instanceof HttpError?error:trainingPublicationError(error));}},
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/training/programs/:programId/retirement",
+    protectedRateLimit,authenticate,async(request,response,next)=>{try{
+      const organizationId=organizationIdSchema.safeParse(request.params.organizationId),programId=z.uuid().safeParse(request.params.programId),body=trainingRetirementSchema.safeParse(request.body);
+      if(!organizationId.success||!programId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+      const auth=requireAuthContext(request);await requireInternalAdmin(request);const service=dependencies.trainingPublicationService;if(!service)throw new TrainingPublicationUnavailableError();
+      await service.retireProgram(auth.userId,organizationId.data,programId.data,body.data.reason,body.data.action_request_id);
+      response.setHeader("Cache-Control","private, no-store");response.status(200).json({status:"retired"});
+    }catch(error){next(error instanceof HttpError?error:trainingPublicationError(error));}},
   );
   app.post(
     "/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:versionId/media",

@@ -35,6 +35,14 @@ describe("backend configuration", () => {
     assert.equal(enabled.trainingLearnerAuthEnabled,false);
   });
 
+  it("requires the publication signing key, environment audience, and rotation key id together",()=>{
+    assert.throws(()=>loadBackendConfig({...validEnvironment,TRAINING_PUBLICATION_AUDIENCE:"haccp.production.training-publication"}),BackendConfigurationError);
+    assert.throws(()=>loadBackendConfig({...validEnvironment,TRAINING_PUBLICATION_SIGNING_PRIVATE_KEY_BASE64:"cHJpdmF0ZQ==",TRAINING_PUBLICATION_AUDIENCE:"bad audience",TRAINING_PUBLICATION_SIGNING_KEY_ID:"key-1"}),BackendConfigurationError);
+    const configured=loadBackendConfig({...validEnvironment,TRAINING_PUBLICATION_SIGNING_PRIVATE_KEY_BASE64:Buffer.from("private-pem-placeholder").toString("base64"),TRAINING_PUBLICATION_AUDIENCE:"haccp.production.training-publication",TRAINING_PUBLICATION_SIGNING_KEY_ID:"key-2026-10"});
+    assert.equal(configured.trainingPublicationAudience,"haccp.production.training-publication");
+    assert.equal(configured.trainingPublicationSigningKeyId,"key-2026-10");
+  });
+
   it("keeps database curriculum disabled by default and requires an allowed origin when enabled",()=>{
     assert.throws(()=>loadBackendConfig({...validEnvironment,TRAINING_DB_CURRICULUM_ENABLED:"true"}),BackendConfigurationError);
     const enabled=loadBackendConfig({...validEnvironment,TRAINING_DB_CURRICULUM_ENABLED:"true",TRAINING_LEARNER_ALLOWED_ORIGIN:"https://training.example.invalid"});
