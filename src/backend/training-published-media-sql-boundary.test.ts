@@ -3,6 +3,7 @@ import {readFileSync} from "node:fs";
 import {describe,it} from "node:test";
 
 const sql=readFileSync(new URL("../../supabase/migrations/20261020120000_training_single_project_published_media.sql",import.meta.url),"utf8");
+const audienceBoundary=readFileSync(new URL("../../supabase/migrations/20261020130000_training_integrity_audience_boundary.sql",import.meta.url),"utf8");
 const verifier=readFileSync(new URL("training-storage-verifier.ts",import.meta.url),"utf8");
 const progress=readFileSync(new URL("training-progress.ts",import.meta.url),"utf8");
 const preview=readFileSync(new URL("training-employee-preview.ts",import.meta.url),"utf8");
@@ -55,5 +56,23 @@ describe("single-project published Training media boundary",()=>{
   it("uses only SECURITY DEFINER empty-search-path functions and no dynamic SQL",()=>{
     const functions=sql.match(/create or replace function[\s\S]*?\$\$;/gi)??[];assert.ok(functions.length>=9);
     for(const fn of functions){assert.match(fn,/security definer/i);assert.match(fn,/set search_path=''|set search_path = ''/i);assert.doesNotMatch(fn,/execute\s+format|execute\s+[^;]+using/i);}
+  });
+  it("binds integrity leases and completions to the immutable publication request audience",()=>{
+    assert.match(audienceBoundary,/join public\.training_publication_requests publication_request[\s\S]*publication_request\.id=manifest\.publication_request_id/i);
+    assert.match(audienceBoundary,/publication_request\.organization_id=manifest\.organization_id/);
+    assert.match(audienceBoundary,/publication_request\.course_id=manifest\.course_id/);
+    assert.match(audienceBoundary,/publication_request\.course_version_id=manifest\.course_version_id/);
+    assert.equal((audienceBoundary.match(/publication_request\.audience=expected_audience/g)??[]).length,2);
+    assert.match(audienceBoundary,/for update of job skip locked/);
+    assert.match(audienceBoundary,/for update of target/);
+    assert.match(audienceBoundary,/Training verifier access denied/);
+  });
+  it("preserves integrity RPC signatures, least-privilege grants, and empty search paths",()=>{
+    assert.match(audienceBoundary,/create or replace function public\.claim_training_published_media_integrity_audit\([\s\S]*target_capability_id uuid,capability_secret text,expected_audience text,[\s\S]*worker_instance_id uuid,claim_request_id uuid[\s\S]*security definer set search_path=''/i);
+    assert.match(audienceBoundary,/create or replace function public\.complete_training_published_media_integrity_audit\([\s\S]*target_manifest_id uuid,[\s\S]*completion_request_id uuid[\s\S]*security definer set search_path=''/i);
+    assert.match(audienceBoundary,/revoke all on function public\.claim_training_published_media_integrity_audit\([\s\S]*from public,anon,authenticated,service_role/);
+    assert.match(audienceBoundary,/grant execute on function public\.claim_training_published_media_integrity_audit\([\s\S]*to anon/);
+    assert.doesNotMatch(audienceBoundary,/grant execute[\s\S]*to (?:authenticated|service_role)/i);
+    assert.doesNotMatch(audienceBoundary,/execute\s+format|execute\s+[^;]+using/i);
   });
 });
