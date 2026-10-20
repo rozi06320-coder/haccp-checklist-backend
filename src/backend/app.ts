@@ -30,8 +30,21 @@ import type { UserContext } from "./user-context";
 import { validateDailyAuditGrant } from "./daily-audit-grant";
 import { decodeUploadFilename } from "../lib/internal-api/upload-filename";
 import { employeeCountryCodes } from "../lib/employee-countries";
+import {
+  ManagerPasswordResetAccessError,
+  ManagerPasswordResetConflictError,
+  ManagerPasswordResetRateLimitError,
+  ManagerPasswordResetReauthenticationError,
+  ManagerPasswordResetReplayError,
+  ManagerPasswordResetSessionRevokedError,
+  ManagerPasswordResetUnavailableError,
+} from "./organization-manager-password-reset";
 
 const organizationIdSchema = z.uuid();
+const managerPasswordResetStepUpBodySchema = z.object({
+  current_password: z.string().min(8).max(1024),
+}).strict();
+const managerPasswordResetStepUpGrantSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 const branchIdSchema = z.uuid();
 const staffIdSchema = z.uuid();
 const operationalRoleSchema = z.enum(["kitchen", "dispatcher", "production", "front_of_house", "cleaner", "cashier"]);
@@ -2742,6 +2755,9 @@ export function createApp(
   app.use((request, response, next) => {
     request.id = randomUUID();
     response.setHeader("X-Request-Id", request.id);
+    if (/^\/api\/v1\/internal-admin\/organizations\/[^/]+\/managers\/[^/]+\/reset-password(?:\/step-up)?$/.test(request.path)) {
+      response.setHeader("Cache-Control", "private, no-store");
+    }
     next();
   });
   app.use(requestRateDiagnostic);
@@ -2946,10 +2962,45 @@ export function createApp(
     limit:MAX_MAINTENANCE_ISSUE_PHOTO_BYTES*MAX_MAINTENANCE_ISSUE_PHOTOS*2,
   });
   const supplierReceivingPhotoRawBody=express.raw({type:()=>true,limit:MAX_SUPPLIER_RECEIVING_PHOTO_BYTES});
-  const authenticate = requireAuthentication(
+  const baseAuthenticate = requireAuthentication(
     dependencies.authVerifier,
     dependencies.createUserContext,
   );
+  const authenticate = (request: Request, response: Response, next: NextFunction) => {
+    baseAuthenticate(request, response, (authenticationError?: unknown) => {
+      if (authenticationError) {
+        next(authenticationError);
+        return;
+      }
+      if (!request.path.startsWith("/api/v1/management/")) {
+        next();
+        return;
+      }
+      if (!dependencies.organizationManagerPasswordReset) {
+        // The production dependency factory always supplies this service.
+        // Preserve existing behavior for deliberately partial injected/test dependencies.
+        next();
+        return;
+      }
+      const auth = request.auth;
+      if (!auth?.sessionId || !z.uuid().safeParse(auth.sessionId).success) {
+        next(new HttpError(401, "unauthorized", "Authentication is required."));
+        return;
+      }
+      dependencies.organizationManagerPasswordReset.validateProtectedSession({
+        actorUserId: auth.userId,
+        actorSessionId: auth.sessionId,
+      }).then((status) => {
+        if (status === "revoked") {
+          next(new HttpError(401, "unauthorized", "Authentication is required."));
+        } else {
+          next();
+        }
+      }).catch(() => {
+        next(new HttpError(503, "service_unavailable", "The service is unavailable."));
+      });
+    });
+  };
   async function loadMaintenanceIssueActor(request: Request) {
     const authHeader = request.header("authorization") ?? "";
     const bearer = /^Bearer\s+(.+)$/i.exec(authHeader)?.[1]?.trim();
@@ -4860,6 +4911,115 @@ export function createApp(
         if (error instanceof HttpError) next(error);
         else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
         else next(new HttpError(503, "service_unavailable", "Organization Managers are unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/managers/:managerId/reset-password/step-up",
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const managerId = z.uuid().safeParse(request.params.managerId);
+        const body = managerPasswordResetStepUpBodySchema.safeParse(request.body);
+        const query = emptyQuerySchema.safeParse(request.query);
+        if (!organizationId.success || !managerId.success || !body.success || !query.success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!auth.sessionId || !z.uuid().safeParse(auth.sessionId).success) {
+          throw new HttpError(401, "unauthorized", "Authentication is required.");
+        }
+        const service = dependencies.organizationManagerPasswordReset;
+        if (!service) throw new HttpError(503, "service_unavailable", "Password reset is unavailable.");
+
+        const result = await service.authorize({
+          actorUserId: auth.userId,
+          actorSessionId: auth.sessionId,
+          actorEmail: auth.email,
+          organizationId: organizationId.data,
+          managerId: managerId.data,
+          currentPassword: body.data.current_password,
+          clientIp: request.ip ?? request.socket.remoteAddress ?? "unavailable",
+        });
+        response.status(200).json({
+          step_up_grant: result.authorization,
+          expires_at: result.expiresAt,
+        });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof ManagerPasswordResetReauthenticationError) {
+          next(new HttpError(403, "forbidden", "Password reauthentication failed."));
+        } else if (error instanceof ManagerPasswordResetSessionRevokedError) {
+          next(new HttpError(401, "unauthorized", "Authentication is required."));
+        } else if (error instanceof ManagerPasswordResetAccessError) {
+          next(new HttpError(403, "forbidden", "Access is denied."));
+        } else if (error instanceof ManagerPasswordResetRateLimitError) {
+          next(new HttpError(429, "rate_limited", "Unable to reset the password."));
+        } else {
+          next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
+        }
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/managers/:managerId/reset-password",
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const managerId = z.uuid().safeParse(request.params.managerId);
+        const body = emptyQuerySchema.safeParse(request.body ?? {});
+        const query = emptyQuerySchema.safeParse(request.query);
+        const idempotencyKey = z.uuid().safeParse(request.header("Idempotency-Key"));
+        const stepUpGrant = managerPasswordResetStepUpGrantSchema.safeParse(
+          request.header("X-Password-Reset-Step-Up"),
+        );
+        if (!organizationId.success || !managerId.success || !body.success
+          || !query.success || !idempotencyKey.success || !stepUpGrant.success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!auth.sessionId || !z.uuid().safeParse(auth.sessionId).success) {
+          throw new HttpError(401, "unauthorized", "Authentication is required.");
+        }
+        if (!dependencies.organizationManagerPasswordReset) {
+          throw new HttpError(503, "service_unavailable", "Password reset is unavailable.");
+        }
+
+        const result = await dependencies.organizationManagerPasswordReset.reset({
+          actorUserId: auth.userId,
+          actorSessionId: auth.sessionId,
+          organizationId: organizationId.data,
+          managerId: managerId.data,
+          idempotencyKey: idempotencyKey.data,
+          authorization: stepUpGrant.data,
+          clientIp: request.ip ?? request.socket.remoteAddress ?? "unavailable",
+        });
+        response.status(200).json({
+          temporary_password: result.temporaryPassword,
+          must_change_password: true,
+        });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof ManagerPasswordResetSessionRevokedError) {
+          next(new HttpError(401, "unauthorized", "Authentication is required."));
+        } else if (error instanceof ManagerPasswordResetAccessError) {
+          next(new HttpError(403, "forbidden", "Access is denied."));
+        } else if (error instanceof ManagerPasswordResetConflictError
+          || error instanceof ManagerPasswordResetReplayError) {
+          next(new HttpError(409, "conflict", "The password reset cannot be repeated."));
+        } else if (error instanceof ManagerPasswordResetRateLimitError) {
+          next(new HttpError(429, "rate_limited", "Unable to reset the password."));
+        } else if (error instanceof ManagerPasswordResetUnavailableError) {
+          next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
+        } else {
+          next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
+        }
       }
     },
   );
@@ -6916,6 +7076,7 @@ export function createApp(
           );
         }
 
+        response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json({ success: true });
       } catch (error) {
         next(error);

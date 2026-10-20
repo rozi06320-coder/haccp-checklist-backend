@@ -33,9 +33,13 @@ import { createTrainingCredentialAdmin, type TrainingCredentialAdmin } from "./t
 import { createTrainingProgressService, type TrainingProgressService } from "./training-progress";
 import {createTrainingEmployeePreviewService,type TrainingEmployeePreviewService} from "./training-employee-preview";
 import {createTrainingPublicationService,type TrainingPublicationService} from "./training-publication";
+import {
+  createOrganizationManagerPasswordResetService,
+  type OrganizationManagerPasswordResetService,
+} from "./organization-manager-password-reset";
 
 export type AuthVerifier = {
-  verify(token: string): Promise<{ userId: string; email: string } | null>;
+  verify(token: string): Promise<{ userId: string; email: string; sessionId?: string } | null>;
 };
 
 type ClaimsAuthClient = {
@@ -56,6 +60,7 @@ export type BackendDependencies = {
   checkReadiness: () => Promise<boolean>;
   createUserContext: UserContextRepositoryFactory;
   passwordChange: PasswordChangeService;
+  organizationManagerPasswordReset?: OrganizationManagerPasswordResetService;
   provisioningAdmin: ProvisioningAdmin;
   managementAdmin: ManagementAdmin;
   branchManagementAdmin: BranchManagementAdmin;
@@ -94,7 +99,7 @@ export function createSupabaseClaimsAuthVerifier(
           return null;
         }
 
-        const { sub, email, role, is_anonymous } = data.claims;
+        const { sub, email, role, is_anonymous, session_id } = data.claims;
         if (
           typeof sub !== "string" ||
           !sub.trim() ||
@@ -106,7 +111,9 @@ export function createSupabaseClaimsAuthVerifier(
           return null;
         }
 
-        return { userId: sub, email };
+        return typeof session_id === "string" && session_id.trim()
+          ? { userId: sub, email, sessionId: session_id }
+          : { userId: sub, email };
       } catch {
         return null;
       }
@@ -125,12 +132,17 @@ export function createDefaultDependencies(
     config.supabase.publishableKey,
     { auth: clientAuthOptions },
   );
-
   return {
     passwordChange: createPasswordChangeService(
       config.supabase.url,
       config.supabase.publishableKey,
       config.supabase.secretKey,
+    ),
+    organizationManagerPasswordReset: createOrganizationManagerPasswordResetService(
+      config.supabase.url,
+      config.supabase.publishableKey,
+      config.supabase.secretKey,
+      config.dailyAuditGrantSecret,
     ),
     provisioningAdmin: createProvisioningAdmin(
       config.supabase.url,

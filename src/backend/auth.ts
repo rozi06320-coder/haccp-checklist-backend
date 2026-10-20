@@ -28,23 +28,25 @@ export function requireAuthentication(
       return;
     }
 
+    let identity: Awaited<ReturnType<AuthVerifier["verify"]>>;
     try {
-      const identity = await authVerifier.verify(match[1]);
-
-      if (!identity) {
-        next(new HttpError(401, "unauthorized", "Authentication is required."));
-        return;
-      }
-
-      request.auth = {
-        userId: identity.userId,
-        email: identity.email,
-        userContext: createUserContext(match[1]),
-      };
-      next();
+      identity = await authVerifier.verify(match[1]);
     } catch {
       next(new HttpError(401, "unauthorized", "Authentication is required."));
+      return;
     }
+    if (!identity) {
+      next(new HttpError(401, "unauthorized", "Authentication is required."));
+      return;
+    }
+
+    request.auth = {
+      userId: identity.userId,
+      email: identity.email,
+      sessionId: identity.sessionId,
+      userContext: createUserContext(match[1]),
+    };
+    next();
   };
 }
 

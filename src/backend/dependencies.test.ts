@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { createSupabaseClaimsAuthVerifier } from "./dependencies";
 
 const userId = "10000000-0000-4000-8000-000000000001";
+const sessionId = "10000000-0000-4000-8000-000000000002";
 const email = "user@example.invalid";
 
 function verifierForClaims(claims: Record<string, unknown>) {
@@ -106,5 +107,20 @@ describe("createSupabaseClaimsAuthVerifier", () => {
     });
 
     assert.equal(await verifier.verify("not-a-jwt"), null);
+  });
+
+  it("extracts the session id without a database lookup for unrelated requests", async () => {
+    const authClient = {
+      auth: {
+        async getClaims() {
+          return {
+            data: { claims: { sub: userId, email, role: "authenticated", session_id: sessionId } },
+            error: null,
+          };
+        },
+      },
+    };
+    const verifier = createSupabaseClaimsAuthVerifier(authClient);
+    assert.deepEqual(await verifier.verify("valid-token"), { userId, email, sessionId });
   });
 });
