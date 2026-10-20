@@ -33,7 +33,9 @@ insert into public.training_lessons(id,organization_id,course_version_id,module_
 ('3bb00000-0000-4000-8000-000000000003','3b200000-0000-4000-8000-000000000001','3b900000-0000-4000-8000-000000000001','3ba00000-0000-4000-8000-000000000002','quiz',1,'quiz',true,jsonb_build_object('en','Quiz'),jsonb_build_object('en','Assess'),jsonb_build_object('en',jsonb_build_object('questions','[]'::jsonb)),8000,'3b100000-0000-4000-8000-000000000001');
 -- Fixture-only bypass: this test exercises Phase 3B progress behavior, not publication.
 alter table public.training_course_versions disable trigger training_course_versions_05_media_publication;
+alter table public.training_course_versions disable trigger training_course_versions_02_manifest_publication_gate;
 update public.training_course_versions set status='published',published_at=statement_timestamp(),published_by='3b100000-0000-4000-8000-000000000001' where id='3b900000-0000-4000-8000-000000000001';
+alter table public.training_course_versions enable trigger training_course_versions_02_manifest_publication_gate;
 alter table public.training_course_versions enable trigger training_course_versions_05_media_publication;
 
 select lives_ok($$select * from public.initialize_training_enrollment('3b200000-0000-4000-8000-000000000001','3b300000-0000-4000-8000-000000000001','3b600000-0000-4000-8000-000000000001','phase3b-published')$$,'published enrollment succeeds');

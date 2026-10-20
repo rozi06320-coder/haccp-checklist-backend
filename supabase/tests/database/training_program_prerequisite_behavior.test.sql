@@ -45,7 +45,9 @@ select '4cb00000-0000-4000-8000-000000000002','4c200000-0000-4000-8000-000000000
   (select jsonb_object_agg(locale,jsonb_build_object('questions',questions.value)) from unnest(array['en','ar','id','hi','fil']) locale cross join questions),8000,0,jsonb_build_object('assessment_scope','course','answer_key_by_question',answers.value) from answers;
 -- Fixture-only bypass: this test exercises Phase 4B prerequisite behavior, not publication.
 alter table public.training_course_versions disable trigger training_course_versions_05_media_publication;
+alter table public.training_course_versions disable trigger training_course_versions_02_manifest_publication_gate;
 update public.training_course_versions set status='published',published_at=statement_timestamp(),published_by='4c100000-0000-4000-8000-000000000001' where id in('4c900000-0000-4000-8000-000000000001','4c900000-0000-4000-8000-000000000002');
+alter table public.training_course_versions enable trigger training_course_versions_02_manifest_publication_gate;
 alter table public.training_course_versions enable trigger training_course_versions_05_media_publication;
 
 insert into public.training_programs(id,organization_id,program_key,status,title_i18n,description_i18n) values('4cc00000-0000-4000-8000-000000000001','4c200000-0000-4000-8000-000000000001','restaurant-training','draft','{"en":"Training"}','{"en":"Training"}');

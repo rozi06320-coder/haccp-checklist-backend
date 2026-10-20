@@ -288,12 +288,16 @@ select lives_ok(format($call$select * from public.complete_internal_admin_traini
   (select jsonb_agg(jsonb_build_object('media_id',media_id,'sha256',expected_sha256,'byte_size',expected_byte_size,'width',expected_width,'height',expected_height))::text from verification_candidates)),
   'fresh exact Storage observations complete the challenge');
 
+-- Phase 3C owns the outer manifest gate. This Phase 3A regression deliberately
+-- bypasses only that trigger while exercising the unchanged Phase 3A publisher.
+alter table public.training_course_versions disable trigger training_course_versions_02_manifest_publication_gate;
 select lives_ok(format($call$select * from public.publish_internal_admin_training_course_version(
   '9a100000-0000-4000-8000-000000000003',%L,%L,%L,%L,%L,2,%L,
   '9a500000-0000-4000-8000-000000000001')$call$,
   (select organization_id from final_review),(select course_id from final_review),(select version_id from final_review),
   (select id from final_submission),(select verification_run_id from verification_candidates limit 1),(select fingerprint from final_review)),
   'atomic publication succeeds only after all exact approvals and fresh Storage evidence');
+alter table public.training_course_versions enable trigger training_course_versions_02_manifest_publication_gate;
 select ok((select status='published' and publication_fingerprint=(select fingerprint from final_review)
   from public.training_course_versions where id=(select version_id from final_review)),
   'published version retains its approved fingerprint');
