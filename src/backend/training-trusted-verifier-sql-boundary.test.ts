@@ -53,7 +53,7 @@ describe("Training trusted verifier SQL boundary",()=>{
   it("streams from a fixed Storage origin with timeout, byte cap, and concurrency two",()=>{
     assert.match(verifier,/response\.body\.getReader\(\)/);assert.match(verifier,/AbortController/);
     assert.match(verifier,/MAX_TRAINING_MEDIA_SOURCE_BYTES/);assert.match(verifier,/target\.origin!==origin\.origin/);
-    assert.match(verifier,/Math\.min\(2,rows\.length\)/);assert.match(verifier,/redirect:"error"/);
+    assert.match(verifier,/rows\.slice\(offset,offset\+2\)/);assert.match(verifier,/redirect:"error"/);
   });
   it("all migration functions are SECURITY DEFINER with an empty search path and no dynamic SQL",()=>{
     const functions=sql.match(/create or replace function[\s\S]*?\$\$;/gi)??[];assert.ok(functions.length>=8);

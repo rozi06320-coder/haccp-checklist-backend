@@ -46,7 +46,7 @@ const imageRow = z.object({
   expected_alt_i18n:localizedText,media_id:uuid,width:z.number().int().positive(),height:z.number().int().positive(),
 }).strict();
 const lessonProgressRow=z.object({lesson_id:uuid,global_position:z.number().int().min(1).max(18),status:z.enum(["not_started","in_progress","completed"]),started_at:z.string().nullable(),completed_at:z.string().nullable()}).strict();
-const storageRow=z.object({storage_bucket:z.literal("training-media"),storage_object_path:z.string().min(1),mime_type:z.literal("image/webp")}).strict();
+const storageRow=z.object({storage_bucket:z.literal("training-published-media"),storage_object_path:z.string().regex(/^sha256\/[0-9a-f]{2}\/[0-9a-f]{64}\.webp$/),mime_type:z.literal("image/webp"),sha256:z.string().regex(/^[0-9a-f]{64}$/),integrity_checked_at:z.string()}).strict();
 const quizOption=z.object({option_key:z.string().min(1),text:z.string().min(1)}).strict();
 const quizQuestion=z.object({question_key:z.string().min(1),prompt:z.string().min(1),options:z.array(quizOption).min(2)}).strict();
 const quizAttemptRow=z.object({
@@ -208,7 +208,7 @@ export function createTrainingProgressService(url:string,secretKey:string):Train
       return{course:{id:first.course_id,key:first.course_key,version_id:first.course_version_id,version_number:first.version_number,default_locale:first.default_locale,supported_locales:first.supported_locales,title_i18n:first.course_title_i18n,description_i18n:first.course_description_i18n},instructional_modules:modules,progress:{...progress,lessons:lessonProgress},final_assessment:{module_id:quiz.module_id,lesson_id:quiz.lesson_id,title_i18n:quiz.lesson_title_i18n,question_count:27,pass_threshold_bps:8000,minimum_correct_count:22,locked:assessmentStatus.locked,submission_available:!assessmentStatus.locked&&!assessmentStatus.completed,status:assessmentStatus}};
     },
     async authorizeMedia(identity,enrollmentId,mediaId){
-      uuid.parse(enrollmentId);uuid.parse(mediaId);const rows=await rpc("authorize_legacy_training_media_read",{...args(identity),target_enrollment_id:enrollmentId,target_media_id:mediaId});
+      uuid.parse(enrollmentId);uuid.parse(mediaId);const rows=await rpc("authorize_training_published_media_read",{...args(identity),target_enrollment_id:enrollmentId,target_media_id:mediaId});
       const authorized=z.array(storageRow).max(1).parse(rows)[0];if(!authorized)return null;
       const signed=await client.storage.from(authorized.storage_bucket).createSignedUrl(authorized.storage_object_path,300);
       if(signed.error||!signed.data?.signedUrl)throw new TrainingProgressUnavailableError();

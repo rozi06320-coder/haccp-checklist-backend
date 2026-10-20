@@ -1,6 +1,6 @@
 import {randomUUID} from "node:crypto";
 import {z} from "zod";
-import {createTrainingVerifierBrokerClient,createTrainingVerifierDatabase,createTrainingVerifierStorage,processTrainingVerifierJob} from "./training-storage-verifier";
+import {createTrainingVerifierBrokerClient,createTrainingVerifierDatabase,createTrainingVerifierStorage,processTrainingIntegrityAudit,processTrainingVerifierJob} from "./training-storage-verifier";
 
 const publicKeysSchema=z.record(z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),z.string().min(1));
 const environmentSchema=z.object({
@@ -35,7 +35,8 @@ const storage=createTrainingVerifierStorage({
 });
 let stopping=false;
 async function run(){while(!stopping){try{
-  const processed=await processTrainingVerifierJob(database,storage,{audience:environmentSchema.TRAINING_PUBLICATION_AUDIENCE,publicKeysById});
+    const processed=await processTrainingVerifierJob(database,storage,{audience:environmentSchema.TRAINING_PUBLICATION_AUDIENCE,publicKeysById})
+      ||await processTrainingIntegrityAudit(database,storage);
   if(!processed)await new Promise(resolve=>setTimeout(resolve,environmentSchema.TRAINING_VERIFIER_POLL_INTERVAL_MS));
 }catch(error){
   console.error("TRAINING_STORAGE_VERIFIER",{outcome:"rejected_or_unavailable",errorType:error instanceof Error?error.name:"UnknownError"});
