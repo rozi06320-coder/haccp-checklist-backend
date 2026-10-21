@@ -41,10 +41,10 @@ describe("Purchasing push delivery service", () => {
     });
     const supabase = { async rpc(name: string, args: Record<string, unknown>) {
       if (name === "list_purchase_request_push_subscriptions") return { data: [
-        recipient("59000000-0000-4000-8000-000000000001", "19000000-0000-4000-8000-000000000001", "https://push.example/buyer-a-phone"),
-        recipient("59000000-0000-4000-8000-000000000002", "19000000-0000-4000-8000-000000000001", "https://push.example/buyer-a-laptop"),
-        recipient("59000000-0000-4000-8000-000000000003", "19000000-0000-4000-8000-000000000002", "https://push.example/buyer-b-stale"),
-        recipient("59000000-0000-4000-8000-000000000004", "19000000-0000-4000-8000-000000000002", "https://push.example/buyer-a-phone"),
+        recipient("59000000-0000-4000-8000-000000000001", "19000000-0000-4000-8000-000000000001", "https://fcm.googleapis.com/fcm/send/buyer-a-phone"),
+        recipient("59000000-0000-4000-8000-000000000002", "19000000-0000-4000-8000-000000000001", "https://fcm.googleapis.com/fcm/send/buyer-a-laptop"),
+        recipient("59000000-0000-4000-8000-000000000003", "19000000-0000-4000-8000-000000000002", "https://fcm.googleapis.com/fcm/send/buyer-b-stale"),
+        recipient("59000000-0000-4000-8000-000000000004", "19000000-0000-4000-8000-000000000002", "https://fcm.googleapis.com/fcm/send/buyer-a-phone"),
       ], error: null };
       if (name === "disable_push_subscription_delivery") {
         disabled.push(args);
@@ -63,8 +63,8 @@ describe("Purchasing push delivery service", () => {
     await service.notifyPurchaseRequestCreated!(request);
 
     assert.deepEqual(sent.map((delivery) => delivery.endpoint).sort(), [
-      "https://push.example/buyer-a-laptop",
-      "https://push.example/buyer-a-phone",
+      "https://fcm.googleapis.com/fcm/send/buyer-a-laptop",
+      "https://fcm.googleapis.com/fcm/send/buyer-a-phone",
     ]);
     assert.equal(disabled.length, 1);
     for (const delivery of sent) {
@@ -92,7 +92,7 @@ describe("Purchasing push delivery service", () => {
       } },
       webPush: { setVapidDetails() {}, async sendNotification() {} },
     });
-    await service.registerPurchasingSubscription!({ actorUserId: "19000000-0000-4000-8000-000000000001", endpoint: "https://push.example/buyer", p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret", userAgent: "Browser" });
+    await service.registerPurchasingSubscription!({ actorUserId: "19000000-0000-4000-8000-000000000001", endpoint: "https://fcm.googleapis.com/fcm/send/buyer", p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret", userAgent: "Browser" });
     assert.equal(calls[0]?.name, "register_purchasing_push_subscription");
   });
 });

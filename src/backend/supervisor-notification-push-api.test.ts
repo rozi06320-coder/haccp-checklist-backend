@@ -139,10 +139,10 @@ describe("Supervisor notification browser push API", () => {
     const response = await fetch(`${baseUrl}/api/v1/supervisor/push/subscriptions`, {
       method: "POST",
       headers: { ...auth("supervisor"), "Content-Type": "application/json", "User-Agent": "Node Test" },
-      body: JSON.stringify({ endpoint: "https://push.example/supervisor", keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" } }),
+      body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/supervisor", keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" } }),
     });
     assert.equal(response.status, 200);
-    assert.deepEqual(calls.at(-1), { name: "supervisor-register", input: { actorUserId: ids.supervisor, endpoint: "https://push.example/supervisor", p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret", userAgent: "Node Test" } });
+    assert.deepEqual(calls.at(-1), { name: "supervisor-register", input: { actorUserId: ids.supervisor, endpoint: "https://fcm.googleapis.com/fcm/send/supervisor", p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret", userAgent: "Node Test" } });
     assert.equal(JSON.stringify(calls.at(-1)).includes("example.invalid"), false);
     assert.equal((await json(response)).subscription !== null, true);
   });
@@ -151,7 +151,7 @@ describe("Supervisor notification browser push API", () => {
     const response = await fetch(`${baseUrl}/api/v1/supervisor/push/subscriptions`, {
       method: "POST",
       headers: { ...auth("staff"), "Content-Type": "application/json" },
-      body: JSON.stringify({ endpoint: "https://push.example/staff", keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" } }),
+      body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/staff", keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" } }),
     });
     assert.equal(response.status, 403);
     assert.equal(calls.length, 0);
@@ -164,7 +164,7 @@ describe("Supervisor notification browser push API", () => {
       body: JSON.stringify({
         user_id: ids.otherUser,
         branch_id: ids.otherBranch,
-        endpoint: "https://push.example/spoofed",
+        endpoint: "https://fcm.googleapis.com/fcm/send/spoofed",
         keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" },
       }),
     });
@@ -177,7 +177,7 @@ describe("Supervisor notification browser push API", () => {
       method: "POST",
       headers: { ...auth("supervisor"), "Content-Type": "application/json" },
       body: JSON.stringify({
-        endpoint: "https://push.example/email-list",
+        endpoint: "https://fcm.googleapis.com/fcm/send/email-list",
         keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" },
         emails: ["maintenance@example.invalid"],
       }),
@@ -190,16 +190,16 @@ describe("Supervisor notification browser push API", () => {
     const disabled = await fetch(`${baseUrl}/api/v1/supervisor/push/subscriptions`, {
       method: "DELETE",
       headers: { ...auth("supervisor"), "Content-Type": "application/json" },
-      body: JSON.stringify({ endpoint: "https://push.example/supervisor" }),
+      body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/supervisor" }),
     });
     assert.equal(disabled.status, 200);
-    assert.deepEqual(calls.at(-1), { name: "disable", input: { actorUserId: ids.supervisor, endpoint: "https://push.example/supervisor" } });
+    assert.deepEqual(calls.at(-1), { name: "disable", input: { actorUserId: ids.supervisor, endpoint: "https://fcm.googleapis.com/fcm/send/supervisor" } });
 
     calls.length = 0;
     const spoofed = await fetch(`${baseUrl}/api/v1/supervisor/push/subscriptions`, {
       method: "DELETE",
       headers: { ...auth("supervisor"), "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: ids.otherUser, endpoint: "https://push.example/supervisor" }),
+      body: JSON.stringify({ user_id: ids.otherUser, endpoint: "https://fcm.googleapis.com/fcm/send/supervisor" }),
     });
     assert.equal(spoofed.status, 400);
     assert.equal(calls.length, 0);

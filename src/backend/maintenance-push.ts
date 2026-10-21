@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 import webPush from "web-push";
 import { z } from "zod";
 import type { BackendConfig } from "./config";
+import { isAllowedBrowserPushEndpoint } from "./push-endpoint";
 
 type PushRpcClient = {
   rpc(name: string, args: Record<string, unknown>): Promise<{ data: unknown; error: { code?: string } | null }>;
@@ -188,6 +189,7 @@ export function createMaintenancePushService(
       return enabled ? config.vapid!.publicKey! : null;
     },
     async registerSubscription(input) {
+      if (!isAllowedBrowserPushEndpoint(input.endpoint)) throw new MaintenancePushInputError();
       const rows = await rpcRows("register_maintenance_push_subscription", {
         actor_user_id: input.actorUserId,
         p_endpoint: input.endpoint,
@@ -205,6 +207,7 @@ export function createMaintenancePushService(
       return { subscription: rows[0] ?? null };
     },
     async registerSupervisorSubscription(input) {
+      if (!isAllowedBrowserPushEndpoint(input.endpoint)) throw new MaintenancePushInputError();
       const rows = await rpcRows("register_supervisor_push_subscription", {
         actor_user_id: input.actorUserId,
         p_endpoint: input.endpoint,
@@ -215,6 +218,7 @@ export function createMaintenancePushService(
       return { subscription: rows[0] ?? null };
     },
     async registerPurchasingSubscription(input) {
+      if (!isAllowedBrowserPushEndpoint(input.endpoint)) throw new MaintenancePushInputError();
       const rows = await rpcRows("register_purchasing_push_subscription", {
         actor_user_id: input.actorUserId,
         p_endpoint: input.endpoint,

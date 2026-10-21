@@ -47,10 +47,10 @@ select is((
 ),2::bigint,'legacy and idempotent create overloads coexist');
 
 select lives_ok($$select * from public.register_purchasing_push_subscription(
- '1e000000-0000-4000-8000-000000000002','https://push.example/buyer','abcdefghijklmnopqrstuvwxyz','authsecret','Browser'
+ '1e000000-0000-4000-8000-000000000002','https://fcm.googleapis.com/fcm/send/buyer','abcdefghijklmnopqrstuvwxyz','authsecret','Browser'
 )$$,'active Purchasing user registers existing push subscription model');
 select throws_ok($$select * from public.register_purchasing_push_subscription(
- '1e000000-0000-4000-8000-000000000001','https://push.example/supervisor','abcdefghijklmnopqrstuvwxyz','authsecret','Browser'
+ '1e000000-0000-4000-8000-000000000001','https://fcm.googleapis.com/fcm/send/supervisor','abcdefghijklmnopqrstuvwxyz','authsecret','Browser'
 )$$,'42501','purchasing push access denied','Supervisor without Purchasing membership cannot register');
 
 create temporary table push_request_result as
@@ -91,11 +91,11 @@ select ok(
 select is((select count(*) from public.purchase_requests where branch_id='3e000000-0000-4000-8000-000000000001'),2::bigint,'legacy and idempotent calls each create normally');
 
 insert into public.push_subscriptions(user_id,endpoint,p256dh,auth,disabled_at) values
- ('1e000000-0000-4000-8000-000000000003','https://push.example/inactive','abcdefghijklmnopqrstuvwxyz','authsecret',null),
- ('1e000000-0000-4000-8000-000000000004','https://push.example/disabled','abcdefghijklmnopqrstuvwxyz','authsecret',null),
- ('1e000000-0000-4000-8000-000000000005','https://push.example/password','abcdefghijklmnopqrstuvwxyz','authsecret',null),
- ('1e000000-0000-4000-8000-000000000006','https://push.example/other','abcdefghijklmnopqrstuvwxyz','authsecret',null),
- ('1e000000-0000-4000-8000-000000000002','https://push.example/old-disabled','abcdefghijklmnopqrstuvwxyz','authsecret',now());
+ ('1e000000-0000-4000-8000-000000000003','https://fcm.googleapis.com/fcm/send/inactive','abcdefghijklmnopqrstuvwxyz','authsecret',null),
+ ('1e000000-0000-4000-8000-000000000004','https://fcm.googleapis.com/fcm/send/disabled','abcdefghijklmnopqrstuvwxyz','authsecret',null),
+ ('1e000000-0000-4000-8000-000000000005','https://fcm.googleapis.com/fcm/send/password','abcdefghijklmnopqrstuvwxyz','authsecret',null),
+ ('1e000000-0000-4000-8000-000000000006','https://fcm.googleapis.com/fcm/send/other','abcdefghijklmnopqrstuvwxyz','authsecret',null),
+ ('1e000000-0000-4000-8000-000000000002','https://fcm.googleapis.com/fcm/send/old-disabled','abcdefghijklmnopqrstuvwxyz','authsecret',now());
 
 select is((select count(*) from public.list_purchase_request_push_subscriptions(
  (select (payload->'purchase_request'->>'id')::uuid from push_request_result)

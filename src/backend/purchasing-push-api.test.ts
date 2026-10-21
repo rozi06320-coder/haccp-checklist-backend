@@ -137,7 +137,7 @@ describe("Purchasing push API", () => {
   });
 
   it("exposes registration only to active Purchasing context", async () => {
-    const body = JSON.stringify({ endpoint: "https://push.example/buyer", keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" } });
+    const body = JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/buyer", keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" } });
     const accepted = await request("/api/v1/purchasing/push/subscriptions", "purchasing", { method: "POST", headers: { "Content-Type": "application/json" }, body });
     assert.equal(accepted.status, 200);
     assert.equal(registeredActor, purchaser);

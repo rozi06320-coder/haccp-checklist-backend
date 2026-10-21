@@ -61,33 +61,33 @@ select ok(has_function_privilege('service_role','public.mark_supervisor_notifica
 select ok(has_function_privilege('service_role','public.mark_supervisor_notification_push_sent(uuid,uuid,text)','execute'),'service role can mark one subscription delivery sent');
 
 select lives_ok($$select * from public.register_supervisor_push_subscription(
-  '1f210000-0000-4000-8000-000000000001','https://push.example/sup-a','abcdefghijklmnopqrstuvwxyz','authsecret-a','Chrome'
+  '1f210000-0000-4000-8000-000000000001','https://fcm.googleapis.com/fcm/send/sup-a','abcdefghijklmnopqrstuvwxyz','authsecret-a','Chrome'
 )$$,'active Branch A Supervisor registers push');
 select lives_ok($$select * from public.register_supervisor_push_subscription(
-  '1f210000-0000-4000-8000-000000000002','https://push.example/sup-b','abcdefghijklmnopqrstuvwxyz','authsecret-b','Chrome'
+  '1f210000-0000-4000-8000-000000000002','https://fcm.googleapis.com/fcm/send/sup-b','abcdefghijklmnopqrstuvwxyz','authsecret-b','Chrome'
 )$$,'second Branch A Supervisor registers push');
 select lives_ok($$select * from public.register_supervisor_push_subscription(
-  '1f210000-0000-4000-8000-000000000003','https://push.example/branch-b-mac','abcdefghijklmnopqrstuvwxyz','authsecret-c','Chrome'
+  '1f210000-0000-4000-8000-000000000003','https://fcm.googleapis.com/fcm/send/branch-b-mac','abcdefghijklmnopqrstuvwxyz','authsecret-c','Chrome'
 )$$,'Branch B Supervisor registers Mac push');
 select lives_ok($$select * from public.register_supervisor_push_subscription(
-  '1f210000-0000-4000-8000-000000000003','https://push.example/branch-b-phone','abcdefghijklmnopqrstuvwxyz','authsecret-c2','Safari'
+  '1f210000-0000-4000-8000-000000000003','https://fcm.googleapis.com/fcm/send/branch-b-phone','abcdefghijklmnopqrstuvwxyz','authsecret-c2','Safari'
 )$$,'Branch B Supervisor registers phone push');
 select lives_ok($$select * from public.register_supervisor_push_subscription(
-  '1f210000-0000-4000-8000-000000000003','https://push.example/branch-b-expired','abcdefghijklmnopqrstuvwxyz','authsecret-c3','Safari'
+  '1f210000-0000-4000-8000-000000000003','https://fcm.googleapis.com/fcm/send/branch-b-expired','abcdefghijklmnopqrstuvwxyz','authsecret-c3','Safari'
 )$$,'Branch B Supervisor registers an expired push endpoint');
 select ok(public.disable_push_subscription_delivery(
-  (select id from public.push_subscriptions where endpoint='https://push.example/branch-b-expired'),
-  'https://push.example/branch-b-expired'
+  (select id from public.push_subscriptions where endpoint='https://fcm.googleapis.com/fcm/send/branch-b-expired'),
+  'https://fcm.googleapis.com/fcm/send/branch-b-expired'
 ),'expired subscription cleanup disables one endpoint');
 select lives_ok($$select * from public.register_supervisor_push_subscription(
-  '1f210000-0000-4000-8000-000000000004','https://push.example/other-org','abcdefghijklmnopqrstuvwxyz','authsecret-other','Chrome'
+  '1f210000-0000-4000-8000-000000000004','https://fcm.googleapis.com/fcm/send/other-org','abcdefghijklmnopqrstuvwxyz','authsecret-other','Chrome'
 )$$,'other-organization Supervisor can register their own push');
 select throws_ok($$select * from public.register_supervisor_push_subscription(
-  '1f210000-0000-4000-8000-000000000005','https://push.example/not-supervisor','abcdefghijklmnopqrstuvwxyz','authsecret-d','Chrome'
+  '1f210000-0000-4000-8000-000000000005','https://fcm.googleapis.com/fcm/send/not-supervisor','abcdefghijklmnopqrstuvwxyz','authsecret-d','Chrome'
 )$$,'42501','supervisor push access denied','non-Supervisor cannot register push');
 
 insert into public.push_subscriptions(user_id,endpoint,p256dh,auth)
-values('1f210000-0000-4000-8000-000000000005','https://push.example/forced-unauthorized','abcdefghijklmnopqrstuvwxyz','authsecret-e');
+values('1f210000-0000-4000-8000-000000000005','https://fcm.googleapis.com/fcm/send/forced-unauthorized','abcdefghijklmnopqrstuvwxyz','authsecret-e');
 
 select is((select count(*)::int from public.list_supervisor_notification_push_deliveries('2026-08-24 14:59:00+00') where rule_key='oil_tracking_1800'),0,'17:59 branch-local has no 18:00 Oil push delivery');
 select is((select count(*)::int from public.list_supervisor_notification_push_deliveries('2026-08-24 15:00:00+00') where rule_key='oil_tracking_1800' and branch_id='3f210000-0000-4000-8000-000000000001'),2,'18:00 Oil push targets both Branch A Supervisors');
@@ -114,9 +114,9 @@ where rule_key='financial_closing_0200_overdue'
   and branch_id='3f210000-0000-4000-8000-000000000002'
   and business_date='2026-08-24';
 select is((select count(*)::int from overdue_delivery),2,'one user with two active subscriptions has two overdue delivery rows');
-select ok((select public.mark_supervisor_notification_push_attempted(notification_id, subscription_id, endpoint) from overdue_delivery where endpoint='https://push.example/branch-b-mac'),'first subscription attempt is recorded');
-select ok((select public.mark_supervisor_notification_push_sent(notification_id, subscription_id, endpoint) from overdue_delivery where endpoint='https://push.example/branch-b-mac'),'first subscription success is marked independently');
-select ok((select public.mark_supervisor_notification_push_attempted(notification_id, subscription_id, endpoint) from overdue_delivery where endpoint='https://push.example/branch-b-phone'),'second subscription failed attempt is recorded without sent_at');
+select ok((select public.mark_supervisor_notification_push_attempted(notification_id, subscription_id, endpoint) from overdue_delivery where endpoint='https://fcm.googleapis.com/fcm/send/branch-b-mac'),'first subscription attempt is recorded');
+select ok((select public.mark_supervisor_notification_push_sent(notification_id, subscription_id, endpoint) from overdue_delivery where endpoint='https://fcm.googleapis.com/fcm/send/branch-b-mac'),'first subscription success is marked independently');
+select ok((select public.mark_supervisor_notification_push_attempted(notification_id, subscription_id, endpoint) from overdue_delivery where endpoint='https://fcm.googleapis.com/fcm/send/branch-b-phone'),'second subscription failed attempt is recorded without sent_at');
 
 create temporary table retry_delivery as
 select notification_id, subscription_id, endpoint
@@ -125,15 +125,15 @@ where rule_key='financial_closing_0200_overdue'
   and branch_id='3f210000-0000-4000-8000-000000000002'
   and business_date='2026-08-24';
 select is((select count(*)::int from retry_delivery),1,'retry returns only the failed subscription delivery');
-select is((select endpoint from retry_delivery),'https://push.example/branch-b-phone','retry targets the failed phone subscription');
+select is((select endpoint from retry_delivery),'https://fcm.googleapis.com/fcm/send/branch-b-phone','retry targets the failed phone subscription');
 select is((select count(*)::int from public.supervisor_notification_push_deliveries where notification_id=(select notification_id from overdue_delivery limit 1)),2,'repeated evaluation creates no duplicate delivery rows');
-select is((select count(*)::int from retry_delivery where endpoint='https://push.example/branch-b-mac'),0,'successful first subscription is not resent');
+select is((select count(*)::int from retry_delivery where endpoint='https://fcm.googleapis.com/fcm/send/branch-b-mac'),0,'successful first subscription is not resent');
 select ok((select public.mark_supervisor_notification_push_attempted(notification_id, subscription_id, endpoint) from retry_delivery),'failed subscription can be attempted again on retry');
 select ok((select public.mark_supervisor_notification_push_sent(notification_id, subscription_id, endpoint) from retry_delivery),'failed subscription can later become sent');
 select is((select count(*)::int from public.list_supervisor_notification_push_deliveries('2026-08-24 23:10:00+00') where rule_key='financial_closing_0200_overdue' and branch_id='3f210000-0000-4000-8000-000000000002' and business_date='2026-08-24'),0,'eventually both subscriptions are sent and no pending push remains');
 select is((select count(*)::int from public.supervisor_notification_push_deliveries where notification_id=(select notification_id from overdue_delivery limit 1)),2,'final repeated scheduler execution still has no duplicate delivery rows');
 select is((select count(*)::int from public.supervisor_notification_push_deliveries where notification_id=(select notification_id from overdue_delivery limit 1) and sent_at is not null),2,'both subscription delivery rows are marked sent');
-select is((select attempt_count from public.supervisor_notification_push_deliveries delivery join overdue_delivery od on od.notification_id=delivery.notification_id and od.subscription_id=delivery.push_subscription_id where od.endpoint='https://push.example/branch-b-phone'),2,'failed phone subscription records both attempts');
+select is((select attempt_count from public.supervisor_notification_push_deliveries delivery join overdue_delivery od on od.notification_id=delivery.notification_id and od.subscription_id=delivery.push_subscription_id where od.endpoint='https://fcm.googleapis.com/fcm/send/branch-b-phone'),2,'failed phone subscription records both attempts');
 select ok(position('email' in lower(pg_get_functiondef('private.supervisor_notification_recipients(uuid)'::regprocedure))) = 0,'Supervisor reminder recipient resolver does not use manual email lists');
 select ok(position('email' in lower(pg_get_functiondef('public.list_supervisor_notification_push_deliveries(timestamptz)'::regprocedure))) = 0,'Supervisor push delivery resolver does not use email routing');
 

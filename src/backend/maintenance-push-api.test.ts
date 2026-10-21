@@ -169,7 +169,7 @@ describe("Maintenance push notification API", () => {
     const response = await fetch(`${baseUrl}/api/v1/maintenance/push/subscriptions`, {
       method: "POST",
       headers: { ...auth("maintenance"), "Content-Type": "application/json" },
-      body: JSON.stringify({ endpoint: "https://push.example/subscription-a", keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" } }),
+      body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/subscription-a", keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" } }),
     });
     assert.equal(response.status, 200);
     assert.equal(registeredActor, ids.maintenance);
@@ -180,7 +180,7 @@ describe("Maintenance push notification API", () => {
     const response = await fetch(`${baseUrl}/api/v1/maintenance/push/subscriptions`, {
       method: "POST",
       headers: { ...auth("manager"), "Content-Type": "application/json" },
-      body: JSON.stringify({ endpoint: "https://push.example/manager", keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" } }),
+      body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/manager", keys: { p256dh: "abcdefghijklmnopqrstuvwxyz", auth: "authsecret" } }),
     });
     assert.equal(response.status, 403);
   });
@@ -189,10 +189,10 @@ describe("Maintenance push notification API", () => {
     const response = await fetch(`${baseUrl}/api/v1/maintenance/push/subscriptions`, {
       method: "DELETE",
       headers: { ...auth("maintenance"), "Content-Type": "application/json" },
-      body: JSON.stringify({ endpoint: "https://push.example/subscription-a" }),
+      body: JSON.stringify({ endpoint: "https://fcm.googleapis.com/fcm/send/subscription-a" }),
     });
     assert.equal(response.status, 200);
-    assert.equal(disabledEndpoint, "https://push.example/subscription-a");
+    assert.equal(disabledEndpoint, "https://fcm.googleapis.com/fcm/send/subscription-a");
   });
 
   it("persists Maintenance issue success even when push sending fails", async () => {
@@ -362,11 +362,11 @@ describe("Maintenance push notification API", () => {
           rpcCalls.push({ name, args });
           if (name === "list_maintenance_issue_push_subscriptions") {
             return { data: [
-              row("59000000-0000-4000-8000-000000000101", "19000000-0000-4000-8000-000000000101", "https://push.example/maint-a-laptop"),
-              row("59000000-0000-4000-8000-000000000102", "19000000-0000-4000-8000-000000000101", "https://push.example/maint-a-phone"),
-              row("59000000-0000-4000-8000-000000000103", "19000000-0000-4000-8000-000000000102", "https://push.example/maint-b-phone"),
-              row("59000000-0000-4000-8000-000000000104", "19000000-0000-4000-8000-000000000102", "https://push.example/maint-b-stale"),
-              row("59000000-0000-4000-8000-000000000105", "19000000-0000-4000-8000-000000000102", "https://push.example/maint-a-laptop"),
+              row("59000000-0000-4000-8000-000000000101", "19000000-0000-4000-8000-000000000101", "https://fcm.googleapis.com/fcm/send/maint-a-laptop"),
+              row("59000000-0000-4000-8000-000000000102", "19000000-0000-4000-8000-000000000101", "https://fcm.googleapis.com/fcm/send/maint-a-phone"),
+              row("59000000-0000-4000-8000-000000000103", "19000000-0000-4000-8000-000000000102", "https://fcm.googleapis.com/fcm/send/maint-b-phone"),
+              row("59000000-0000-4000-8000-000000000104", "19000000-0000-4000-8000-000000000102", "https://fcm.googleapis.com/fcm/send/maint-b-stale"),
+              row("59000000-0000-4000-8000-000000000105", "19000000-0000-4000-8000-000000000102", "https://fcm.googleapis.com/fcm/send/maint-a-laptop"),
             ], error: null };
           }
           if (name === "disable_push_subscription_delivery") {
@@ -393,12 +393,12 @@ describe("Maintenance push notification API", () => {
 
     assert.deepEqual(rpcCalls[0], { name: "list_maintenance_issue_push_subscriptions", args: { target_issue_id: ids.issue } });
     assert.deepEqual(sent.map((item) => item.endpoint).sort(), [
-      "https://push.example/maint-a-laptop",
-      "https://push.example/maint-a-phone",
-      "https://push.example/maint-b-phone",
+      "https://fcm.googleapis.com/fcm/send/maint-a-laptop",
+      "https://fcm.googleapis.com/fcm/send/maint-a-phone",
+      "https://fcm.googleapis.com/fcm/send/maint-b-phone",
     ]);
-    assert.equal(sent.filter((item) => item.endpoint === "https://push.example/maint-a-laptop").length, 1);
-    assert.deepEqual(disabled, [{ target_subscription_id: "59000000-0000-4000-8000-000000000104", target_endpoint: "https://push.example/maint-b-stale" }]);
+    assert.equal(sent.filter((item) => item.endpoint === "https://fcm.googleapis.com/fcm/send/maint-a-laptop").length, 1);
+    assert.deepEqual(disabled, [{ target_subscription_id: "59000000-0000-4000-8000-000000000104", target_endpoint: "https://fcm.googleapis.com/fcm/send/maint-b-stale" }]);
     for (const delivery of sent) {
       assert.equal(delivery.payload.type, "maintenance_issue_created");
       assert.equal(delivery.payload.branch_id, ids.branch);
@@ -425,7 +425,7 @@ describe("Maintenance push notification API", () => {
             return { data: [{
               subscription_id: "59000000-0000-4000-8000-000000000201",
               user_id: "19000000-0000-4000-8000-000000000201",
-              endpoint: "https://push.example/office-maintenance",
+              endpoint: "https://fcm.googleapis.com/fcm/send/office-maintenance",
               p256dh: "abcdefghijklmnopqrstuvwxyz",
               auth: "authsecret",
               organization_id: "29000000-0000-4000-8000-000000000001",

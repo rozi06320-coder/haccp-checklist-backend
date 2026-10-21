@@ -39,6 +39,13 @@ import {
   ManagerPasswordResetSessionRevokedError,
   ManagerPasswordResetUnavailableError,
 } from "./organization-manager-password-reset";
+import {
+  ManagerNotificationAccessError,
+  ManagerNotificationConflictError,
+  ManagerNotificationInputError,
+  ManagerNotificationRateLimitError,
+  ManagerNotificationUnavailableError,
+} from "./organization-manager-notifications";
 
 const organizationIdSchema = z.uuid();
 const managerPasswordResetStepUpBodySchema = z.object({
@@ -724,6 +731,31 @@ const pushSubscriptionResponseSchema = z.object({
     endpoint: z.string(),
     disabled_at: z.string().nullable(),
   }).nullable(),
+}).strict();
+const managerNotificationQuerySchema = z.object({
+  before: z.iso.datetime({ offset: true }).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+}).strict();
+const managerNotificationSchema = z.object({
+  id: z.uuid(),
+  organization_id: z.uuid(),
+  event_type: z.enum([
+    "maintenance_issue_created", "haccp_issue_submitted", "hygiene_issue_submitted",
+    "daily_audit_issue_submitted", "cash_monitoring_submitted", "financial_closing_overdue",
+  ]),
+  source_type: z.enum([
+    "maintenance_issue", "checklist_submission", "sales_tracking_report", "financial_closing_report",
+  ]).nullable(),
+  source_id: z.uuid().nullable(),
+  occurrence_key: z.string().min(1).max(200),
+  read_at: z.string().nullable(),
+  created_at: z.string(),
+}).strict();
+const managerNotificationListResponseSchema = z.object({
+  notifications: z.array(managerNotificationSchema).max(100),
+}).strict();
+const managerNotificationReadResponseSchema = z.object({
+  notification: z.object({ id: z.uuid(), read_at: z.string() }).strict(),
 }).strict();
 const supervisorPushRunResponseSchema = z.object({
   evaluated_at: z.string(),
@@ -2596,6 +2628,15 @@ function browserPushError(error: unknown) {
   if (error instanceof MaintenancePushConflictError) return new HttpError(409, "conflict", "This browser subscription belongs to another account.");
   if (error instanceof MaintenancePushAccessError) return new HttpError(403, "forbidden", "Access is denied.");
   if (error instanceof MaintenancePushUnavailableError) return new HttpError(503, "service_unavailable", "Notifications are temporarily unavailable.");
+  return new HttpError(503, "service_unavailable", "Notifications are temporarily unavailable.");
+}
+
+function managerNotificationError(error: unknown) {
+  if (error instanceof ManagerNotificationInputError) return new HttpError(422, "unprocessable_entity", "The notification request is invalid.");
+  if (error instanceof ManagerNotificationConflictError) return new HttpError(409, "conflict", "This browser subscription belongs to another account.");
+  if (error instanceof ManagerNotificationRateLimitError) return new HttpError(429, "rate_limited", "Too many notification requests. Try again later.");
+  if (error instanceof ManagerNotificationAccessError) return new HttpError(403, "forbidden", "Access is denied.");
+  if (error instanceof ManagerNotificationUnavailableError) return new HttpError(503, "service_unavailable", "Notifications are temporarily unavailable.");
   return new HttpError(503, "service_unavailable", "Notifications are temporarily unavailable.");
 }
 
@@ -8275,6 +8316,89 @@ export function createApp(
       } catch (error) {
         next(error instanceof HttpError ? error : operationalPurchaseError(error));
       }
+    });
+
+  app.get("/api/v1/management/organizations/:organizationId/push/public-key", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId=organizationIdSchema.safeParse(request.params.organizationId);
+        if(!organizationId.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const auth=requireAuthContext(request),context=await loadActiveUser(request);
+        if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data))throw new HttpError(403,"forbidden","Access is denied.");
+        if(!dependencies.organizationManagerNotifications)throw new HttpError(503,"service_unavailable","Notifications are temporarily unavailable.");
+        const publicKey=await dependencies.organizationManagerNotifications.getPublicKey({actorUserId:auth.userId,organizationId:organizationId.data});
+        response.setHeader("Cache-Control","private, no-store");
+        response.status(200).json({enabled:publicKey!==null,public_key:publicKey});
+      }catch(error){next(error instanceof HttpError?error:managerNotificationError(error));}
+    });
+
+  app.post("/api/v1/management/organizations/:organizationId/push/subscriptions", protectedRateLimit, authenticate,
+    async (request,response,next)=>{
+      try{
+        const organizationId=organizationIdSchema.safeParse(request.params.organizationId);
+        const body=pushSubscriptionBodySchema.safeParse(request.body);
+        if(!organizationId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const auth=requireAuthContext(request),context=await loadActiveUser(request);
+        if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data))throw new HttpError(403,"forbidden","Access is denied.");
+        if(!dependencies.organizationManagerNotifications)throw new HttpError(503,"service_unavailable","Notifications are temporarily unavailable.");
+        const result=pushSubscriptionResponseSchema.parse(await dependencies.organizationManagerNotifications.registerSubscription({
+          actorUserId:auth.userId,organizationId:organizationId.data,endpoint:body.data.endpoint,
+          p256dh:body.data.keys.p256dh,auth:body.data.keys.auth,userAgent:request.header("User-Agent")??null,
+          clientIp:request.ip??request.socket.remoteAddress??"unavailable",
+        }));
+        response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+      }catch(error){next(error instanceof HttpError?error:managerNotificationError(error));}
+    });
+
+  app.delete("/api/v1/management/organizations/:organizationId/push/subscriptions", protectedRateLimit, authenticate,
+    async(request,response,next)=>{
+      try{
+        const organizationId=organizationIdSchema.safeParse(request.params.organizationId);
+        const body=pushSubscriptionDeleteBodySchema.safeParse(request.body);
+        if(!organizationId.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const auth=requireAuthContext(request),context=await loadActiveUser(request);
+        if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data))throw new HttpError(403,"forbidden","Access is denied.");
+        if(!dependencies.organizationManagerNotifications)throw new HttpError(503,"service_unavailable","Notifications are temporarily unavailable.");
+        const result=pushSubscriptionResponseSchema.parse(await dependencies.organizationManagerNotifications.disableSubscription({
+          actorUserId:auth.userId,organizationId:organizationId.data,endpoint:body.data.endpoint,
+          clientIp:request.ip??request.socket.remoteAddress??"unavailable",
+        }));
+        response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+      }catch(error){next(error instanceof HttpError?error:managerNotificationError(error));}
+    });
+
+  app.get("/api/v1/management/organizations/:organizationId/notifications", protectedRateLimit, authenticate,
+    async(request,response,next)=>{
+      try{
+        const organizationId=organizationIdSchema.safeParse(request.params.organizationId);
+        const query=managerNotificationQuerySchema.safeParse(request.query);
+        if(!organizationId.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const auth=requireAuthContext(request),context=await loadActiveUser(request);
+        if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data))throw new HttpError(403,"forbidden","Access is denied.");
+        if(!dependencies.organizationManagerNotifications)throw new HttpError(503,"service_unavailable","Notifications are temporarily unavailable.");
+        const result=managerNotificationListResponseSchema.parse(await dependencies.organizationManagerNotifications.listNotifications({
+          actorUserId:auth.userId,organizationId:organizationId.data,before:query.data.before,limit:query.data.limit,
+        }));
+        response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+      }catch(error){next(error instanceof HttpError?error:managerNotificationError(error));}
+    });
+
+  app.patch("/api/v1/management/organizations/:organizationId/notifications/:notificationId/read", protectedRateLimit, authenticate,
+    async(request,response,next)=>{
+      try{
+        const organizationId=organizationIdSchema.safeParse(request.params.organizationId);
+        const notificationId=z.uuid().safeParse(request.params.notificationId);
+        if(!organizationId.success||!notificationId.success||!emptyQuerySchema.safeParse(request.query).success
+          ||!emptyQuerySchema.safeParse(request.body??{}).success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const auth=requireAuthContext(request),context=await loadActiveUser(request);
+        if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data))throw new HttpError(403,"forbidden","Access is denied.");
+        if(!dependencies.organizationManagerNotifications)throw new HttpError(503,"service_unavailable","Notifications are temporarily unavailable.");
+        const result=managerNotificationReadResponseSchema.parse(await dependencies.organizationManagerNotifications.markRead({
+          actorUserId:auth.userId,organizationId:organizationId.data,notificationId:notificationId.data,
+          clientIp:request.ip??request.socket.remoteAddress??"unavailable",
+        }));
+        response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+      }catch(error){next(error instanceof HttpError?error:managerNotificationError(error));}
     });
 
   app.get("/api/v1/management/organizations/:organizationId/operational-staff", protectedRateLimit, authenticate,

@@ -62,7 +62,7 @@ select ok((select bool_and(coalesce(array_to_string(proconfig,','),'') like '%se
 set local role service_role;
 select lives_ok($$select * from public.register_maintenance_push_subscription(
  '1a900000-0000-4000-8000-000000000002',
- 'https://push.example/endpoint-a',
+ 'https://fcm.googleapis.com/fcm/send/endpoint-a',
  'abcdefghijklmnopqrstuvwxyz',
  'authsecret',
  'Chrome Test'
@@ -70,41 +70,41 @@ select lives_ok($$select * from public.register_maintenance_push_subscription(
 reset role;
 
 select is((select count(*) from public.push_subscriptions where user_id='1a900000-0000-4000-8000-000000000002' and disabled_at is null),1::bigint,'one active subscription is stored');
-select is((select user_agent from public.push_subscriptions where endpoint='https://push.example/endpoint-a'),'Chrome Test','user agent is stored without exposing keys');
+select is((select user_agent from public.push_subscriptions where endpoint='https://fcm.googleapis.com/fcm/send/endpoint-a'),'Chrome Test','user agent is stored without exposing keys');
 
 set local role service_role;
 select lives_ok($$select * from public.register_maintenance_push_subscription(
  '1a900000-0000-4000-8000-000000000002',
- 'https://push.example/endpoint-a',
+ 'https://fcm.googleapis.com/fcm/send/endpoint-a',
  'zyxwvutsrqponmlkjihgfedcba',
  'newsecret',
  'Chrome Test Updated'
 )$$,'same endpoint upserts for same user');
 reset role;
-select is((select count(*) from public.push_subscriptions where endpoint='https://push.example/endpoint-a'),1::bigint,'endpoint uniqueness prevents duplicate rows');
-select is((select p256dh from public.push_subscriptions where endpoint='https://push.example/endpoint-a'),'zyxwvutsrqponmlkjihgfedcba','endpoint keys update on upsert');
+select is((select count(*) from public.push_subscriptions where endpoint='https://fcm.googleapis.com/fcm/send/endpoint-a'),1::bigint,'endpoint uniqueness prevents duplicate rows');
+select is((select p256dh from public.push_subscriptions where endpoint='https://fcm.googleapis.com/fcm/send/endpoint-a'),'zyxwvutsrqponmlkjihgfedcba','endpoint keys update on upsert');
 
 select throws_ok($$select * from public.register_maintenance_push_subscription(
  '1a900000-0000-4000-8000-000000000003',
- 'https://push.example/endpoint-a',
+ 'https://fcm.googleapis.com/fcm/send/endpoint-a',
  'abcdefghijklmnopqrstuvwxyz',
  'authsecret'
 )$$,'23505','push subscription endpoint already exists','another user cannot take over endpoint');
 select throws_ok($$select * from public.register_maintenance_push_subscription(
  '1a900000-0000-4000-8000-000000000005',
- 'https://push.example/disabled',
+ 'https://fcm.googleapis.com/fcm/send/disabled',
  'abcdefghijklmnopqrstuvwxyz',
  'authsecret'
 )$$,'42501','maintenance push access denied','disabled profile cannot register');
 select throws_ok($$select * from public.register_maintenance_push_subscription(
  '1a900000-0000-4000-8000-000000000006',
- 'https://push.example/pending',
+ 'https://fcm.googleapis.com/fcm/send/pending',
  'abcdefghijklmnopqrstuvwxyz',
  'authsecret'
 )$$,'42501','maintenance push access denied','must-change-password profile cannot register');
 select throws_ok($$select * from public.register_maintenance_push_subscription(
  '1a900000-0000-4000-8000-000000000007',
- 'https://push.example/inactive',
+ 'https://fcm.googleapis.com/fcm/send/inactive',
  'abcdefghijklmnopqrstuvwxyz',
  'authsecret'
 )$$,'42501','maintenance push access denied','inactive membership cannot register');
@@ -118,14 +118,14 @@ select throws_ok($$select * from public.register_maintenance_push_subscription(
 set local role service_role;
 select lives_ok($$select * from public.register_maintenance_push_subscription(
  '1a900000-0000-4000-8000-000000000008',
- 'https://push.example/endpoint-b',
+ 'https://fcm.googleapis.com/fcm/send/endpoint-b',
  'abcdefghijklmnopqrstuvwxyz',
  'authsecret-b',
  'Chrome Test B'
 )$$,'second active Maintenance user registers a push subscription');
 select lives_ok($$select * from public.register_maintenance_push_subscription(
  '1a900000-0000-4000-8000-000000000008',
- 'https://push.example/endpoint-c',
+ 'https://fcm.googleapis.com/fcm/send/endpoint-c',
  'abcdefghijklmnopqrstuvwxyz',
  'authsecret-c',
  'Chrome Test C'
@@ -150,15 +150,15 @@ select is((select branch_name from public.list_maintenance_issue_push_subscripti
 select is((select issue_title from public.list_maintenance_issue_push_subscriptions((select issue_id from push_issue_ids)) limit 1),'Freezer not cooling','recipient payload includes normalized issue title');
 
 select ok(public.disable_push_subscription_delivery(
- (select id from public.push_subscriptions where endpoint='https://push.example/endpoint-a'),
- 'https://push.example/endpoint-a'
+ (select id from public.push_subscriptions where endpoint='https://fcm.googleapis.com/fcm/send/endpoint-a'),
+ 'https://fcm.googleapis.com/fcm/send/endpoint-a'
 ),'delivery cleanup disables the failed endpoint');
 select is((select count(*)::int from public.list_maintenance_issue_push_subscriptions((select issue_id from push_issue_ids))),2,'disabled endpoint is removed from recipient query while other Maintenance devices remain eligible');
 
 set local role service_role;
 select lives_ok($$select * from public.register_maintenance_push_subscription(
  '1a900000-0000-4000-8000-000000000002',
- 'https://push.example/endpoint-a',
+ 'https://fcm.googleapis.com/fcm/send/endpoint-a',
  'abcdefghijklmnopqrstuvwxyz',
  'authsecret'
 )$$,'disabled endpoint can be reactivated by owner');

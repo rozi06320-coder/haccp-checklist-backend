@@ -37,6 +37,10 @@ import {
   createOrganizationManagerPasswordResetService,
   type OrganizationManagerPasswordResetService,
 } from "./organization-manager-password-reset";
+import {
+  createOrganizationManagerNotificationService,
+  type OrganizationManagerNotificationService,
+} from "./organization-manager-notifications";
 
 export type AuthVerifier = {
   verify(token: string): Promise<{ userId: string; email: string; sessionId?: string } | null>;
@@ -61,6 +65,7 @@ export type BackendDependencies = {
   createUserContext: UserContextRepositoryFactory;
   passwordChange: PasswordChangeService;
   organizationManagerPasswordReset?: OrganizationManagerPasswordResetService;
+  organizationManagerNotifications?: OrganizationManagerNotificationService;
   provisioningAdmin: ProvisioningAdmin;
   managementAdmin: ManagementAdmin;
   branchManagementAdmin: BranchManagementAdmin;
@@ -144,6 +149,7 @@ export function createDefaultDependencies(
       config.supabase.secretKey,
       config.dailyAuditGrantSecret,
     ),
+    organizationManagerNotifications: createOrganizationManagerNotificationService(config),
     provisioningAdmin: createProvisioningAdmin(
       config.supabase.url,
       config.supabase.secretKey,
