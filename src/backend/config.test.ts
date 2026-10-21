@@ -25,7 +25,24 @@ describe("backend configuration", () => {
     assert.equal(config.trainingEmployeeDraftPreviewEnabled, false);
     assert.equal(config.trainingLearnerAllowedOrigin, undefined);
     assert.equal(config.supervisorNotificationSchedulerSecret, undefined);
+    assert.equal(config.organizationManagerPushWorkerEnabled, false);
     assert.equal(loadBackendConfig({ ...validEnvironment, SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET: "test-supervisor-notification-scheduler-secret" }).supervisorNotificationSchedulerSecret, "test-supervisor-notification-scheduler-secret");
+  });
+
+  it("keeps the Organization Manager push worker disabled unless all server credentials exist", () => {
+    assert.throws(() => loadBackendConfig({
+      ...validEnvironment,
+      ORGANIZATION_MANAGER_PUSH_WORKER_ENABLED: "true",
+    }), BackendConfigurationError);
+    const configured = loadBackendConfig({
+      ...validEnvironment,
+      ORGANIZATION_MANAGER_PUSH_WORKER_ENABLED: "true",
+      SUPABASE_SECRET_KEY: "test-service-key",
+      VAPID_PUBLIC_KEY: "test-public-key",
+      VAPID_PRIVATE_KEY: "test-private-key",
+      VAPID_SUBJECT: "mailto:push@example.invalid",
+    });
+    assert.equal(configured.organizationManagerPushWorkerEnabled, true);
   });
 
   it("keeps employee draft preview independently disabled by default",()=>{

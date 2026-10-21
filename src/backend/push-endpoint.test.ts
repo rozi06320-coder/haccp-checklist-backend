@@ -19,6 +19,9 @@ describe("browser push endpoint validation", () => {
       "https://fcm.googleapis.com:8443/push", "https://fcm.googleapis.com.evil.invalid/push",
       "https://evil.invalid/push", "http://fcm.googleapis.com/push",
       "https://fcm.googleapis.com/push#fragment", " https://fcm.googleapis.com/push",
+      "https://FCM.GOOGLEAPIS.COM/fcm/send/example", "https://fcm.googleapis.com:443/push",
+      "https://fcm.googleapis.com/", "https://-bad.push.apple.com/push",
+      "https://bad-.notify.windows.com/push", "https://fcm.googleapis.com/bad\\path",
     ]) assert.equal(isAllowedBrowserPushEndpoint(endpoint), false, endpoint);
   });
 });

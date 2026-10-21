@@ -38,6 +38,7 @@ const environmentSchema = z
     VAPID_PUBLIC_KEY: z.string().trim().min(1).max(4_096).optional(),
     VAPID_PRIVATE_KEY: z.string().trim().min(1).max(4_096).optional(),
     VAPID_SUBJECT: z.string().trim().min(1).max(512).optional(),
+    ORGANIZATION_MANAGER_PUSH_WORKER_ENABLED: disabledByDefaultFlag,
     SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET: z.string().min(32).max(4_096).optional(),
     TRAINING_ORGANIZATION_SLUG: z.string().trim().toLowerCase().min(1).max(120).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional(),
     TRAINING_LEARNER_AUTH_ENABLED: disabledByDefaultFlag,
@@ -80,6 +81,15 @@ const environmentSchema = z
         message: "is required when secure Training learner authentication is enabled",
       });
     }
+    if (environment.ORGANIZATION_MANAGER_PUSH_WORKER_ENABLED
+      && (!environment.SUPABASE_SECRET_KEY || !environment.VAPID_PUBLIC_KEY
+        || !environment.VAPID_PRIVATE_KEY || !environment.VAPID_SUBJECT)) {
+      context.addIssue({
+        code: "custom",
+        path: ["ORGANIZATION_MANAGER_PUSH_WORKER_ENABLED"],
+        message: "requires the service credential and complete VAPID configuration",
+      });
+    }
     const publicationSigningValues=[environment.TRAINING_PUBLICATION_SIGNING_PRIVATE_KEY_BASE64,
       environment.TRAINING_PUBLICATION_AUDIENCE,environment.TRAINING_PUBLICATION_SIGNING_KEY_ID];
     if(publicationSigningValues.some(Boolean)&&!publicationSigningValues.every(Boolean)){
@@ -105,6 +115,7 @@ export type BackendConfig = {
     subject?: string;
   };
   supervisorNotificationSchedulerSecret?: string;
+  organizationManagerPushWorkerEnabled?: boolean;
   trainingOrganizationSlug?: string;
   trainingLearnerAuthEnabled?: boolean;
   trainingDbCurriculumEnabled?: boolean;
@@ -153,6 +164,7 @@ export function loadBackendConfig(
       subject: result.data.VAPID_SUBJECT,
     },
     supervisorNotificationSchedulerSecret: result.data.SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET,
+    organizationManagerPushWorkerEnabled: result.data.ORGANIZATION_MANAGER_PUSH_WORKER_ENABLED,
     trainingOrganizationSlug: result.data.TRAINING_ORGANIZATION_SLUG,
     trainingLearnerAuthEnabled: result.data.TRAINING_LEARNER_AUTH_ENABLED,
     trainingDbCurriculumEnabled: result.data.TRAINING_DB_CURRICULUM_ENABLED,
