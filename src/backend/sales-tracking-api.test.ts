@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { after, before, beforeEach, describe, it } from "node:test";
 import { createApp } from "./app";
 import type { BackendConfig } from "./config";
 import type { BackendDependencies } from "./dependencies";
-import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, SalesTrackingOnlineProviderBreakdownRequiredError } from "./checklist-persistence";
+import { ChecklistAccessError, ChecklistConflictError, ChecklistInputError, SalesTrackingOnlineProviderBreakdownRequiredError, storageSignalContext } from "./checklist-persistence";
 import { managementSalesTrackingMonthlySummarySchema } from "../lib/contracts/management-sales-tracking-monthly";
+import { encodeSalesTrackingPeriodCursor } from "./sales-tracking-period-cursor";
 
 const supervisor="16000000-0000-4000-8000-000000000001",manager="16000000-0000-4000-8000-000000000002",otherManager="16000000-0000-4000-8000-000000000003";
 const branch="26000000-0000-4000-8000-000000000001",otherBranch="26000000-0000-4000-8000-000000000002",org="36000000-0000-4000-8000-000000000001";
@@ -30,6 +31,7 @@ let requireOnlineBreakdownError=false;
 let correctionSaveErrorSqlstate:string|null=null;
 let managedAttachments:Array<Record<string,unknown>>=[];
 let reviewStatus:"none"|"needs_review"|"reviewed"="none",reviewRevision=0;
+let evidenceConflict = false;
 const replay=new Map<string,string>();
 let providers:Array<Record<string,unknown>>=[];
 
@@ -240,8 +242,28 @@ const persistence={
     generated_at:"2026-08-11T12:00:00.000Z",
     scope:{organization_id:org,branch_id:input.branchId??null,month:input.month,date_from:`${input.month}-01`,date_to:input.month==="2026-09"?"2026-09-30":"2026-08-31"},
     totals:{...totalMetrics,submitted_branch_day_count:submitted_day_count,reporting_branch_count:empty?0:1},
-    branches:empty?[]:[{...metrics,branch_id:branch,branch_name:"A",branch_name_ar:"الفرع أ",branch_code:"A"}],
+   branches:empty?[]:[{...metrics,branch_id:branch,branch_name:"A",branch_name_ar:"الفرع أ",branch_code:"A"}],
   };
+ },
+ async getManagedSalesTrackingPeriodSummary(input:{actorUserId:string;organizationId:string;dateFrom:string;dateTo:string;branchId?:string|null}){
+  calls.push({name:"managed-sales-tracking-period-summary",input});
+  if(input.actorUserId!==manager||input.organizationId!==org)throw new ChecklistAccessError();
+  const empty=input.dateFrom>"2026-08-08";
+  const metrics={currency_code:"SAR",submitted_report_count:empty?0:1,submitted_business_day_count:empty?0:1,sales_entry_count:empty?0:2,cash_entry_count:empty?0:2,reports_with_photos_count:empty?0:1,evidence_photo_count:empty?0:2,gross_sales:empty?"0":"10498.00",refund_total:empty?"0":"98.00",net_sales:empty?"0":"10400.00",actual_payments:{cash:empty?"0":"324.00",credit:empty?"0":"7190.00",online:empty?"0":"2984.00",total:empty?"0":"10498.00"},pos_reconciliation:{cash:empty?"0":"300.00",credit:empty?"0":"7100.00",online:empty?"0":"2984.00",total:empty?"0":"10384.00",variance:empty?"0":"114.00"},counted_cash_total:empty?"0":"2000.00",balanced_report_count:0,variance_report_count:empty?0:1,provider_breakdown:empty?[]:[{identity_key:"default:jahez",provider_key:"jahez",normalized_name:"jahez",display_name:"Jahez",amount:"2984.00"}],unspecified_online_delivery:"0"};
+  return{generated_at:"2026-08-12T12:00:00.000Z",state:empty?"empty":"complete",scope:{organization_id:org,branch_id:input.branchId??null,date_from:input.dateFrom,date_to:input.dateTo},currency_summaries:empty?[]:[{...metrics,submitted_branch_day_count:1,reporting_branch_count:1}],branches:empty?[]:[{...metrics,branch_id:branch,branch_name:"A",branch_name_ar:"الفرع أ",branch_code:"A"}]};
+ },
+ async listManagedSalesTrackingPeriodEvidence(input:{actorUserId:string;organizationId:string;dateFrom:string;dateTo:string;branchId?:string|null;pageSize:number;cursor:unknown}){
+  calls.push({name:"managed-sales-tracking-period-evidence",input});
+  if(input.actorUserId!==manager||input.organizationId!==org)throw new ChecklistAccessError();
+  if(evidenceConflict)throw new ChecklistConflictError("40001");
+  const attachmentId=input.cursor?"76000000-0000-4000-8000-000000000002":"76000000-0000-4000-8000-000000000001";
+  const nextCursor=encodeSalesTrackingPeriodCursor({v:1,organization_id:org,branch_id:input.branchId??null,date_from:input.dateFrom,date_to:input.dateTo,authority_revision:"36000000000000000000000000000001",business_date:"2026-08-08",item_branch_id:branch,report_id:report,display_order:1,attachment_id:photo});
+  return{generated_at:"2026-08-12T12:00:00.000Z",state:"complete",empty_reason:null,scope:{organization_id:org,branch_id:input.branchId??null,date_from:input.dateFrom,date_to:input.dateTo},groups:[{business_date:"2026-08-08",branches:[{branch:{id:branch,name:"A",name_ar:"الفرع أ",code:"A"},photos:[{attachment_id:attachmentId,report_id:report,business_date:"2026-08-08",display_order:input.cursor?2:1,original_filename:input.cursor?"two.webp":"one.webp",mime_type:"image/webp",size_bytes:100,created_at:"2026-08-08T10:00:00.000Z",availability:"available",signed_url:"https://signed.invalid/evidence",signed_url_expires_at:"2026-08-12T12:05:00.000Z"}]}]}],page:{page_size:input.pageSize,returned_items:1,has_more:!input.cursor,next_cursor:input.cursor?null:nextCursor},issues:{missing_object_count:0,signing_unavailable_count:0}};
+ },
+ async renewManagedSalesTrackingPeriodEvidence(input:{actorUserId:string;organizationId:string;dateFrom:string;dateTo:string;branchId?:string|null;attachmentIds:string[]}){
+  calls.push({name:"managed-sales-tracking-period-renew",input});
+  if(input.actorUserId!==manager||input.organizationId!==org)throw new ChecklistAccessError();
+  return{generated_at:"2026-08-12T12:00:00.000Z",signed_url_expires_at:"2026-08-12T12:05:00.000Z",results:input.attachmentIds.map((attachmentId)=>({attachment_id:attachmentId,availability:attachmentId===photo?"available":"not_available",signed_url:attachmentId===photo?"https://signed.invalid/renewed":null}))};
  },
 };
 
@@ -694,6 +716,119 @@ describe("Sales Tracking API integration",()=>{
   const response=await request(`/api/v1/management/organizations/${org}/sales-tracking/monthly-summary?month=2026-08`,"manager");
   assert.equal(response.status,503);
   assert.doesNotMatch(JSON.stringify(await response.json()),/Zod|Supabase|managed-sales-tracking-monthly/i);
+ });
+ it("returns exact decimal period totals for an authorized Manager",async()=>{
+  const response=await request(`/api/v1/management/organizations/${org}/sales-tracking/period-summary?date_from=2026-08-01&date_to=2026-08-12&branch_id=${branch}`,"manager");
+  assert.equal(response.status,200);
+  assert.equal(response.headers.get("cache-control"),"private, no-store");
+  const body=await response.json();
+  assert.equal(body.currency_summaries[0].gross_sales,"10498.00");
+  assert.equal(body.currency_summaries[0].refund_total,"98.00");
+  assert.equal(body.currency_summaries[0].net_sales,"10400.00");
+  assert.equal(body.currency_summaries[0].pos_reconciliation.variance,"114.00");
+  assert.equal(body.currency_summaries[0].counted_cash_total,"2000.00");
+  assert.deepEqual(calls.at(-1),{name:"managed-sales-tracking-period-summary",input:{actorUserId:manager,organizationId:org,dateFrom:"2026-08-01",dateTo:"2026-08-12",branchId:branch}});
+ });
+ it("returns a valid empty period and rejects invalid or oversized ranges",async()=>{
+  const empty=await request(`/api/v1/management/organizations/${org}/sales-tracking/period-summary?date_from=2026-09-01&date_to=2026-09-01`,"manager");
+  assert.equal(empty.status,200);assert.deepEqual((await empty.json()).currency_summaries,[]);
+  assert.equal((await request(`/api/v1/management/organizations/${org}/sales-tracking/period-summary?date_from=2026-02-30&date_to=2026-03-01`,"manager")).status,400);
+  assert.equal((await request(`/api/v1/management/organizations/${org}/sales-tracking/period-summary?date_from=2026-08-12&date_to=2026-08-01`,"manager")).status,400);
+  assert.equal((await request(`/api/v1/management/organizations/${org}/sales-tracking/period-summary?date_from=2026-01-01&date_to=2027-01-01`,"manager")).status,200);
+  assert.equal((await request(`/api/v1/management/organizations/${org}/sales-tracking/period-summary?date_from=2026-01-01&date_to=2027-01-02`,"manager")).status,400);
+ });
+ it("paginates evidence with a scope-bound cursor and no internal path",async()=>{
+  const first=await request(`/api/v1/management/organizations/${org}/sales-tracking/period-evidence?date_from=2026-08-01&date_to=2026-08-12&page_size=1`,"manager");
+  assert.equal(first.status,200);const firstBody=await first.json();
+  assert.equal(firstBody.page.has_more,true);assert.ok(firstBody.page.next_cursor);
+  assert.equal(JSON.stringify(firstBody).includes("storage_path"),false);
+  const second=await request(`/api/v1/management/organizations/${org}/sales-tracking/period-evidence?date_from=2026-08-01&date_to=2026-08-12&page_size=1&cursor=${encodeURIComponent(firstBody.page.next_cursor)}`,"manager");
+  assert.equal(second.status,200);const secondBody=await second.json();
+  assert.equal(secondBody.page.has_more,false);
+  assert.notEqual(firstBody.groups[0].branches[0].photos[0].attachment_id,secondBody.groups[0].branches[0].photos[0].attachment_id);
+  const mismatched=await request(`/api/v1/management/organizations/${org}/sales-tracking/period-evidence?date_from=2026-08-02&date_to=2026-08-12&page_size=1&cursor=${encodeURIComponent(firstBody.page.next_cursor)}`,"manager");
+  assert.equal(mismatched.status,400);
+  assert.equal((await request(`/api/v1/management/organizations/${org}/sales-tracking/period-evidence?date_from=2026-08-01&date_to=2026-08-12&cursor=not_base64`,"manager")).status,400);
+ });
+ it("rejects evidence pagination with sanitized HTTP 409 when the authority set changes",async()=>{
+  evidenceConflict=true;
+  try{
+    const response=await request(`/api/v1/management/organizations/${org}/sales-tracking/period-evidence?date_from=2026-08-01&date_to=2026-08-12`,"manager");
+    assert.equal(response.status,409);
+    const body=await response.json();
+    assert.equal(body.error.code,"conflict");
+    assert.equal(body.error.message,"The Sales Tracking report changed. Refresh and try again.");
+    assert.ok(body.error.requestId);
+  }finally{
+    evidenceConflict=false;
+  }
+ });
+ it("reauthorizes evidence renewal and returns generic unavailable items",async()=>{
+  const unavailable="76000000-0000-4000-8000-000000000099";
+  const response=await request(`/api/v1/management/organizations/${org}/sales-tracking/period-evidence/renew`,"manager",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({date_from:"2026-08-01",date_to:"2026-08-12",attachment_ids:[photo,unavailable]})});
+  assert.equal(response.status,200);const body=await response.json();
+  assert.deepEqual(body.results.map((item:Record<string,unknown>)=>item.availability),["available","not_available"]);
+  assert.ok(body.results[0].signed_url?.startsWith("https://"));
+  assert.equal(body.results[1].signed_url,null);
+  assert.equal(JSON.stringify(body).includes("storage_path"),false);
+  assert.equal((await request(`/api/v1/management/organizations/${org}/sales-tracking/period-evidence/renew`,"manager",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({date_from:"2026-08-01",date_to:"2026-08-12",attachment_ids:[photo,photo]})})).status,400);
+ });
+ it("aborts in-flight Storage operation when client disconnects from the HTTP server before response completes",async()=>{
+  let capturedSignal:AbortSignal|undefined;
+  let signalAborted=false;
+  const originalImpl=persistence.listManagedSalesTrackingPeriodEvidence!;
+  persistence.listManagedSalesTrackingPeriodEvidence=async(input)=>{
+    capturedSignal=storageSignalContext.getStore()?.signal;
+    return new Promise((resolve,reject)=>{
+      capturedSignal?.addEventListener("abort",()=>{
+        signalAborted=true;
+        reject(new Error("Client disconnected"));
+      });
+      setTimeout(()=>resolve(originalImpl(input)),1000);
+    });
+  };
+  try{
+    const clientReq=httpRequest(`${origin}/api/v1/management/organizations/${org}/sales-tracking/period-evidence?date_from=2026-08-01&date_to=2026-08-12`,{
+      headers:{Authorization:"Bearer manager"},
+    });
+    clientReq.on("error",()=>{});
+    clientReq.end();
+
+    await new Promise((r)=>setTimeout(r,40));
+    assert.ok(capturedSignal,"storageSignalContext must receive an AbortSignal from the HTTP layer");
+    assert.equal(capturedSignal.aborted,false,"Signal should not be aborted prior to client disconnect");
+
+    clientReq.destroy();
+
+    await new Promise((r)=>setTimeout(r,50));
+    assert.equal(capturedSignal.aborted,true,"Captured signal must be aborted upon client disconnect");
+    assert.equal(signalAborted,true,"In-flight Storage operation was aborted by client disconnect");
+  }finally{
+    persistence.listManagedSalesTrackingPeriodEvidence=originalImpl;
+  }
+ });
+ it("enforces evidence-specific rate limiting on period evidence endpoints",async()=>{
+  const statuses:number[]=[];
+  for(let index=0;index<32;index++){
+    const res=await request(`/api/v1/management/organizations/${org}/sales-tracking/period-evidence?date_from=2026-08-01&date_to=2026-08-12`,"manager");
+    statuses.push(res.status);
+    if(res.status===429){
+      const body=await res.json();
+      assert.equal(body.error.code,"rate_limited");
+      assert.equal(body.error.message,"Too many evidence requests. Try again later.");
+      assert.ok(body.error.requestId);
+      break;
+    }
+  }
+  assert.ok(statuses.includes(429),"Evidence endpoint must return 429 after exceeding limit");
+ });
+ it("protects all period reporting endpoints and branch scope",async()=>{
+  const summary=`/api/v1/management/organizations/${org}/sales-tracking/period-summary?date_from=2026-08-01&date_to=2026-08-12`;
+  const anonymous=await request(summary);assert.equal(anonymous.status,401);assert.equal(anonymous.headers.get("cache-control"),"private, no-store");
+  assert.equal((await request(summary,"supervisor")).status,403);
+  assert.equal((await request(summary,"other-manager")).status,403);
+  assert.equal((await request(`${summary}&branch_id=${otherBranch}`,"manager")).status,403);
+  assert.equal((await request(`/api/v1/management/organizations/${org}/sales-tracking/period-evidence?date_from=2026-08-01&date_to=2026-08-12`,"other-manager")).status,403);
  });
  it("lets an authorized Manager mark Needs Review but never Reviewed",async()=>{
   const endpoint=`/api/v1/management/organizations/${org}/sales-tracking/${report}/review-status`;

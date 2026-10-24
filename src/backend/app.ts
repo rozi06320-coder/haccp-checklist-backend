@@ -7,6 +7,12 @@ import { z } from "zod";
 import { managementOverviewSchema } from "./management-overview-contract";
 import { managementOperationsSummarySchema } from "../lib/contracts/management-operations-summary";
 import { managementSalesTrackingMonthlySummarySchema } from "../lib/contracts/management-sales-tracking-monthly";
+import {
+  managementSalesTrackingEvidencePageSchema,
+  managementSalesTrackingEvidenceRenewalSchema,
+  managementSalesTrackingPeriodSummarySchema,
+} from "../lib/contracts/management-sales-tracking-period";
+import { decodeSalesTrackingPeriodCursor } from "./sales-tracking-period-cursor";
 import { annualEvaluationDetailSchema, annualEvaluationScoreSchema, annualEvaluationSubjectTypeSchema, annualEvaluationWorkspaceSchema } from "../lib/contracts/annual-evaluation";
 import { monthlySupervisorEvaluationDetailSchema, monthlySupervisorEvaluationScoreInputSchema, monthlySupervisorEvaluationWorkspaceSchema } from "../lib/contracts/monthly-supervisor-evaluation";
 import { requireAuthentication } from "./auth";
@@ -18,7 +24,7 @@ import {
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
 import { branchLocalDate, canonicalizeMaintenancePurchasePayload, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_PURCHASE_REQUEST_PRODUCT_PHOTO_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, purchaseRequestProductPhotoMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime, SupervisorPromotionConflictDiagnosticError, type MaintenanceIssuesStageTiming, type MaintenanceIssuesTimingDiagnostics } from "./operational";
-import { CatalogMappedIngredientError, ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ChecklistNotFoundError, ManagementOverviewUnavailableError, MAX_SALES_TRACKING_PHOTO_BYTES, SalesTrackingOnlineProviderBreakdownRequiredError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
+import { CatalogMappedIngredientError, ChecklistAccessError, ChecklistConflictError, ChecklistInputError, ChecklistNotFoundError, ManagementOverviewUnavailableError, MAX_SALES_TRACKING_PHOTO_BYTES, runWithStorageSignal, SalesTrackingOnlineProviderBreakdownRequiredError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
 import { MaintenancePushAccessError, MaintenancePushConflictError, MaintenancePushInputError, MaintenancePushUnavailableError } from "./maintenance-push";
@@ -1771,6 +1777,22 @@ const uuidLikeSchema=z.string().regex(/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F
 const pageQuerySchema=z.object({page:z.coerce.number().int().min(1).max(1000000).default(1),page_size:z.coerce.number().int().min(1).max(50).default(20),checklist_type:supervisorChecklistTypeSchema.optional()}).strict();
 const managerReportQuerySchema=z.object({page:z.coerce.number().int().min(1).default(1),page_size:z.coerce.number().int().min(1).max(50).default(20),date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional(),branch_id:z.uuid().optional(),supervisor_user_id:z.uuid().optional(),checklist_type:managementReportChecklistTypeSchema.optional(),status:z.enum(["compliant","issues_found","in_progress","not_checked"]).optional(),search:z.string().trim().max(120).optional()}).strict();
 const managerSalesTrackingQuerySchema=z.object({date_from:dateOnlySchema.optional(),date_to:dateOnlySchema.optional(),branch_id:z.uuid().optional()}).strict();
+function isSalesTrackingPeriodRangeValid(value:{date_from:string;date_to:string}){
+  const fromMs=Date.parse(`${value.date_from}T00:00:00Z`),toMs=Date.parse(`${value.date_to}T00:00:00Z`);
+  return fromMs<=toMs&&(toMs-fromMs)/86400000<=365;
+}
+const managerSalesTrackingPeriodQuerySchema=z.object({date_from:dateOnlySchema,date_to:dateOnlySchema,branch_id:z.uuid().optional()}).strict().refine(isSalesTrackingPeriodRangeValid);
+const managerSalesTrackingPeriodEvidenceQuerySchema=z.object({
+  date_from:dateOnlySchema,date_to:dateOnlySchema,branch_id:z.uuid().optional(),
+  page_size:z.coerce.number().int().min(1).max(50).default(24),cursor:z.string().min(1).max(1024).optional(),
+}).strict().refine(isSalesTrackingPeriodRangeValid);
+const managerSalesTrackingPeriodEvidenceRenewalBodySchema=z.object({
+  date_from:dateOnlySchema,date_to:dateOnlySchema,branch_id:z.uuid().optional(),
+  attachment_ids:z.array(z.uuid()).min(1).max(50),
+}).strict().superRefine((value,context)=>{
+  if(!isSalesTrackingPeriodRangeValid(value))context.addIssue({code:"custom",message:"Invalid date range."});
+  if(new Set(value.attachment_ids).size!==value.attachment_ids.length)context.addIssue({code:"custom",message:"Duplicate attachment."});
+});
 const managerSalesTrackingReviewBodySchema=z.object({expected_review_revision:z.number().int().nonnegative(),review_status:z.literal("needs_review")}).strict();
 const managerSalesTrackingMonthlyQuerySchema=z.object({month:monthOnlySchema,branch_id:z.uuid().optional()}).strict();
 const managerInventoryMonthSchema=z.string().regex(/^\d{4}-(?:0[1-9]|1[0-2])$/).transform(value=>`${value}-01`);
@@ -2273,6 +2295,13 @@ function checklistError(error:unknown){
  if(error instanceof ChecklistConflictError)return new HttpError(409,"conflict","A final report already exists or the replay key conflicts.");
  if(error instanceof SalesTrackingOnlineProviderBreakdownRequiredError)return new HttpError(422,"unprocessable_entity","Enter the online order breakdown before saving.");
  if(error instanceof ChecklistInputError)return new HttpError(422,"unprocessable_entity","Checklist answers are incomplete or no longer eligible.");
+ if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
+ return new HttpError(503,"service_unavailable","The service is unavailable.");
+}
+
+function salesTrackingPeriodError(error:unknown){
+ if(error instanceof ChecklistConflictError)return new HttpError(409,"conflict","The Sales Tracking report changed. Refresh and try again.");
+ if(error instanceof ChecklistInputError)return new HttpError(400,"bad_request","The request is invalid.");
  if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
  return new HttpError(503,"service_unavailable","The service is unavailable.");
 }
@@ -2799,6 +2828,9 @@ export function createApp(
     if (/^\/api\/v1\/internal-admin\/organizations\/[^/]+\/managers\/[^/]+\/reset-password(?:\/step-up)?$/.test(request.path)) {
       response.setHeader("Cache-Control", "private, no-store");
     }
+    if (/^\/api\/v1\/management\/organizations\/[^/]+\/sales-tracking\/(?:period-summary|period-evidence(?:\/renew)?)$/.test(request.path)) {
+      response.setHeader("Cache-Control", "private, no-store");
+    }
     next();
   });
   app.use(requestRateDiagnostic);
@@ -2992,6 +3024,25 @@ export function createApp(
     activeEvidenceUploads.set(key,current+1);let released=false;const release=()=>{if(released)return;released=true;const remaining=(activeEvidenceUploads.get(key)??1)-1;if(remaining<=0)activeEvidenceUploads.delete(key);else activeEvidenceUploads.set(key,remaining);};
     response.once("finish",release);response.once("close",release);next();
   };
+  const evidencePeriodRateLimit = rateLimit({
+    windowMs: 60_000,
+    limit: 30,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    validate: { trustProxy: false, xForwardedForHeader: false },
+    keyGenerator(request) {
+      return request.auth?.userId ?? ipKeyGenerator(request.ip ?? "unknown");
+    },
+    handler(_request, _response, next) {
+      next(
+        new HttpError(
+          429,
+          "rate_limited",
+          "Too many evidence requests. Try again later.",
+        ),
+      );
+    },
+  });
   const evidenceRawBody=express.raw({type:()=>true,limit:MAX_EVIDENCE_BYTES});
   const salesTrackingPhotoRawBody=express.raw({type:()=>true,limit:MAX_SALES_TRACKING_PHOTO_BYTES});
   const brandingRawBody=express.raw({type:()=>true,limit:MAX_BRANDING_BYTES});
@@ -9530,6 +9581,72 @@ export function createApp(
     response.setHeader("Cache-Control","private, no-store");
     response.status(200).json(reports);
 	  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+  app.get("/api/v1/management/organizations/:organizationId/sales-tracking/period-summary",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const org=organizationIdSchema.safeParse(request.params.organizationId),query=managerSalesTrackingPeriodQuerySchema.safeParse(request.query);
+    if(!org.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request),allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);
+    if(context.must_change_password||!allowed)throw new HttpError(403,"forbidden","Access is denied.");
+    if(query.data.branch_id&&!(await auth.userContext.validateActiveBranches(org.data,[query.data.branch_id])))throw new HttpError(403,"forbidden","Access is denied.");
+    if(!dependencies.checklistPersistence?.getManagedSalesTrackingPeriodSummary)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+    const summary=managementSalesTrackingPeriodSummarySchema.parse(await dependencies.checklistPersistence.getManagedSalesTrackingPeriodSummary({actorUserId:auth.userId,organizationId:org.data,dateFrom:query.data.date_from,dateTo:query.data.date_to,branchId:query.data.branch_id??null}));
+    if(summary.scope.organization_id!==org.data||summary.scope.branch_id!==(query.data.branch_id??null)||summary.scope.date_from!==query.data.date_from||summary.scope.date_to!==query.data.date_to)throw new Error("sales tracking period scope mismatch");
+    response.setHeader("Cache-Control","private, no-store");
+    response.status(200).json(summary);
+  }catch(error){next(error instanceof HttpError?error:salesTrackingPeriodError(error));}});
+
+  function createHttpRequestAbortSignal(request: Request, response: Response): {
+    signal: AbortSignal;
+    cleanup: () => void;
+  } {
+    const controller = new AbortController();
+    const onClose = () => {
+      if (!response.writableEnded) {
+        controller.abort(new Error("Client disconnected."));
+      }
+    };
+    if (request.destroyed && !response.writableEnded) {
+      controller.abort(new Error("Client disconnected."));
+    } else {
+      response.once("close", onClose);
+    }
+    const cleanup = () => {
+      response.removeListener("close", onClose);
+    };
+    return { signal: controller.signal, cleanup };
+  }
+
+  app.get("/api/v1/management/organizations/:organizationId/sales-tracking/period-evidence",protectedRateLimit,authenticate,evidencePeriodRateLimit,async(request,response,next)=>{
+    const { signal: requestSignal, cleanup } = createHttpRequestAbortSignal(request, response);
+    try{
+    const org=organizationIdSchema.safeParse(request.params.organizationId),query=managerSalesTrackingPeriodEvidenceQuerySchema.safeParse(request.query);
+    if(!org.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request),allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);
+    if(context.must_change_password||!allowed)throw new HttpError(403,"forbidden","Access is denied.");
+    if(query.data.branch_id&&!(await auth.userContext.validateActiveBranches(org.data,[query.data.branch_id])))throw new HttpError(403,"forbidden","Access is denied.");
+    const scope={organization_id:org.data,branch_id:query.data.branch_id??null,date_from:query.data.date_from,date_to:query.data.date_to};
+    const cursor=query.data.cursor?decodeSalesTrackingPeriodCursor(query.data.cursor,scope):null;
+    if(query.data.cursor&&!cursor)throw new HttpError(400,"bad_request","The request is invalid.");
+    if(!dependencies.checklistPersistence?.listManagedSalesTrackingPeriodEvidence)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+    const page=managementSalesTrackingEvidencePageSchema.parse(await runWithStorageSignal(requestSignal,()=>dependencies.checklistPersistence!.listManagedSalesTrackingPeriodEvidence!({actorUserId:auth.userId,organizationId:org.data,dateFrom:query.data.date_from,dateTo:query.data.date_to,branchId:query.data.branch_id??null,pageSize:query.data.page_size,cursor})));
+    if(page.scope.organization_id!==scope.organization_id||page.scope.branch_id!==scope.branch_id||page.scope.date_from!==scope.date_from||page.scope.date_to!==scope.date_to)throw new Error("sales tracking evidence scope mismatch");
+    response.setHeader("Cache-Control","private, no-store");
+    response.status(200).json(page);
+  }catch(error){next(error instanceof HttpError?error:salesTrackingPeriodError(error));}finally{cleanup();}});
+
+  app.post("/api/v1/management/organizations/:organizationId/sales-tracking/period-evidence/renew",protectedRateLimit,authenticate,evidencePeriodRateLimit,async(request,response,next)=>{
+    const { signal: requestSignal, cleanup } = createHttpRequestAbortSignal(request, response);
+    try{
+    const org=organizationIdSchema.safeParse(request.params.organizationId),body=managerSalesTrackingPeriodEvidenceRenewalBodySchema.safeParse(request.body);
+    if(!org.success||!body.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request),allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);
+    if(context.must_change_password||!allowed)throw new HttpError(403,"forbidden","Access is denied.");
+    if(body.data.branch_id&&!(await auth.userContext.validateActiveBranches(org.data,[body.data.branch_id])))throw new HttpError(403,"forbidden","Access is denied.");
+    if(!dependencies.checklistPersistence?.renewManagedSalesTrackingPeriodEvidence)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+    const result=managementSalesTrackingEvidenceRenewalSchema.parse(await runWithStorageSignal(requestSignal,()=>dependencies.checklistPersistence!.renewManagedSalesTrackingPeriodEvidence!({actorUserId:auth.userId,organizationId:org.data,dateFrom:body.data.date_from,dateTo:body.data.date_to,branchId:body.data.branch_id??null,attachmentIds:body.data.attachment_ids})));
+    response.setHeader("Cache-Control","private, no-store");
+    response.status(200).json(result);
+  }catch(error){next(error instanceof HttpError?error:salesTrackingPeriodError(error));}finally{cleanup();}});
 
 	  app.patch("/api/v1/management/organizations/:organizationId/sales-tracking/:reportId/review-status",protectedRateLimit,authenticate,async(request,response,next)=>{try{
 	    const org=organizationIdSchema.safeParse(request.params.organizationId),report=z.uuid().safeParse(request.params.reportId),body=managerSalesTrackingReviewBodySchema.safeParse(request.body);

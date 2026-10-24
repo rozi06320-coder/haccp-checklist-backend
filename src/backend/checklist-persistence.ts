@@ -1,8 +1,18 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { createClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { managementSalesTrackingMonthlySummarySchema } from "../lib/contracts/management-sales-tracking-monthly";
+import {
+  managementSalesTrackingEvidencePageSchema,
+  managementSalesTrackingEvidenceRenewalSchema,
+  managementSalesTrackingPeriodSummarySchema,
+} from "../lib/contracts/management-sales-tracking-period";
+import {
+  encodeSalesTrackingPeriodCursor,
+  type SalesTrackingPeriodCursor,
+} from "./sales-tracking-period-cursor";
 
 export class ChecklistConflictError extends Error {
   constructor(readonly sqlstate?: string) {
@@ -291,6 +301,9 @@ export type ChecklistPersistence = {
   setManagedSalesTrackingReviewStatus?(input:{actorUserId:string;organizationId:string;reportId:string;expectedReviewRevision:number;reviewStatus:"needs_review"}):Promise<unknown>;
   getManagedSalesTrackingAttachments?(input:{actorUserId:string;organizationId:string;reportId:string}):Promise<unknown>;
   getManagedSalesTrackingMonthlySummary?(input:{actorUserId:string;organizationId:string;month:string;branchId?:string|null}):Promise<unknown>;
+  getManagedSalesTrackingPeriodSummary?(input:{actorUserId:string;organizationId:string;dateFrom:string;dateTo:string;branchId?:string|null}):Promise<unknown>;
+  listManagedSalesTrackingPeriodEvidence?(input:{actorUserId:string;organizationId:string;dateFrom:string;dateTo:string;branchId?:string|null;pageSize:number;cursor:SalesTrackingPeriodCursor|null}):Promise<unknown>;
+  renewManagedSalesTrackingPeriodEvidence?(input:{actorUserId:string;organizationId:string;dateFrom:string;dateTo:string;branchId?:string|null;attachmentIds:string[]}):Promise<unknown>;
   listManagedDailyInventoryReconciliation?(input:{actorUserId:string;organizationId:string;fromDate:string;toDate:string;branchId?:string|null;inventoryItemId?:string|null;page?:number;pageSize?:number}):Promise<unknown>;
   listManagedDailyInventoryBranchOverview?(input:{actorUserId:string;organizationId:string;businessDate:string;branchId?:string|null;attentionFilter?:string|null}):Promise<unknown>;
   listManagedProductSalesUsage?(input:{actorUserId:string;organizationId:string;fromDate:string;toDate:string;branchId?:string|null;inventoryItemId?:string|null;page?:number;pageSize?:number}):Promise<unknown>;
@@ -426,6 +439,18 @@ const salesTrackingAttachmentInternal=z.object({
   id:z.uuid(),storage_path:z.string().min(1),original_filename:z.string().min(1),
   mime_type:z.enum(["image/jpeg","image/png","image/webp"]),size_bytes:z.union([z.number(),z.string()]),created_at:z.string(),display_order:z.union([z.number(),z.string()]).optional(),
 }).strict();
+const salesTrackingPeriodEvidenceInternal=z.object({
+  attachment_id:z.uuid(),report_id:z.uuid(),business_date:z.iso.date(),branch_id:z.uuid(),
+  branch_name:z.string().min(1).max(160),branch_name_ar:z.string().min(1).max(160).nullable(),branch_code:z.string().min(1).max(120),
+  display_order:z.coerce.number().int().min(1).max(3),original_filename:z.string().min(1).max(180),
+  mime_type:z.enum(["image/jpeg","image/png","image/webp"]),size_bytes:z.coerce.number().int().positive().max(5*1024*1024),
+  created_at:z.iso.datetime({offset:true}),storage_path:z.string().min(1),
+}).strict();
+const salesTrackingPeriodEvidenceRpc=z.object({
+  authority_revision:z.string().regex(/^[0-9a-f]{32}$/u),
+  items:z.array(salesTrackingPeriodEvidenceInternal).max(51),
+}).strict();
+const salesTrackingPeriodRenewalRpc=z.object({items:z.array(z.object({attachment_id:z.uuid(),storage_path:z.string().min(1)}).strict()).max(50)}).strict();
 const salesTrackingCurrent=z.object({
   report_id:z.uuid().nullable(),
   business_date:dateOnly,
@@ -736,6 +761,31 @@ export function salesTrackingSubmitRpcArgs(actorUserId:string,branchId:string,ex
 export const MAX_SALES_TRACKING_PHOTO_BYTES=5*1024*1024;
 const SALES_TRACKING_EVIDENCE_BUCKET="sales-tracking-evidence";
 const SALES_TRACKING_PHOTO_URL_SECONDS=5*60;
+
+export async function mapWithBoundedConcurrency<T,R>(items:readonly T[],limit:number,work:(item:T,index:number)=>Promise<R>):Promise<R[]>{
+ if(!Number.isInteger(limit)||limit<1)throw new Error("Invalid concurrency limit.");
+ const results=new Array<R>(items.length);
+ let nextIndex=0;
+ const worker=async()=>{
+  while(true){
+   const index=nextIndex++;
+   if(index>=items.length)return;
+   results[index]=await work(items[index]!,index);
+  }
+ };
+ await Promise.all(Array.from({length:Math.min(limit,items.length)},()=>worker()));
+ return results;
+}
+
+export function salesTrackingEvidenceStorageFailureAvailability(error:unknown):"missing_object"|"signing_unavailable"{
+ let current=error;
+ for(let depth=0;depth<3&&current&&typeof current==="object";depth++){
+  const candidate=current as {status?:unknown;statusCode?:unknown;originalError?:unknown};
+  if(String(candidate.status??"")==="404"||String(candidate.statusCode??"")==="404")return"missing_object";
+  current=candidate.originalError;
+ }
+ return"signing_unavailable";
+}
 const ensuredSalesTrackingReport=z.object({report_id:z.uuid(),organization_id:z.uuid(),branch_id:z.uuid(),business_date:dateOnly,revision:z.union([z.number(),z.string()])}).strict();
 const salesTrackingAttachmentMutation=z.object({attachment:salesTrackingAttachmentInternal.nullable(),old_storage_path:z.string().nullable()}).strict();
 const salesTrackingAttachmentsMutation=z.object({attachments:z.array(salesTrackingAttachmentInternal).max(3),old_storage_path:z.string().nullable()}).strict();
@@ -757,9 +807,170 @@ function salesTrackingPhotoFilename(value:string){
  return clean;
 }
 
-export function createChecklistPersistence(url:string,secretKey:string):ChecklistPersistence{
- const client=createClient(url,secretKey,{auth:nonPersistentAuth});
- const salesTrackingPhotoStorage=client.storage.from(SALES_TRACKING_EVIDENCE_BUCKET);
+export const DEFAULT_SALES_TRACKING_STORAGE_DEADLINE_MS = 5000;
+export const MAX_PROCESS_STORAGE_CONCURRENCY = 18;
+export const MAX_PROCESS_STORAGE_QUEUE_SIZE = 100;
+
+export class ProcessStorageLimiter {
+  private active = 0;
+  private queue: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
+
+  constructor(
+    readonly maxConcurrency: number = MAX_PROCESS_STORAGE_CONCURRENCY,
+    readonly maxQueueSize: number = MAX_PROCESS_STORAGE_QUEUE_SIZE,
+  ) {}
+
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted) {
+      throw signal.reason ?? new Error("Storage operation aborted prior to acquiring concurrency slot.");
+    }
+
+    if (this.active < this.maxConcurrency) {
+      this.active++;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        this.release();
+      };
+    }
+    if (this.queue.length >= this.maxQueueSize) {
+      throw new Error("Storage operation rejected: process concurrency queue saturated.");
+    }
+    return new Promise((resolve, reject) => {
+      let queueEntry: { resolve: () => void; reject: (err: Error) => void };
+      let onAbort: (() => void) | null = null;
+
+      if (signal) {
+        onAbort = () => {
+          const index = this.queue.indexOf(queueEntry);
+          if (index !== -1) {
+            this.queue.splice(index, 1);
+          }
+          reject(signal.reason ?? new Error("Storage operation aborted while waiting in concurrency queue."));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
+      queueEntry = {
+        resolve: () => {
+          if (onAbort && signal) {
+            signal.removeEventListener("abort", onAbort);
+          }
+          this.active++;
+          let released = false;
+          resolve(() => {
+            if (released) return;
+            released = true;
+            this.release();
+          });
+        },
+        reject: (err: Error) => {
+          if (onAbort && signal) {
+            signal.removeEventListener("abort", onAbort);
+          }
+          reject(err);
+        },
+      };
+
+      this.queue.push(queueEntry);
+    });
+  }
+
+  private release() {
+    this.active--;
+    const next = this.queue.shift();
+    if (next) {
+      next.resolve();
+    }
+  }
+
+  get stats() {
+    return { active: this.active, queued: this.queue.length };
+  }
+}
+
+export const processStorageLimiter = new ProcessStorageLimiter();
+
+export const storageSignalContext = new AsyncLocalStorage<{ signal?: AbortSignal }>();
+
+export function runWithStorageSignal<T>(signal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
+  if (!signal) return fn();
+  return storageSignalContext.run({ signal }, fn);
+}
+
+export function createStorageFetchWithDeadline(options?: {
+  baseFetch?: typeof fetch;
+  limiter?: ProcessStorageLimiter;
+  deadlineMs?: number;
+}): typeof fetch {
+  const baseFetch = options?.baseFetch ?? globalThis.fetch;
+  const limiter = options?.limiter ?? processStorageLimiter;
+  const deadlineMs = options?.deadlineMs ?? DEFAULT_SALES_TRACKING_STORAGE_DEADLINE_MS;
+
+  return async (input, init) => {
+    const urlStr = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (!urlStr.includes("/storage/v1/")) {
+      return baseFetch(input, init);
+    }
+
+    const contextSignal = storageSignalContext.getStore()?.signal;
+    const callerSignal = init?.signal ?? contextSignal;
+    const release = await limiter.acquire(callerSignal);
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort(new Error("Storage operation deadline exceeded."));
+    }, deadlineMs);
+
+    let abortListener: (() => void) | null = null;
+    if (callerSignal) {
+      if (callerSignal.aborted) {
+        clearTimeout(timer);
+        release();
+        controller.abort(callerSignal.reason);
+        throw callerSignal.reason;
+      }
+      abortListener = () => {
+        controller.abort(callerSignal.reason);
+      };
+      callerSignal.addEventListener("abort", abortListener, { once: true });
+    }
+
+    try {
+      return await baseFetch(input, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+      if (callerSignal && abortListener) {
+        callerSignal.removeEventListener("abort", abortListener);
+      }
+      release();
+    }
+  };
+}
+
+export interface ChecklistPersistenceOptions {
+  storageFetch?: typeof fetch;
+  storageLimiter?: ProcessStorageLimiter;
+  storageDeadlineMs?: number;
+}
+
+export function createChecklistPersistence(
+  url: string,
+  secretKey: string,
+  options?: ChecklistPersistenceOptions,
+): ChecklistPersistence {
+  const customStorageFetch = createStorageFetchWithDeadline({
+    baseFetch: options?.storageFetch ?? globalThis.fetch,
+    limiter: options?.storageLimiter,
+    deadlineMs: options?.storageDeadlineMs,
+  });
+  const client = createClient(url, secretKey, {
+    auth: nonPersistentAuth,
+    global: { fetch: customStorageFetch },
+  });
+  const salesTrackingPhotoStorage = client.storage.from(SALES_TRACKING_EVIDENCE_BUCKET);
  async function rpc(name:string,args:Record<string,unknown>){
   const result=await client.rpc(name,args);
   if(result.error)throwChecklistRpcError(result.error.code,result.error.message);
@@ -811,6 +1022,29 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
   return{id:attachment.id,original_filename:attachment.original_filename,mime_type:attachment.mime_type,size_bytes:Number(attachment.size_bytes),created_at:attachment.created_at,signed_url:signedUrl,...(attachment.display_order===undefined?{}:{display_order:Number(attachment.display_order)})};
  }
  async function safeSalesTrackingAttachments(attachments:z.infer<typeof salesTrackingAttachmentInternal>[]){return Promise.all(attachments.map((attachment)=>safeSalesTrackingAttachment(attachment))) as Promise<Array<NonNullable<Awaited<ReturnType<typeof safeSalesTrackingAttachment>>>>>;}
+ async function signManagedPeriodEvidence(storagePath:string){
+  try{
+   const metadata=await salesTrackingPhotoStorage.info(storagePath);
+   if(metadata.error||!metadata.data){
+    return{availability:salesTrackingEvidenceStorageFailureAvailability(metadata.error),signed_url:null};
+   }
+   const signed=await salesTrackingPhotoStorage.createSignedUrl(storagePath,SALES_TRACKING_PHOTO_URL_SECONDS);
+   if(signed.error||!signed.data?.signedUrl)return{availability:"signing_unavailable" as const,signed_url:null};
+   return{availability:"available" as const,signed_url:signed.data.signedUrl};
+  }catch{
+   return{availability:"signing_unavailable" as const,signed_url:null};
+  }
+ }
+ async function authorizeManagedPeriodEvidence(input:{actorUserId:string;organizationId:string;dateFrom:string;dateTo:string;branchId?:string|null;attachmentIds:string[]}){
+  return salesTrackingPeriodRenewalRpc.parse(await rpc("authorize_managed_sales_tracking_evidence_renewal",{
+   actor_user_id:input.actorUserId,
+   target_organization_id:input.organizationId,
+   from_date:input.dateFrom,
+   to_date:input.dateTo,
+   branch_filter:input.branchId??null,
+   target_attachment_ids:input.attachmentIds,
+  }));
+ }
  async function safeSalesTrackingCurrent(value:unknown){
   const current=salesTrackingCurrent.parse(value);
   const {attachment,attachments,source_attachments,...rest}=current;
@@ -1021,6 +1255,92 @@ export function createChecklistPersistence(url:string,secretKey:string):Checklis
     target_month:`${input.month}-01`,
     branch_filter:input.branchId??null,
    }));
+  },
+  async getManagedSalesTrackingPeriodSummary(input){
+   return managementSalesTrackingPeriodSummarySchema.parse(await rpc("get_managed_sales_tracking_period_summary",{
+    actor_user_id:input.actorUserId,
+    target_organization_id:input.organizationId,
+    from_date:input.dateFrom,
+    to_date:input.dateTo,
+    branch_filter:input.branchId??null,
+   }));
+  },
+  async listManagedSalesTrackingPeriodEvidence(input){
+   const cursor=input.cursor;
+   const raw=salesTrackingPeriodEvidenceRpc.parse(await rpc("list_managed_sales_tracking_period_evidence",{
+    actor_user_id:input.actorUserId,
+    target_organization_id:input.organizationId,
+    from_date:input.dateFrom,
+    to_date:input.dateTo,
+    branch_filter:input.branchId??null,
+    requested_limit:input.pageSize+1,
+    cursor_business_date:cursor?.business_date??null,
+    cursor_branch_id:cursor?.item_branch_id??null,
+    cursor_report_id:cursor?.report_id??null,
+    cursor_display_order:cursor?.display_order??null,
+    cursor_attachment_id:cursor?.attachment_id??null,
+    cursor_authority_revision:cursor?.authority_revision??null,
+   }));
+   if(cursor&&cursor.authority_revision!==raw.authority_revision){
+    throw new ChecklistConflictError("40001");
+   }
+   const hasMore=raw.items.length>input.pageSize;
+   const metadata=raw.items.slice(0,input.pageSize);
+   const expiresAt=new Date(Date.now()+SALES_TRACKING_PHOTO_URL_SECONDS*1000).toISOString();
+   const photos=await mapWithBoundedConcurrency(metadata,6,async(item)=>{
+    const signed=await signManagedPeriodEvidence(item.storage_path);
+    const{storage_path:ignoredStoragePath,branch_id:ignoredBranchId,branch_name:ignoredBranchName,branch_name_ar:ignoredBranchNameAr,branch_code:ignoredBranchCode,...photo}=item;
+    void ignoredStoragePath;void ignoredBranchId;void ignoredBranchName;void ignoredBranchNameAr;void ignoredBranchCode;
+    return{...photo,...signed,signed_url_expires_at:signed.availability==="available"?expiresAt:null};
+   });
+   const groups:Array<{business_date:string;branches:Array<{branch:{id:string;name:string;name_ar:string|null;code:string};photos:typeof photos}>}>=[];
+   for(let index=0;index<metadata.length;index++){
+    const item=metadata[index]!,photo=photos[index]!;
+    let dateGroup=groups.at(-1);
+    if(!dateGroup||dateGroup.business_date!==item.business_date){dateGroup={business_date:item.business_date,branches:[]};groups.push(dateGroup);}
+    let branchGroup=dateGroup.branches.at(-1);
+    if(!branchGroup||branchGroup.branch.id!==item.branch_id){branchGroup={branch:{id:item.branch_id,name:item.branch_name,name_ar:item.branch_name_ar,code:item.branch_code},photos:[]};dateGroup.branches.push(branchGroup);}
+    branchGroup.photos.push(photo);
+   }
+   const last=metadata.at(-1);
+   const missingObjectCount=photos.filter((photo)=>photo.availability==="missing_object").length;
+   const signingUnavailableCount=photos.filter((photo)=>photo.availability==="signing_unavailable").length;
+   if(metadata.length>0){
+    const finalAuthorization=await authorizeManagedPeriodEvidence({...input,attachmentIds:metadata.map((item)=>item.attachment_id)});
+    const authorizedIds=new Set(finalAuthorization.items.map((item)=>item.attachment_id));
+    if(metadata.some((item)=>!authorizedIds.has(item.attachment_id)))throw new ChecklistConflictError("40001");
+   }
+   return managementSalesTrackingEvidencePageSchema.parse({
+    generated_at:new Date().toISOString(),
+    state:metadata.length===0?"empty":missingObjectCount+signingUnavailableCount>0?"partial":"complete",
+    empty_reason:metadata.length===0?"no_authoritative_photos":null,
+    scope:{organization_id:input.organizationId,branch_id:input.branchId??null,date_from:input.dateFrom,date_to:input.dateTo},
+    groups,
+    page:{page_size:input.pageSize,returned_items:metadata.length,has_more:hasMore,next_cursor:hasMore&&last?encodeSalesTrackingPeriodCursor({v:1,organization_id:input.organizationId,branch_id:input.branchId??null,date_from:input.dateFrom,date_to:input.dateTo,authority_revision:raw.authority_revision,business_date:last.business_date,item_branch_id:last.branch_id,report_id:last.report_id,display_order:last.display_order,attachment_id:last.attachment_id}):null},
+    issues:{missing_object_count:missingObjectCount,signing_unavailable_count:signingUnavailableCount},
+   });
+  },
+  async renewManagedSalesTrackingPeriodEvidence(input){
+   const authorized=await authorizeManagedPeriodEvidence(input);
+   const byId=new Map(authorized.items.map((item)=>[item.attachment_id,item.storage_path]));
+   const expiresAt=new Date(Date.now()+SALES_TRACKING_PHOTO_URL_SECONDS*1000).toISOString();
+   const results=await mapWithBoundedConcurrency(input.attachmentIds,6,async(attachmentId)=>{
+    const storagePath=byId.get(attachmentId);
+    if(!storagePath)return{attachment_id:attachmentId,availability:"not_available" as const,signed_url:null};
+    const signed=await signManagedPeriodEvidence(storagePath);
+    return{
+      attachment_id:attachmentId,
+      availability:signed.availability,
+      signed_url:signed.availability==="available"?signed.signed_url:null,
+    };
+   });
+   const finalAuthorization=await authorizeManagedPeriodEvidence(input);
+   const finalAuthorizedIds=new Set(finalAuthorization.items.map((item)=>item.attachment_id));
+   return managementSalesTrackingEvidenceRenewalSchema.parse({
+     generated_at:new Date().toISOString(),
+     signed_url_expires_at:expiresAt,
+     results:results.map((result)=>finalAuthorizedIds.has(result.attachment_id)?result:{attachment_id:result.attachment_id,availability:"not_available" as const,signed_url:null}),
+   });
   },
   async listManagedInventoryItemsReports(input){
    return managedInventoryItemsReports.parse(await rpc("list_managed_inventory_items_reports",{actor_user_id:input.actorUserId,target_organization_id:input.organizationId,target_inventory_month:input.inventoryMonth,optional_branch_id:input.branchId??null}));
