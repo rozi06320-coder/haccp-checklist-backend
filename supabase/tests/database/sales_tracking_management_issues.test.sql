@@ -35,6 +35,8 @@ insert into public.branches(id,organization_id,name,code,timezone) values
   ('3e000000-0000-4000-8000-000000000002','2e000000-0000-4000-8000-000000000001','Balanced Branch','BAL',(select closed_tz from sales_tracking_issue_tz)),
   ('3e000000-0000-4000-8000-000000000003','2e000000-0000-4000-8000-000000000001','Missing Closed Branch','MIS',(select closed_tz from sales_tracking_issue_tz)),
   ('3e000000-0000-4000-8000-000000000004','2e000000-0000-4000-8000-000000000001','Missing Open Branch','OPN',(select open_tz from sales_tracking_issue_tz));
+update public.branches set created_at=now()-interval '2 days'
+where organization_id='2e000000-0000-4000-8000-000000000001';
 insert into public.organization_memberships(organization_id,user_id,role) values
   ('2e000000-0000-4000-8000-000000000001','1e000000-0000-4000-8000-000000000005','organization_manager'),
   ('2e000000-0000-4000-8000-000000000002','1e000000-0000-4000-8000-000000000006','organization_manager');
@@ -73,20 +75,20 @@ select public.list_sales_tracking_managed_issues(
   1, 20, null, null, null, null, null, 'sales_tracking', null, null
 ) payload;
 
-select is((select payload->>'total' from sales_tracking_issue_list),'2','manager sees one variance and one closed missing issue');
+select is((select payload->>'total' from sales_tracking_issue_list),'4','manager sees one variance plus one prior-day missing issue per closed branch');
 select is((select count(*)::int from jsonb_array_elements((select payload->'issues' from sales_tracking_issue_list)) issue where issue->>'title' = 'Sales Tracking variance issue'),1,'variance issue appears');
-select is((select count(*)::int from jsonb_array_elements((select payload->'issues' from sales_tracking_issue_list)) issue where issue->>'title' = 'Missing Sales Tracking submission'),1,'closed missing issue appears');
-select is((select count(*)::int from jsonb_array_elements((select payload->'issues' from sales_tracking_issue_list)) issue where issue->>'branch_name' = 'Balanced Branch'),0,'balanced submission has no issue');
-select is((select count(*)::int from jsonb_array_elements((select payload->'issues' from sales_tracking_issue_list)) issue where issue->>'branch_name' = 'Missing Open Branch'),0,'missing submission before local 03:00 close has no issue');
+select is((select count(*)::int from jsonb_array_elements((select payload->'issues' from sales_tracking_issue_list)) issue where issue->>'title' = 'Missing Sales Tracking submission'),3,'one prior-day missing issue appears for each closed branch');
+select is((select count(*)::int from jsonb_array_elements((select payload->'issues' from sales_tracking_issue_list)) issue where issue->>'branch_name' = 'Balanced Branch'),1,'a report submitted after rollover does not satisfy the prior business date');
+select is((select count(*)::int from jsonb_array_elements((select payload->'issues' from sales_tracking_issue_list)) issue where issue->>'branch_name' = 'Missing Open Branch'),0,'missing submission before local 04:00 close has no issue');
 select is(
   public.list_sales_tracking_managed_issues('1e000000-0000-4000-8000-000000000005','2e000000-0000-4000-8000-000000000001',1,20,null,null,'3e000000-0000-4000-8000-000000000001',null,null,'sales_tracking',null,null)->>'total',
-  '1',
+  '2',
   'branch filter limits sales tracking issues'
 );
 select is(
   public.list_sales_tracking_managed_issues('1e000000-0000-4000-8000-000000000005','2e000000-0000-4000-8000-000000000001',1,20,null,null,null,'1e000000-0000-4000-8000-000000000003',null,'sales_tracking',null,null)->>'total',
-  '1',
-  'supervisor filter includes derived missed issue'
+  '0',
+  'supervisor filter does not assign a branch-owned missing issue to one supervisor'
 );
 select is(
   public.list_sales_tracking_managed_issues('1e000000-0000-4000-8000-000000000005','2e000000-0000-4000-8000-000000000001',1,20,null,null,null,null,'1e000000-0000-4000-8000-000000000003','sales_tracking',null,null)->>'total',
@@ -103,7 +105,7 @@ select ok(position('Actual and POS totals do not match' in public.get_sales_trac
 select ok(position('No fake submission was created' in public.get_sales_tracking_managed_issue(
     '1e000000-0000-4000-8000-000000000005',
     '2e000000-0000-4000-8000-000000000001',
-    (select (issue->>'id')::uuid from sales_tracking_issue_list, jsonb_array_elements(payload->'issues') issue where issue->>'title' = 'Missing Sales Tracking submission')
+    (select (issue->>'id')::uuid from sales_tracking_issue_list, jsonb_array_elements(payload->'issues') issue where issue->>'title' = 'Missing Sales Tracking submission' limit 1)
   )->>'remark') > 0,
   'missing issue detail explains derived issue'
 );

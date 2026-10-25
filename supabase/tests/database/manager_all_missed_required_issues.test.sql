@@ -42,24 +42,29 @@ insert into public.branches(id,organization_id,name,code,timezone) values
   ('3f000000-0000-4000-8000-000000000006','2f000000-0000-4000-8000-000000000001','Cold Evening Branch','CEB',(select cold_3_tz from missed_issue_tz)),
   ('3f000000-0000-4000-8000-000000000007','2f000000-0000-4000-8000-000000000001','Cold Yesterday Branch','CYB',(select closed_tz from missed_issue_tz)),
   ('3f000000-0000-4000-8000-000000000008','2f000000-0000-4000-8000-000000000001','Sales Missed Branch','SMB',(select closed_tz from missed_issue_tz));
+update public.branches set created_at=now()-interval '2 days'; update public.branch_operational_teams set created_at=now()-interval '2 days'
+where organization_id in('2f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000002');
 
 insert into public.branch_memberships(branch_id,user_id,role)
 select ('3f000000-0000-4000-8000-' || lpad(value::text, 12, '0'))::uuid,
   ('1f000000-0000-4000-8000-' || lpad((value + 1)::text, 12, '0'))::uuid,
   'branch_manager'
-from generate_series(1,8) value;
+from generate_series(1,8) value; update public.branch_operational_teams set created_at=now()-interval '2 days' where organization_id in('2f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000002');
 
 insert into public.branch_supervisor_teams(id,organization_id,branch_id,supervisor_user_id)
 select ('4f000000-0000-4000-8000-' || lpad(value::text, 12, '0'))::uuid,
   '2f000000-0000-4000-8000-000000000001',
   ('3f000000-0000-4000-8000-' || lpad(value::text, 12, '0'))::uuid,
   ('1f000000-0000-4000-8000-' || lpad((value + 1)::text, 12, '0'))::uuid
-from generate_series(1,8) value;
+from generate_series(1,8) value; update public.branch_operational_teams set created_at=now()-interval '2 days' where organization_id in('2f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000002');
 
 insert into public.operational_staff(id,organization_id,branch_id,display_name,created_by)
 values('5f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001','On Duty Staff','1f000000-0000-4000-8000-000000000002');
 insert into public.operational_staff_assignments(id,organization_id,branch_id,operational_staff_id,supervisor_team_id,operational_roles)
 values('6f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001','3f000000-0000-4000-8000-000000000001','5f000000-0000-4000-8000-000000000001','4f000000-0000-4000-8000-000000000001',array['kitchen']);
+update public.operational_staff_assignments assignment
+set valid_from=private.phase4a_business_date(branch.timezone)-1
+from public.branches branch where branch.id=assignment.branch_id and assignment.id='6f000000-0000-4000-8000-000000000001';
 
 insert into public.cold_storage_submissions(id,organization_id,branch_id,supervisor_user_id,supervisor_team_id,business_date,branch_name_snapshot,supervisor_name_snapshot,team_name_snapshot)
 values(
@@ -76,20 +81,20 @@ values(
 insert into public.cold_storage_equipment(submission_id,equipment_id,equipment_name,equipment_type,active)
 values('7f000000-0000-4000-8000-000000000001','cold-yesterday','Cold Yesterday Unit','refrigerator',true);
 
-select is(public.list_phase4a_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000001',null,null,'kitchen_opening',null,null)->>'total','1','Kitchen Opening not submitted after 03:00 becomes not checked');
-select is(public.list_phase4a_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000001',null,null,'foh_opening',null,null)->>'total','1','FOH Opening not submitted after 03:00 becomes not checked');
+select is(public.list_phase4a_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000001',null,null,'kitchen_opening',null,null)->>'total','1','Kitchen Opening not submitted after 04:00 becomes not checked');
+select is(public.list_phase4a_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000001',null,null,'foh_opening',null,null)->>'total','1','FOH Opening not submitted after 04:00 becomes not checked');
 select is(public.list_phase4a_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000001',null,null,'staff_hygiene',null,null)->>'total','1','Staff Hygiene not submitted with on-duty staff becomes not checked');
 select is(public.list_phase4a_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000003',null,null,'staff_hygiene',null,null)->>'total','0','Staff Hygiene has no false missed issue when no on-duty staff exists');
-select is(public.list_phase4a_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000002',null,null,'kitchen_opening',null,null)->>'total','0','Daily missing before 03:00 remains pending, not an issue');
+select is(public.list_phase4a_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000002',null,null,'kitchen_opening',null,null)->>'total','0','Daily missing before 04:00 remains pending, not an issue');
 
-select is(public.list_oil_tracking_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000004',null,null,'oil_tracking',null,'opening')->>'total','1','Oil opening missing after due window becomes not checked');
-select is(public.list_oil_tracking_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000004',null,null,'oil_tracking',null,'closing')->>'total','1','Oil closing missing after 03:00 becomes not checked');
+select is(public.list_oil_tracking_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000004',null,null,'oil_tracking',null,'opening')->>'total','2','Oil opening includes prior-day and current-day misses after 15:00');
+select is(public.list_oil_tracking_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000004',null,null,'oil_tracking',null,'closing')->>'total','1','Oil closing missing after 04:00 becomes not checked');
 
-select is(public.list_cold_storage_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000005',null,null,'cold_storage',null,'12:00')->>'total','0','Cold 12:00 remains pending before 20:00');
-select is(public.list_cold_storage_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000006',null,null,'cold_storage',null,'12:00')->>'total','1','Cold 12:00 missing after 20:00 becomes not checked');
+select is(public.list_cold_storage_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000005',null,null,'cold_storage',null,'12:00')->>'total','1','Current Cold 12:00 remains pending while the prior business day remains missed');
+select is(public.list_cold_storage_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000006',null,null,'cold_storage',null,'12:00')->>'total','2','Cold 12:00 includes prior-day and current-day misses after 20:00');
 select is(public.list_cold_storage_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000007',null,null,'cold_storage',null,'02:00')->>'total','1','Cold 02:00 missing after operational close becomes not checked');
 
-select is(public.list_sales_tracking_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000008',null,null,'sales_tracking',null,null)->>'total','1','Sales Tracking missing after 03:00 becomes not checked');
+select is(public.list_sales_tracking_managed_issues('1f000000-0000-4000-8000-000000000001','2f000000-0000-4000-8000-000000000001',1,20,null,null,'3f000000-0000-4000-8000-000000000008',null,null,'sales_tracking',null,null)->>'total','1','Sales Tracking missing after 04:00 becomes not checked');
 
 create temp table missed_phase4a_detail as
 select (issue->>'id')::uuid id

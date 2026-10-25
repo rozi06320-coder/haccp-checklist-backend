@@ -32,14 +32,26 @@ const calls:Array<{name:string;input:unknown}>=[];
 let oilIssuesMode:"ok"|"failure"="ok";
 let salesIssuesMode:"ok"|"failure"|"malformed"="ok";
 let emptyIssuesMode=false;
+let largeIssuesMode=false;
+let paginationMutationMode:"none"|"duplicate"|"total_changed"="none";
+const largePhaseIssues=Array.from({length:61},(_,index)=>({
+  ...phaseIssue,
+  id:`81000000-0000-4000-8000-${String(index+1).padStart(12,"0")}`,
+  created_at:new Date(Date.parse("2026-08-06T10:00:00Z")-index*2_000).toISOString(),
+}));
+const largeOilIssues=Array.from({length:61},(_,index)=>({
+  ...oilIssue,
+  id:`82000000-0000-4000-8000-${String(index+1).padStart(12,"0")}`,
+  created_at:new Date(Date.parse("2026-08-06T09:59:59Z")-index*2_000).toISOString(),
+}));
 const persistence={
  async getOverview(){throw new Error("unused");},async getManagementOverview(){calls.push({name:"overview",input:null});return overview;},async getCurrentState(){throw new Error("unused");},async saveDraft(){throw new Error("unused");},async saveHygieneDraft(){throw new Error("unused");},async submitOpening(){throw new Error("unused");},async submitHygiene(){throw new Error("unused");},
  async getOilTrackingCurrentState(){throw new Error("unused");},async saveOilTrackingDraft(){throw new Error("unused");},async submitOilTrackingOpening(){throw new Error("unused");},async submitOilTrackingClosing(){throw new Error("unused");},async getColdStorageCurrentState(){throw new Error("unused");},async saveColdStorageDraft(){throw new Error("unused");},async submitColdStorageSlot(){throw new Error("unused");},
  async listSupervisor(){throw new Error("unused");},async listOilTrackingSupervisor(){throw new Error("unused");},async listColdStorageSupervisor(){throw new Error("unused");},
  async getReport(){throw new Error("unused");},async getOilTrackingReport(){throw new Error("unused");},async getColdStorageReport(){throw new Error("unused");},
  async listManagedReports(){throw new Error("unused");},async listManagedOilTrackingReports(){throw new Error("unused");},async listManagedColdStorageReports(){throw new Error("unused");},async getManagedOilTrackingReport(){throw new Error("unused");},async getManagedColdStorageReport(){throw new Error("unused");},
- async listManagedIssues(input:Record<string,unknown>){calls.push({name:"phase-issues",input});return{issues:emptyIssuesMode?[]:[phaseIssue],page:input.requested_page,page_size:input.requested_page_size,total:emptyIssuesMode?0:1};},
- async listManagedOilTrackingIssues(input:Record<string,unknown>){calls.push({name:"oil-issues",input});if(oilIssuesMode==="failure")throw new Error("Checklist persistence unavailable.");return{issues:emptyIssuesMode?[]:[oilIssue],page:input.requested_page,page_size:input.requested_page_size,total:emptyIssuesMode?0:1};},
+ async listManagedIssues(input:Record<string,unknown>){calls.push({name:"phase-issues",input});if(largeIssuesMode){const page=Number(input.requested_page),pageSize=Number(input.requested_page_size),offset=(page-1)*pageSize;const issues=largePhaseIssues.slice(offset,offset+pageSize);if(page===2&&paginationMutationMode==="duplicate")issues[0]=largePhaseIssues[49];return{issues,page,page_size:pageSize,total:page===2&&paginationMutationMode==="total_changed"?60:largePhaseIssues.length};}return{issues:emptyIssuesMode?[]:[phaseIssue],page:input.requested_page,page_size:input.requested_page_size,total:emptyIssuesMode?0:1};},
+ async listManagedOilTrackingIssues(input:Record<string,unknown>){calls.push({name:"oil-issues",input});if(oilIssuesMode==="failure")throw new Error("Checklist persistence unavailable.");if(largeIssuesMode){const page=Number(input.requested_page),pageSize=Number(input.requested_page_size),offset=(page-1)*pageSize;return{issues:largeOilIssues.slice(offset,offset+pageSize),page,page_size:pageSize,total:largeOilIssues.length};}return{issues:emptyIssuesMode?[]:[oilIssue],page:input.requested_page,page_size:input.requested_page_size,total:emptyIssuesMode?0:1};},
  async listManagedColdStorageIssues(input:Record<string,unknown>){calls.push({name:"cold-issues",input});return{issues:emptyIssuesMode?[]:[coldMissedIssue,coldIssue],page:input.requested_page,page_size:input.requested_page_size,total:emptyIssuesMode?0:2};},
  async listManagedSalesTrackingIssues(input:Record<string,unknown>){calls.push({name:"sales-issues",input});if(salesIssuesMode==="failure")throw new Error("Checklist persistence unavailable.");if(salesIssuesMode==="malformed")return{issues:[{...salesIssue,checklist_type:"unknown"}],page:input.requested_page,page_size:input.requested_page_size,total:1};return{issues:emptyIssuesMode?[]:[salesIssue],page:input.requested_page,page_size:input.requested_page_size,total:emptyIssuesMode?0:1};},
  async getManagedIssue(_actor:string,_organization:string,id:string){calls.push({name:"phase-detail",input:id});if(id!==phaseIssueId)throw new ChecklistAccessError();return{...phaseIssue,remark:"Missing item"};},
@@ -55,7 +67,7 @@ async function request(path:string,token="manager"){return fetch(origin+path,{he
 describe("Management Oil and Cold Storage overview and issues API",()=>{
  before(async()=>{server=createServer(createApp(config,deps()));await new Promise<void>((resolve,reject)=>server.listen(0,"127.0.0.1",resolve).once("error",reject));origin=`http://127.0.0.1:${(server.address() as AddressInfo).port}`;});
  after(()=>new Promise<void>((resolve)=>server.close(()=>resolve())));
- beforeEach(()=>{calls.length=0;oilIssuesMode="ok";salesIssuesMode="ok";emptyIssuesMode=false;});
+ beforeEach(()=>{calls.length=0;oilIssuesMode="ok";salesIssuesMode="ok";emptyIssuesMode=false;largeIssuesMode=false;paginationMutationMode="none";});
 
  it("returns Oil and Cold in management overview branch breakdown and totals",async()=>{
   const response=await request(`/api/v1/management/organizations/${org}/overview`);
@@ -80,6 +92,56 @@ describe("Management Oil and Cold Storage overview and issues API",()=>{
   const response=await request(`/api/v1/management/organizations/${org}/issues?page=1&page_size=20`);
   assert.equal(response.status,200);
   assert.deepEqual(await response.json(),{issues:[],page:1,page_size:20,total:0});
+ });
+
+ it("paginates more than 50 interleaved issues across source RPCs using bounded pages",async()=>{
+  largeIssuesMode=true;
+  emptyIssuesMode=true;
+  const response=await request(`/api/v1/management/organizations/${org}/issues?page=4&page_size=20`);
+  assert.equal(response.status,200);
+  const body=await response.json();
+  const expected=[...largePhaseIssues,...largeOilIssues]
+    .sort((a,b)=>b.created_at.localeCompare(a.created_at)||a.id.localeCompare(b.id))
+    .slice(60,80)
+    .map(issue=>issue.id);
+  assert.equal(body.total,122);
+  assert.deepEqual(body.issues.map((issue:{id:string})=>issue.id),expected);
+  assert.deepEqual(calls.filter(call=>call.name==="phase-issues").map(call=>{
+    const input=call.input as Record<string,unknown>;
+    return [input.requested_page,input.requested_page_size];
+  }),[[1,50],[2,50]]);
+  assert.deepEqual(calls.filter(call=>call.name==="oil-issues").map(call=>{
+    const input=call.input as Record<string,unknown>;
+    return [input.requested_page,input.requested_page_size];
+  }),[[1,50],[2,50]]);
+ });
+
+ it("fails with 409 when an insertion shifts an offset page and duplicates its boundary",async()=>{
+  largeIssuesMode=true;
+  emptyIssuesMode=true;
+  paginationMutationMode="duplicate";
+  const response=await request(`/api/v1/management/organizations/${org}/issues?page=4&page_size=20`);
+  assert.equal(response.status,409);
+  const body=await response.json();
+  assert.equal(body.error?.code,"conflict");
+  assert.equal(body.error?.message,"The issue list changed. Refresh and try again.");
+ });
+
+ it("fails with 409 when a concurrent removal changes the source total",async()=>{
+  largeIssuesMode=true;
+  emptyIssuesMode=true;
+  paginationMutationMode="total_changed";
+  const response=await request(`/api/v1/management/organizations/${org}/issues?page=4&page_size=20`);
+  assert.equal(response.status,409);
+  const body=await response.json();
+  assert.equal(body.error?.code,"conflict");
+  assert.equal(body.error?.message,"The issue list changed. Refresh and try again.");
+ });
+
+ it("rejects an unbounded combined-issue merge window",async()=>{
+  const response=await request(`/api/v1/management/organizations/${org}/issues?page=11&page_size=50`);
+  assert.equal(response.status,400);
+  assert.equal(calls.length,0);
  });
 
  it("keeps all issues available if optional Oil issue merge is unavailable",async()=>{
