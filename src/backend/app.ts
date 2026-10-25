@@ -2228,7 +2228,14 @@ function mergeManagementIssueLists(page:number,pageSize:number,...lists:Manageme
   return {issues,page,page_size:pageSize,total:lists.reduce((sum,list)=>sum+list.total,0)};
 }
 
-const managementIssueMergedWindowLimit=500;
+const defaultManagementIssueMergedWindowLimit=2000;
+
+function getManagementIssueMergedWindowLimit():number{
+  const raw=process.env.MANAGEMENT_ISSUE_MERGED_WINDOW_LIMIT;
+  if(!raw)return defaultManagementIssueMergedWindowLimit;
+  const parsed=Number.parseInt(raw,10);
+  return Number.isFinite(parsed)&&parsed>0?parsed:defaultManagementIssueMergedWindowLimit;
+}
 
 async function collectManagementIssueSourceWindow(
   requestedWindow:number,
@@ -9911,27 +9918,24 @@ export function createApp(
 	      list=phase4aIssueListSchema.parse(await dependencies.checklistPersistence.listManagedIssues({...issueArgs,type_filter:q.data.checklist_type}));
 	    }else{
 	      const requestedWindow=q.data.page*q.data.page_size;
-	      if(requestedWindow>managementIssueMergedWindowLimit)throw new HttpError(400,"bad_request","The request is invalid.");
-	      const base=await collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
-	        dependencies.checklistPersistence!.listManagedIssues({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:null}));
-	      let oil=emptyManagementIssueList(1,Math.min(50,requestedWindow)),cold=emptyManagementIssueList(1,Math.min(50,requestedWindow)),sales=emptyManagementIssueList(1,Math.min(50,requestedWindow));
-	      if(dependencies.checklistPersistence.listManagedOilTrackingIssues){
-	        try{oil=await collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
-	          dependencies.checklistPersistence!.listManagedOilTrackingIssues!({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:"oil_tracking"}));}
-	        catch(error){if(error instanceof ChecklistAccessError||error instanceof HttpError)throw error;}
+	      if(requestedWindow>getManagementIssueMergedWindowLimit())throw new HttpError(400,"bad_request","The request is invalid.");
+	      if(!dependencies.checklistPersistence.listManagedOilTrackingIssues||
+	         !dependencies.checklistPersistence.listManagedColdStorageIssues||
+	         !dependencies.checklistPersistence.listManagedSalesTrackingIssues){
+	        throw new HttpError(503,"service_unavailable","The service is unavailable.");
 	      }
-	      if(dependencies.checklistPersistence.listManagedColdStorageIssues){
-	        try{cold=await collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
-	          dependencies.checklistPersistence!.listManagedColdStorageIssues!({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:"cold_storage"}));}
-	        catch(error){if(error instanceof ChecklistAccessError||error instanceof HttpError)throw error;}
-	      }
-	      if(dependencies.checklistPersistence.listManagedSalesTrackingIssues){
-	        try{sales=await collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
-	          dependencies.checklistPersistence!.listManagedSalesTrackingIssues!({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:"sales_tracking"}));}
-	        catch(error){if(error instanceof ChecklistAccessError)throw error;}
-	      }
-      list=mergeManagementIssueLists(q.data.page,q.data.page_size,base,oil,cold,sales);
-    }
+	      const [base,oil,cold,sales]=await Promise.all([
+	        collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
+	          dependencies.checklistPersistence!.listManagedIssues({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:null})),
+	        collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
+	          dependencies.checklistPersistence!.listManagedOilTrackingIssues!({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:"oil_tracking"})),
+	        collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
+	          dependencies.checklistPersistence!.listManagedColdStorageIssues!({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:"cold_storage"})),
+	        collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
+	          dependencies.checklistPersistence!.listManagedSalesTrackingIssues!({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:"sales_tracking"})),
+	      ]);
+	      list=mergeManagementIssueLists(q.data.page,q.data.page_size,base,oil,cold,sales);
+	    }
     response.setHeader("Cache-Control","private, no-store");response.json(phase4aIssueListSchema.parse(list));
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
   app.get("/api/v1/management/organizations/:organizationId/issues/:issueId",protectedRateLimit,authenticate,async(request,response,next)=>{try{

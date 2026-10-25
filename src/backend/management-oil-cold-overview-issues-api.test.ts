@@ -139,28 +139,34 @@ describe("Management Oil and Cold Storage overview and issues API",()=>{
  });
 
  it("rejects an unbounded combined-issue merge window",async()=>{
-  const response=await request(`/api/v1/management/organizations/${org}/issues?page=11&page_size=50`);
+  const response=await request(`/api/v1/management/organizations/${org}/issues?page=41&page_size=50`);
   assert.equal(response.status,400);
   assert.equal(calls.length,0);
  });
 
- it("keeps all issues available if optional Oil issue merge is unavailable",async()=>{
+ it("fails closed with 503 if Oil issue merge is unavailable",async()=>{
   oilIssuesMode="failure";
   const response=await request(`/api/v1/management/organizations/${org}/issues?page=1&page_size=20`);
-  assert.equal(response.status,200);
-  assert.deepEqual((await response.json()).issues.map((row:{checklist_type:string})=>row.checklist_type),["sales_tracking","cold_storage","cold_storage","kitchen_opening"]);
+  assert.equal(response.status,503);
+  const body=await response.json();
+  assert.equal(body.error.code,"service_unavailable");
+  assert.equal(body.error.message,"The service is unavailable.");
  });
 
- it("keeps all issues available if optional Sales Tracking issue merge is malformed or unavailable",async()=>{
+ it("fails closed with 503 if Sales Tracking issue merge is malformed or unavailable",async()=>{
   salesIssuesMode="malformed";
   const malformed=await request(`/api/v1/management/organizations/${org}/issues?page=1&page_size=20`);
-  assert.equal(malformed.status,200);
-  assert.deepEqual((await malformed.json()).issues.map((row:{checklist_type:string})=>row.checklist_type),["oil_tracking","cold_storage","cold_storage","kitchen_opening"]);
+  assert.equal(malformed.status,503);
+  const malformedBody=await malformed.json();
+  assert.equal(malformedBody.error.code,"service_unavailable");
+  assert.equal(malformedBody.error.message,"The service is unavailable.");
 
   salesIssuesMode="failure";
   const unavailable=await request(`/api/v1/management/organizations/${org}/issues?page=1&page_size=20`);
-  assert.equal(unavailable.status,200);
-  assert.deepEqual((await unavailable.json()).issues.map((row:{checklist_type:string})=>row.checklist_type),["oil_tracking","cold_storage","cold_storage","kitchen_opening"]);
+  assert.equal(unavailable.status,503);
+  const unavailableBody=await unavailable.json();
+  assert.equal(unavailableBody.error.code,"service_unavailable");
+  assert.equal(unavailableBody.error.message,"The service is unavailable.");
 
   const direct=await request(`/api/v1/management/organizations/${org}/issues?checklist_type=sales_tracking`);
   assert.equal(direct.status,503);
