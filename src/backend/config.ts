@@ -39,6 +39,7 @@ const environmentSchema = z
     VAPID_PRIVATE_KEY: z.string().trim().min(1).max(4_096).optional(),
     VAPID_SUBJECT: z.string().trim().min(1).max(512).optional(),
     ORGANIZATION_MANAGER_PUSH_WORKER_ENABLED: disabledByDefaultFlag,
+    SUPERVISOR_MUTATION_RATE_LIMIT_ENABLED: disabledByDefaultFlag,
     SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET: z.string().min(32).max(4_096).optional(),
     TRAINING_ORGANIZATION_SLUG: z.string().trim().toLowerCase().min(1).max(120).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional(),
     TRAINING_LEARNER_AUTH_ENABLED: disabledByDefaultFlag,
@@ -116,6 +117,7 @@ export type BackendConfig = {
   };
   supervisorNotificationSchedulerSecret?: string;
   organizationManagerPushWorkerEnabled?: boolean;
+  supervisorMutationRateLimitEnabled?: boolean;
   trainingOrganizationSlug?: string;
   trainingLearnerAuthEnabled?: boolean;
   trainingDbCurriculumEnabled?: boolean;
@@ -165,6 +167,7 @@ export function loadBackendConfig(
     },
     supervisorNotificationSchedulerSecret: result.data.SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET,
     organizationManagerPushWorkerEnabled: result.data.ORGANIZATION_MANAGER_PUSH_WORKER_ENABLED,
+    supervisorMutationRateLimitEnabled: result.data.SUPERVISOR_MUTATION_RATE_LIMIT_ENABLED,
     trainingOrganizationSlug: result.data.TRAINING_ORGANIZATION_SLUG,
     trainingLearnerAuthEnabled: result.data.TRAINING_LEARNER_AUTH_ENABLED,
     trainingDbCurriculumEnabled: result.data.TRAINING_DB_CURRICULUM_ENABLED,

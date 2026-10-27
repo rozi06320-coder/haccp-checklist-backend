@@ -98,6 +98,12 @@ export const errorHandler: ErrorRequestHandler = (
     });
   }
 
+  const retryAfterSeconds = error instanceof Error && "retryAfterSeconds" in error
+    && typeof error.retryAfterSeconds === "number" ? error.retryAfterSeconds : null;
+  if (retryAfterSeconds !== null && normalized.status === 429) {
+    response.setHeader("Retry-After", String(Math.max(1, Math.ceil(retryAfterSeconds))));
+  }
+
   response.status(normalized.status).json({
     error: {
       code: normalized.code,

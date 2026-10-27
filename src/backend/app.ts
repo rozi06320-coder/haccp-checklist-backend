@@ -16,6 +16,7 @@ import { decodeSalesTrackingPeriodCursor } from "./sales-tracking-period-cursor"
 import { annualEvaluationDetailSchema, annualEvaluationScoreSchema, annualEvaluationSubjectTypeSchema, annualEvaluationWorkspaceSchema } from "../lib/contracts/annual-evaluation";
 import { monthlySupervisorEvaluationDetailSchema, monthlySupervisorEvaluationScoreInputSchema, monthlySupervisorEvaluationWorkspaceSchema } from "../lib/contracts/monthly-supervisor-evaluation";
 import { requireAuthentication } from "./auth";
+import { createMutationRateLimiter } from "./mutation-rate-limit";
 import { AdminAccessError, AdminConflictError, AdminDuplicatePersonCodeError, AdminDuplicateStaffCodeError, AdminInputError, AdminNotFoundError, ProvisioningStageError, type DailyAuditAccessUserCredential, type ManagerPinCredential } from "./admin";
 import type { BackendConfig } from "./config";
 import {
@@ -2900,9 +2901,18 @@ export function createApp(
 
   app.use(express.json({ limit: "100kb", strict: true }));
 
+  const mutationRateLimiter = createMutationRateLimiter({
+    enabled: config.supervisorMutationRateLimitEnabled === true,
+    onRejected: ({ route, retryAfterSeconds, requestId }) => {
+      console.warn("SUPERVISOR_MUTATION_RATE_LIMIT " + JSON.stringify({ route, status: 429, retryAfterSeconds, requestId, releaseSha: deploymentReleaseSha() }));
+    },
+  });
+
   const protectedRateLimit = rateLimit({
     windowMs: 60_000,
-    limit: config.nodeEnv === "test" ? 1_000 : 100,
+    // Keep the test and Production contract identical so forwarded-IP
+    // coverage cannot accidentally exercise a weaker test-only limit.
+    limit: 100,
     standardHeaders: "draft-8",
     legacyHeaders: false,
     validate: {
@@ -8971,7 +8981,7 @@ export function createApp(
     response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
-  app.put("/api/v1/supervisor/branches/:branchId/checklists/oil_tracking/draft",protectedRateLimit,authenticate,async(request,response,next)=>{let diagnosticActorUserId:string|null=null;try{
+  app.put("/api/v1/supervisor/branches/:branchId/checklists/oil_tracking/draft",protectedRateLimit,authenticate,mutationRateLimiter.middleware("oil_draft"),async(request,response,next)=>{let diagnosticActorUserId:string|null=null;try{
     const branch=branchIdSchema.safeParse(request.params.branchId),body=oilTrackingBodySchema.safeParse(request.body);
     if(!branch.success||!body.success){logOilTrackingCorrelation(request,{stage:"route_validation_failed",expectedRevision:body.success?body.data.expected_revision:null,status:400,safeErrorCode:"bad_request"});throw new HttpError(400,"bad_request","The request is invalid.");}
     const auth=requireAuthContext(request),context=await loadActiveUser(request);diagnosticActorUserId=auth.userId;
@@ -8989,7 +8999,7 @@ export function createApp(
     next(mapped);
   }});
 
-  app.post("/api/v1/supervisor/branches/:branchId/checklists/oil_tracking/opening/submit",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+  app.post("/api/v1/supervisor/branches/:branchId/checklists/oil_tracking/opening/submit",protectedRateLimit,authenticate,mutationRateLimiter.middleware("oil_opening_submit"),async(request,response,next)=>{try{
     const branch=branchIdSchema.safeParse(request.params.branchId),key=idempotencySchema.safeParse(request.header("Idempotency-Key")),body=oilTrackingBodySchema.safeParse(request.body);
     if(!branch.success||!key.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request);
@@ -8998,7 +9008,7 @@ export function createApp(
     response.setHeader("Cache-Control","private, no-store");response.status(201).json({current});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
-  app.post("/api/v1/supervisor/branches/:branchId/checklists/oil_tracking/closing/submit",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+  app.post("/api/v1/supervisor/branches/:branchId/checklists/oil_tracking/closing/submit",protectedRateLimit,authenticate,mutationRateLimiter.middleware("oil_closing_submit"),async(request,response,next)=>{try{
     const branch=branchIdSchema.safeParse(request.params.branchId),key=idempotencySchema.safeParse(request.header("Idempotency-Key")),body=oilTrackingBodySchema.safeParse(request.body);
     if(!branch.success||!key.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request);
@@ -9521,7 +9531,7 @@ export function createApp(
     response.setHeader("Cache-Control","private, no-store");response.status(200).json(overview);
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
-  app.put("/api/v1/supervisor/branches/:branchId/checklists/draft",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+  app.put("/api/v1/supervisor/branches/:branchId/checklists/draft",protectedRateLimit,authenticate,mutationRateLimiter.middleware("opening_draft"),async(request,response,next)=>{try{
     const branch=branchIdSchema.safeParse(request.params.branchId),opening=openingBodySchema.safeParse(request.body),hygiene=hygieneDraftBodySchema.safeParse(request.body);
     if(!branch.success||(!opening.success&&!hygiene.success))throw new HttpError(400,"bad_request","The request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request);if(context.must_change_password||!dependencies.checklistPersistence)throw new HttpError(403,"forbidden","Access is denied.");
@@ -9530,7 +9540,7 @@ export function createApp(
     response.status(200).json(phase4aMutationSchema.parse(result));
   }catch(error){next(error instanceof HttpError?error:error instanceof EvidenceAccessError||error instanceof EvidenceInputError||error instanceof EvidenceUnavailableError?evidenceError(error):checklistError(error));}});
 
-  app.post("/api/v1/supervisor/branches/:branchId/checklists/submit",protectedRateLimit,authenticate,async(request,response,next)=>{let openingRequest=false;try{
+  app.post("/api/v1/supervisor/branches/:branchId/checklists/submit",protectedRateLimit,authenticate,mutationRateLimiter.middleware("opening_submit"),async(request,response,next)=>{let openingRequest=false;try{
     const branch=branchIdSchema.safeParse(request.params.branchId),key=idempotencySchema.safeParse(request.header("Idempotency-Key"));
     const opening=openingBodySchema.safeParse(request.body),hygiene=hygieneBodySchema.safeParse(request.body);
     openingRequest=opening.success;
