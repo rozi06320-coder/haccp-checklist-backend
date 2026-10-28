@@ -354,6 +354,7 @@ export type ChecklistPersistence = {
   requeueDailyBusinessReportJob?(input:{actorUserId:string;jobId:string;expectedWatermark:string;recoveryReason:string}):Promise<{job_id:string;state:string;requeue_count:number}>;
   configureDailyReportModuleApplicability?(input:{actorUserId:string;organizationId:string;branchId:string;moduleKey:string;required:boolean;effectiveFromBusinessDate:string}):Promise<boolean>;
   getDailyReportAuthoritativeApplicability?(input:{actorUserId?:string|null;organizationId:string;businessDate:string;jobId?:string|null;leaseToken?:string|null}):Promise<Array<{branch_id:string;timezone:string;close_at:string;module_key:string;required:boolean;requirement_basis:string}>>;
+  getDailyBusinessReportSalesCases?(input:{actorUserId?:string|null;organizationId:string;businessDate:string;branchIds:string[];jobId?:string|null;leaseToken?:string|null}):Promise<unknown>;
 };
 
 export type SalesTrackingDraftPayload = {
@@ -1504,6 +1505,16 @@ export function createChecklistPersistence(
     })) as any[];
     if (!Array.isArray(rows)) return [];
     return rows;
+  },
+  async getDailyBusinessReportSalesCases(input) {
+    return rpc("get_daily_business_report_sales_cases", {
+      p_actor_user_id: input.actorUserId,
+      p_organization_id: input.organizationId,
+      p_business_date: input.businessDate,
+      p_branch_ids: input.branchIds,
+      p_job_id: input.jobId ?? null,
+      p_lease_token: input.leaseToken ?? null,
+    });
   },
  };
 }

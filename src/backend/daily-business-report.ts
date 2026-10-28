@@ -1026,25 +1026,34 @@ export function createDailyBusinessReportService(
     let salesTrackingCases: SalesTrackingCaseRecord[] = [];
     if (activeBranchIds.length > 0) {
       const salesCases = await readSource(requestId ?? null, "sales_tracking_report_cases", async () => {
-        const result = await client
-          .from("sales_tracking_report_cases")
-          .select("id, authoritative_report_id, organization_id, branch_id, business_date, sales_tracking_reports!sales_tracking_report_cases_authoritative_fkey!inner(id, state, submitted_at, currency_code)")
-          .eq("organization_id", organizationId)
-          .eq("business_date", businessDate)
-          .in("branch_id", activeBranchIds);
-        return { data: result.data as any[] | null, error: result.error };
+        if (!checklistPersistence?.getDailyBusinessReportSalesCases) {
+          return { data: null, error: { code: "DBR_RPC_UNAVAILABLE" } };
+        }
+        try {
+          const rows = await checklistPersistence.getDailyBusinessReportSalesCases({
+            actorUserId: actorUserId ?? null,
+            organizationId,
+            businessDate,
+            branchIds: activeBranchIds,
+            jobId: jobContext?.jobId ?? null,
+            leaseToken: jobContext?.leaseToken ?? null,
+          });
+          return { data: rows as any[] | null, error: null };
+        } catch {
+          return { data: null, error: { code: "DBR_RPC_QUERY_ERROR" } };
+        }
       });
 
       if (Array.isArray(salesCases)) {
         salesTrackingCases = salesCases.map((c: any) => ({
-          caseId: c.id,
+          caseId: c.case_id,
           reportId: c.authoritative_report_id,
           organizationId: c.organization_id,
           branchId: c.branch_id,
           businessDate: c.business_date,
-          state: c.sales_tracking_reports?.state ?? "submitted",
-          submittedAt: c.sales_tracking_reports?.submitted_at ?? null,
-          currencyCode: c.sales_tracking_reports?.currency_code ?? "SAR",
+          state: c.report_state,
+          submittedAt: c.submitted_at ?? null,
+          currencyCode: c.currency_code ?? "SAR",
           actualTotal: 0,
           posTotal: 0,
           variance: 0,
