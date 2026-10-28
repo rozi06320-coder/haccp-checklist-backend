@@ -9682,6 +9682,7 @@ export function createApp(
       actorUserId:auth.userId,
       organizationId:org.data,
       businessDate:query.data.business_date,
+      requestId:request.id,
     });
     response.setHeader("Cache-Control","private, no-store");
     response.status(200).json(dailyBusinessReportPreviewSchema.parse(preview));

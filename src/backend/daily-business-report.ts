@@ -14,7 +14,13 @@ import type {
   DailyBusinessReportSummary,
 } from "../lib/contracts/daily-business-report";
 import type { ManagementSalesTrackingPeriodSummary } from "../lib/contracts/management-sales-tracking-period";
-import type { ChecklistPersistence } from "./checklist-persistence";
+import {
+  ChecklistAccessError,
+  ChecklistConflictError,
+  ChecklistInputError,
+  ChecklistNotFoundError,
+  type ChecklistPersistence,
+} from "./checklist-persistence";
 
 export class DailyBusinessReportError extends Error {
   readonly code: "bad_request" | "forbidden" | "not_found" | "service_unavailable" | "conflict";
@@ -772,6 +778,7 @@ export type DailyBusinessReportService = {
     actorUserId: string;
     organizationId: string;
     businessDate: string;
+    requestId?: string | null;
   }): Promise<DailyBusinessReportPreview>;
   generateReport?(input: {
     workerId: string;
@@ -789,9 +796,69 @@ export type DailyBusinessReportServiceOptions = {
     bDate: string,
     actorUserId?: string | null,
     jobContext?: { jobId?: string; leaseToken?: string } | null,
+    requestId?: string | null,
   ) => Promise<ReconciliationDataSources>;
   nowProvider?: () => Date;
+  diagnosticLogger?: (event: DailyBusinessReportDiagnosticEvent) => void;
 };
+
+export type DailyBusinessReportDiagnosticEvent = {
+  requestId: string | null;
+  source: string;
+  outcome: "success" | "failure";
+  category: "query" | "empty_result" | "query_error" | "authorization" | "unavailable";
+  durationMs: number;
+};
+
+function defaultDailyBusinessReportDiagnosticLogger(event: DailyBusinessReportDiagnosticEvent): void {
+  // Deliberately exclude SQL, parameters, identities, and returned data.
+  const line = "DAILY_BUSINESS_REPORT_SOURCE_DIAGNOSTIC " + JSON.stringify(event);
+  if (event.outcome === "failure") console.warn(line);
+  else console.info(line);
+}
+
+export function createDailyBusinessReportSourceReader(
+  diagnosticLogger: (event: DailyBusinessReportDiagnosticEvent) => void = defaultDailyBusinessReportDiagnosticLogger,
+) {
+  return async function readSource<T>(
+    requestId: string | null,
+    source: string,
+    operation: () => Promise<{ data: T | null; error: { code?: string | null } | null }>,
+  ): Promise<T> {
+    const startedAt = performance.now();
+    try {
+      const result = await operation();
+      if (result.error || !Array.isArray(result.data)) {
+        diagnosticLogger({
+          requestId,
+          source,
+          outcome: "failure",
+          category: "query_error",
+          durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+        });
+        throw new DailyBusinessReportUnavailableError(`Daily Business Report source unavailable: ${source}`);
+      }
+      diagnosticLogger({
+        requestId,
+        source,
+        outcome: "success",
+        category: result.data.length === 0 ? "empty_result" : "query",
+        durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+      });
+      return result.data as T;
+    } catch (error) {
+      if (error instanceof DailyBusinessReportError) throw error;
+      diagnosticLogger({
+        requestId,
+        source,
+        outcome: "failure",
+        category: "unavailable",
+        durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+      });
+      throw new DailyBusinessReportUnavailableError(`Daily Business Report source unavailable: ${source}`);
+    }
+  };
+}
 
 export function createDailyBusinessReportService(
   url: string,
@@ -802,25 +869,49 @@ export function createDailyBusinessReportService(
   const client = createClient(url, secretKey, {
     auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
   });
+  const diagnosticLogger = options?.diagnosticLogger ?? defaultDailyBusinessReportDiagnosticLogger;
+
+  const readSource = createDailyBusinessReportSourceReader(diagnosticLogger);
 
   const defaultDataSourceProvider = async (
     organizationId: string,
     businessDate: string,
     actorUserId?: string | null,
     jobContext?: { jobId?: string; leaseToken?: string } | null,
+    requestId?: string | null,
   ): Promise<ReconciliationDataSources> => {
     // 0. Fetch authoritative module applicability & branch lifecycle via SECURITY DEFINER RPC
     let moduleApplicabilities: ReconciliationModuleApplicability[] | undefined;
     let activeBranchIdsFromLifecycle: Set<string> | null = null;
 
     if (checklistPersistence?.getDailyReportAuthoritativeApplicability) {
-      const rows = await checklistPersistence.getDailyReportAuthoritativeApplicability({
-        actorUserId: actorUserId ?? null,
-        organizationId,
-        businessDate,
-        jobId: jobContext?.jobId ?? null,
-        leaseToken: jobContext?.leaseToken ?? null,
-      });
+      const startedAt = performance.now();
+      let rows;
+      try {
+        rows = await checklistPersistence.getDailyReportAuthoritativeApplicability({
+          actorUserId: actorUserId ?? null,
+          organizationId,
+          businessDate,
+          jobId: jobContext?.jobId ?? null,
+          leaseToken: jobContext?.leaseToken ?? null,
+        });
+        diagnosticLogger({
+          requestId: requestId ?? null,
+          source: "authoritative_applicability",
+          outcome: "success",
+          category: rows.length === 0 ? "empty_result" : "query",
+          durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+        });
+      } catch (error) {
+        diagnosticLogger({
+          requestId: requestId ?? null,
+          source: "authoritative_applicability",
+          outcome: "failure",
+          category: error instanceof DailyBusinessReportAccessError || error instanceof ChecklistAccessError ? "authorization" : "query_error",
+          durationMs: Math.round((performance.now() - startedAt) * 100) / 100,
+        });
+        throw error;
+      }
       activeBranchIdsFromLifecycle = new Set(rows.map((r) => r.branch_id));
       moduleApplicabilities = rows.map((r) => ({
         branchId: r.branch_id,
@@ -831,13 +922,13 @@ export function createDailyBusinessReportService(
     }
 
     // 1. Fetch active branches
-    const { data: branchRows, error: branchErr } = await client
-      .from("branches")
-      .select("id, name, name_ar, code, timezone, active")
-      .eq("organization_id", organizationId);
-    if (branchErr || !Array.isArray(branchRows)) {
-      throw new DailyBusinessReportUnavailableError("Failed to fetch branches.");
-    }
+    const branchRows = await readSource(requestId ?? null, "branches", async () => {
+      const result = await client
+        .from("branches")
+        .select("id, name, name_ar, code, timezone, active")
+        .eq("organization_id", organizationId);
+      return { data: result.data as any[] | null, error: result.error };
+    });
     const branches: BranchContext[] = branchRows.map((b: any) => ({
       id: b.id,
       name: b.name,
@@ -852,12 +943,15 @@ export function createDailyBusinessReportService(
     // 2. Fetch checklist submissions
     let checklistSubmissions: SubmissionRecord[] = [];
     if (activeBranchIds.length > 0) {
-      const { data: cSubs } = await client
-        .from("checklist_submissions")
-        .select("id, organization_id, branch_id, business_date, checklist_type, state, submitted_at, operational_team_id")
-        .eq("organization_id", organizationId)
-        .eq("business_date", businessDate)
-        .in("branch_id", activeBranchIds);
+      const cSubs = await readSource(requestId ?? null, "checklist_submissions", async () => {
+        const result = await client
+          .from("checklist_submissions")
+          .select("id, organization_id, branch_id, business_date, checklist_type, state, submitted_at, operational_team_id")
+          .eq("organization_id", organizationId)
+          .eq("business_date", businessDate)
+          .in("branch_id", activeBranchIds);
+        return { data: result.data as any[] | null, error: result.error };
+      });
 
       if (Array.isArray(cSubs)) {
         checklistSubmissions = cSubs.map((s: any) => ({
@@ -877,12 +971,15 @@ export function createDailyBusinessReportService(
     // 3. Fetch cold storage submissions
     let coldStorageSubmissions: ColdStorageRecord[] = [];
     if (activeBranchIds.length > 0) {
-      const { data: coldSubs } = await client
-        .from("cold_storage_submissions")
-        .select("id, organization_id, branch_id, business_date, state, updated_at")
-        .eq("organization_id", organizationId)
-        .eq("business_date", businessDate)
-        .in("branch_id", activeBranchIds);
+      const coldSubs = await readSource(requestId ?? null, "cold_storage_submissions", async () => {
+        const result = await client
+          .from("cold_storage_submissions")
+          .select("id, organization_id, branch_id, business_date, state, updated_at")
+          .eq("organization_id", organizationId)
+          .eq("business_date", businessDate)
+          .in("branch_id", activeBranchIds);
+        return { data: result.data as any[] | null, error: result.error };
+      });
 
       if (Array.isArray(coldSubs)) {
         coldStorageSubmissions = coldSubs.map((s: any) => ({
@@ -901,12 +998,15 @@ export function createDailyBusinessReportService(
     // 4. Fetch oil tracking submissions
     let oilTrackingSubmissions: OilTrackingRecord[] = [];
     if (activeBranchIds.length > 0) {
-      const { data: oilSubs } = await client
-        .from("oil_tracking_submissions")
-        .select("id, organization_id, branch_id, business_date, state, opening_submitted_at, closing_submitted_at")
-        .eq("organization_id", organizationId)
-        .eq("business_date", businessDate)
-        .in("branch_id", activeBranchIds);
+      const oilSubs = await readSource(requestId ?? null, "oil_tracking_submissions", async () => {
+        const result = await client
+          .from("oil_tracking_submissions")
+          .select("id, organization_id, branch_id, business_date, state, opening_submitted_at, closing_submitted_at")
+          .eq("organization_id", organizationId)
+          .eq("business_date", businessDate)
+          .in("branch_id", activeBranchIds);
+        return { data: result.data as any[] | null, error: result.error };
+      });
 
       if (Array.isArray(oilSubs)) {
         oilTrackingSubmissions = oilSubs.map((s: any) => ({
@@ -925,12 +1025,15 @@ export function createDailyBusinessReportService(
     // 5. Fetch sales tracking cases
     let salesTrackingCases: SalesTrackingCaseRecord[] = [];
     if (activeBranchIds.length > 0) {
-      const { data: salesCases } = await client
-        .from("sales_tracking_report_cases")
-        .select("id, authoritative_report_id, organization_id, branch_id, business_date, sales_tracking_reports!inner(id, state, submitted_at, currency_code)")
-        .eq("organization_id", organizationId)
-        .eq("business_date", businessDate)
-        .in("branch_id", activeBranchIds);
+      const salesCases = await readSource(requestId ?? null, "sales_tracking_report_cases", async () => {
+        const result = await client
+          .from("sales_tracking_report_cases")
+          .select("id, authoritative_report_id, organization_id, branch_id, business_date, sales_tracking_reports!inner(id, state, submitted_at, currency_code)")
+          .eq("organization_id", organizationId)
+          .eq("business_date", businessDate)
+          .in("branch_id", activeBranchIds);
+        return { data: result.data as any[] | null, error: result.error };
+      });
 
       if (Array.isArray(salesCases)) {
         salesTrackingCases = salesCases.map((c: any) => ({
@@ -953,12 +1056,15 @@ export function createDailyBusinessReportService(
     // 6. Fetch operational teams for staff hygiene
     let operationalTeams: OperationalTeamRoster[] = [];
     if (activeBranchIds.length > 0) {
-      const { data: teams } = await client
-        .from("branch_operational_teams")
-        .select("id, branch_id, active")
-        .eq("organization_id", organizationId)
-        .in("branch_id", activeBranchIds)
-        .eq("active", true);
+      const teams = await readSource(requestId ?? null, "branch_operational_teams", async () => {
+        const result = await client
+          .from("branch_operational_teams")
+          .select("id, branch_id, active")
+          .eq("organization_id", organizationId)
+          .in("branch_id", activeBranchIds)
+          .eq("active", true);
+        return { data: result.data as any[] | null, error: result.error };
+      });
 
       if (Array.isArray(teams)) {
         operationalTeams = teams.map((t: any) => ({
@@ -972,12 +1078,15 @@ export function createDailyBusinessReportService(
 
     // 7. Fetch maintenance issues
     let maintenanceIssues: MaintenanceIssueRecord[] = [];
-    const { data: mIssues } = await client
-      .from("maintenance_issues")
-      .select("id, organization_id, branch_id, title, category, priority, status, created_at")
-      .eq("organization_id", organizationId)
-      .gte("created_at", `${businessDate}T00:00:00.000Z`)
-      .lte("created_at", `${businessDate}T23:59:59.999Z`);
+    const mIssues = await readSource(requestId ?? null, "maintenance_issues", async () => {
+      const result = await client
+        .from("maintenance_issues")
+        .select("id, organization_id, branch_id, title, category, priority, status, created_at")
+        .eq("organization_id", organizationId)
+        .gte("created_at", `${businessDate}T00:00:00.000Z`)
+        .lte("created_at", `${businessDate}T23:59:59.999Z`);
+      return { data: result.data as any[] | null, error: result.error };
+    });
     if (Array.isArray(mIssues)) {
       maintenanceIssues = mIssues.map((m: any) => ({
         id: m.id,
@@ -1008,12 +1117,13 @@ export function createDailyBusinessReportService(
 
   return {
     async getReportPreview(input) {
-      const sources = await dataSourceProvider(input.organizationId, input.businessDate, input.actorUserId);
+      const sources = await dataSourceProvider(input.organizationId, input.businessDate, input.actorUserId, null, input.requestId);
       const now = nowProvider();
 
       // Get authoritative sales tracking period summary
       let salesSummary: ManagementSalesTrackingPeriodSummary | undefined = sources.salesPeriodSummary;
       if (!salesSummary && checklistPersistence?.getManagedSalesTrackingPeriodSummary) {
+        const salesSummaryStartedAt = performance.now();
         try {
           salesSummary = (await checklistPersistence.getManagedSalesTrackingPeriodSummary({
             actorUserId: input.actorUserId,
@@ -1021,8 +1131,31 @@ export function createDailyBusinessReportService(
             dateFrom: input.businessDate,
             dateTo: input.businessDate,
           })) as ManagementSalesTrackingPeriodSummary;
-        } catch {
-          // Fallback empty summary
+          diagnosticLogger({
+            requestId: input.requestId ?? null,
+            source: "sales_tracking_period_summary",
+            outcome: "success",
+            category: salesSummary.currency_summaries.length === 0 ? "empty_result" : "query",
+            durationMs: Math.round((performance.now() - salesSummaryStartedAt) * 100) / 100,
+          });
+        } catch (error) {
+          diagnosticLogger({
+            requestId: input.requestId ?? null,
+            source: "sales_tracking_period_summary",
+            outcome: "failure",
+            category: error instanceof DailyBusinessReportAccessError || error instanceof ChecklistAccessError ? "authorization" : "query_error",
+            durationMs: Math.round((performance.now() - salesSummaryStartedAt) * 100) / 100,
+          });
+          if (
+            error instanceof DailyBusinessReportError ||
+            error instanceof ChecklistAccessError ||
+            error instanceof ChecklistConflictError ||
+            error instanceof ChecklistInputError ||
+            error instanceof ChecklistNotFoundError
+          ) {
+            throw error;
+          }
+          throw new DailyBusinessReportUnavailableError("Daily Business Report source unavailable: sales_tracking_period_summary");
         }
       }
 

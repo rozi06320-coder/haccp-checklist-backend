@@ -614,6 +614,7 @@ describe("Daily Business Report Phase 2", () => {
 
     const managerToken = "valid-org-manager-jwt";
     const unauthorizedToken = "unauthorized-manager-jwt";
+    let previewRequestId: string | null = null;
 
     const userContexts: Record<string, UserContext> = {
       [managerToken]: {
@@ -664,6 +665,7 @@ describe("Daily Business Report Phase 2", () => {
 
     const mockService: DailyBusinessReportService = {
       async getReportPreview(input) {
+        previewRequestId = input.requestId ?? null;
         if (input.organizationId !== orgId) {
           throw new DailyBusinessReportAccessError();
         }
@@ -774,12 +776,23 @@ describe("Daily Business Report Phase 2", () => {
 
       const app = createApp(config, deps);
       server = createServer(app);
-      await new Promise<void>((resolve) => server.listen(0, resolve));
+      await new Promise<void>((resolve, reject) => {
+        const onError = (error: Error) => reject(error);
+        server.once("error", onError);
+        server.listen(0, () => {
+          server.off("error", onError);
+          resolve();
+        });
+      });
       const addr = server.address() as AddressInfo;
       baseUrl = `http://127.0.0.1:${addr.port}`;
     });
 
     after(async () => {
+      // Node's fetch/undici agent keeps HTTP/1.1 sockets alive after the final
+      // assertion. Close those idle sockets so the suite does not wait forever
+      // in server.close() while preserving every request assertion above.
+      server.closeAllConnections();
       await new Promise<void>((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
       });
@@ -818,6 +831,8 @@ describe("Daily Business Report Phase 2", () => {
       assert.equal(json.business_date, businessDate);
       assert.equal(json.is_closed, true);
       assert.equal(json.payload.organization_id, orgId);
+      assert.match(res.headers.get("x-request-id") ?? "", /^[0-9a-f-]{36}$/u);
+      assert.equal(previewRequestId, res.headers.get("x-request-id"));
     });
 
     it("returns 200 OK persisted report for authorized organization manager", async () => {
