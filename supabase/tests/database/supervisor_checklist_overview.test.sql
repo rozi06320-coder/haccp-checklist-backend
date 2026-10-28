@@ -1,5 +1,5 @@
 begin;
-select plan(40);
+select plan(51);
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
 select '00000000-0000-0000-0000-000000000000',id,'authenticated','authenticated',id||'@example.invalid','{}','{}',now(),now()
 from unnest(array['1a000000-0000-4000-8000-000000000001'::uuid,'1a000000-0000-4000-8000-000000000002','1a000000-0000-4000-8000-000000000003'])id;
@@ -59,18 +59,55 @@ select is(public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000
 
 insert into public.cold_storage_submissions(id,organization_id,branch_id,supervisor_user_id,supervisor_team_id,business_date,state,branch_name_snapshot,supervisor_name_snapshot,team_name_snapshot)
 values('7a000000-0000-4000-8000-000000000020','2a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001','1a000000-0000-4000-8000-000000000001','4a000000-0000-4000-8000-000000000001',private.phase4a_business_date('Asia/Riyadh'),'draft','Overview Branch','Overview Supervisor','Overview Team');
+insert into public.cold_storage_submissions(id,organization_id,branch_id,supervisor_user_id,supervisor_team_id,business_date,state,branch_name_snapshot,supervisor_name_snapshot,team_name_snapshot)
+values
+ ('7a000000-0000-4000-8000-000000000021','2a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001','1a000000-0000-4000-8000-000000000001','4a000000-0000-4000-8000-000000000001',private.phase4a_business_date('Asia/Riyadh')-1,'submitted','Overview Branch','Overview Supervisor','Overview Team');
 insert into public.cold_storage_equipment(submission_id,equipment_id,equipment_name,equipment_type)
-values('7a000000-0000-4000-8000-000000000020','cold-1','Walk-in','refrigerator');
+values
+ ('7a000000-0000-4000-8000-000000000021','cold-old','Old','refrigerator');
+insert into public.cold_storage_readings(submission_id,equipment_id,slot,temperature_c,status,submitted_at)
+select submission_id,equipment_id,slot,2,'pass',now()
+from (values
+ ('7a000000-0000-4000-8000-000000000021'::uuid,'cold-old','12:00'),
+ ('7a000000-0000-4000-8000-000000000021'::uuid,'cold-old','20:00'),
+ ('7a000000-0000-4000-8000-000000000021'::uuid,'cold-old','02:00')) v(submission_id,equipment_id,slot);
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'answered_checks')::int,0,'Wrong-date complete readings are excluded');
+insert into public.cold_storage_equipment(submission_id,equipment_id,equipment_name,equipment_type)
+values
+ ('7a000000-0000-4000-8000-000000000020','cold-1','Walk-in','refrigerator'),
+ ('7a000000-0000-4000-8000-000000000020','cold-2','Reach-in','freezer');
+update public.cold_storage_equipment set active=false where submission_id='7a000000-0000-4000-8000-000000000020';
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'expected_checks')::int,0,'Cold Storage with zero active equipment has no required denominator');
+select is(public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'completion_percentage',null,'Cold Storage with zero active equipment cannot report 100 percent');
+update public.cold_storage_equipment set active=true where submission_id='7a000000-0000-4000-8000-000000000020';
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'expected_checks')::int,3,'Cold Storage always has three required stages');
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'answered_checks')::int,0,'Cold Storage with no submitted readings is 0/3');
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'completion_percentage')::int,0,'Cold Storage with no submitted readings is 0 percent');
 insert into public.cold_storage_readings(submission_id,equipment_id,slot,temperature_c,status,submitted_at)
 values
  ('7a000000-0000-4000-8000-000000000020','cold-1','12:00',2,'pass',now()),
- ('7a000000-0000-4000-8000-000000000020','cold-1','20:00',2,'pass',now()),
- ('7a000000-0000-4000-8000-000000000020','cold-1','02:00',2,'pass',now());
-select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'answered_checks')::int,3,'Cold draft preserves all raw answered readings');
-select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'completion_percentage')::int,67,'Cold draft cannot report 100 percent completion');
-select ok((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'totals'->>'completion_percentage')::int<100,'Cold draft cannot produce 100 percent overall completion');
+ ('7a000000-0000-4000-8000-000000000020','cold-2','12:00',2,'pass',now());
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'answered_checks')::int,1,'One complete stage is 1/3 even when another unit is incomplete');
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'completion_percentage')::int,33,'One complete stage is 33 percent');
+insert into public.cold_storage_readings(submission_id,equipment_id,slot,temperature_c,status,submitted_at)
+values
+ ('7a000000-0000-4000-8000-000000000020','cold-1','20:00',5,'fail',now()),
+ ('7a000000-0000-4000-8000-000000000020','cold-2','20:00',5,'fail',now());
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'answered_checks')::int,2,'A failed submitted stage still counts as completed');
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'completion_percentage')::int,67,'Two complete stages are 67 percent');
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'issue_checks')::int,1,'Failed readings mark the completed stage as an issue');
+insert into public.cold_storage_readings(submission_id,equipment_id,slot,temperature_c,status,submitted_at)
+values
+ ('7a000000-0000-4000-8000-000000000020','cold-1','02:00',null,'pending',null),
+ ('7a000000-0000-4000-8000-000000000020','cold-2','02:00',null,'pending',null);
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'answered_checks')::int,2,'Pending or draft readings do not complete a stage');
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'completion_percentage')::int,67,'Pending or draft readings cannot report 100 percent');
+update public.cold_storage_readings
+set temperature_c=2,status='pass',submitted_at=now()
+where submission_id='7a000000-0000-4000-8000-000000000020' and slot='02:00';
 update public.cold_storage_submissions set state='submitted' where id='7a000000-0000-4000-8000-000000000020';
-select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'completion_percentage')::int,100,'submitted complete Cold contributes fully');
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'answered_checks')::int,3,'All three stages are complete only after every unit is submitted');
+select is((public.get_phase4a_supervisor_overview('1a000000-0000-4000-8000-000000000001','3a000000-0000-4000-8000-000000000001')->'checklists'->4->>'completion_percentage')::int,100,'Three complete stages contribute 100 percent');
 
 insert into public.checklist_submissions(id,organization_id,branch_id,supervisor_user_id,supervisor_team_id,operational_team_id,operational_team_name_snapshot,submitted_by_user_id,hygiene_revision,business_date,checklist_type,definition_id,state,branch_name_snapshot,branch_code_snapshot,supervisor_name_snapshot,submitted_at,updated_at)
 values
