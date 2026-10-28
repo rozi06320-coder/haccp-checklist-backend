@@ -38,6 +38,17 @@ import { validateDailyAuditGrant } from "./daily-audit-grant";
 import { decodeUploadFilename } from "../lib/internal-api/upload-filename";
 import { employeeCountryCodes } from "../lib/employee-countries";
 import {
+  dailyBusinessReportQuerySchema,
+  dailyBusinessReportPreviewSchema,
+  dailyBusinessReportRecordSchema,
+} from "../lib/contracts/daily-business-report";
+import {
+  DailyBusinessReportError,
+  DailyBusinessReportAccessError,
+  DailyBusinessReportNotFoundError,
+  DailyBusinessReportUnavailableError,
+} from "./daily-business-report";
+import {
   ManagerPasswordResetAccessError,
   ManagerPasswordResetConflictError,
   ManagerPasswordResetRateLimitError,
@@ -2346,6 +2357,15 @@ function salesTrackingPeriodError(error:unknown){
  if(error instanceof ChecklistConflictError)return new HttpError(409,"conflict","The Sales Tracking report changed. Refresh and try again.");
  if(error instanceof ChecklistInputError)return new HttpError(400,"bad_request","The request is invalid.");
  if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
+ return new HttpError(503,"service_unavailable","The service is unavailable.");
+}
+
+function dailyBusinessReportError(error:unknown){
+ if(error instanceof ChecklistConflictError)return new HttpError(409,"conflict","Daily business report conflict.");
+ if(error instanceof ChecklistInputError)return new HttpError(400,"bad_request","The request is invalid.");
+ if(error instanceof ChecklistAccessError||error instanceof DailyBusinessReportAccessError)return new HttpError(403,"forbidden","Access is denied.");
+ if(error instanceof ChecklistNotFoundError||error instanceof DailyBusinessReportNotFoundError)return new HttpError(404,"not_found","Daily business report not found.");
+ if(error instanceof DailyBusinessReportError)return new HttpError(error.status,error.code,error.message);
  return new HttpError(503,"service_unavailable","The service is unavailable.");
 }
 
@@ -9646,6 +9666,64 @@ export function createApp(
     response.setHeader("Cache-Control","private, no-store");
     response.status(200).json(summary);
   }catch(error){next(error instanceof HttpError?error:salesTrackingPeriodError(error));}});
+
+  app.get("/api/v1/management/organizations/:organizationId/daily-business-reports/preview",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const org=organizationIdSchema.safeParse(request.params.organizationId);
+    const query=dailyBusinessReportQuerySchema.safeParse(request.query);
+    if(!org.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    const allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);
+    if(context.must_change_password||!allowed)throw new HttpError(403,"forbidden","Access is denied.");
+
+    if(!dependencies.dailyBusinessReportService?.getReportPreview){
+      throw new HttpError(503,"service_unavailable","Daily business report preview is unavailable.");
+    }
+    const preview=await dependencies.dailyBusinessReportService.getReportPreview({
+      actorUserId:auth.userId,
+      organizationId:org.data,
+      businessDate:query.data.business_date,
+    });
+    response.setHeader("Cache-Control","private, no-store");
+    response.status(200).json(dailyBusinessReportPreviewSchema.parse(preview));
+  }catch(error){next(error instanceof HttpError?error:dailyBusinessReportError(error));}});
+
+  app.get("/api/v1/management/organizations/:organizationId/daily-business-reports",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const org=organizationIdSchema.safeParse(request.params.organizationId);
+    const query=dailyBusinessReportQuerySchema.safeParse(request.query);
+    if(!org.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    const allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);
+    if(context.must_change_password||!allowed)throw new HttpError(403,"forbidden","Access is denied.");
+
+    if(!dependencies.checklistPersistence?.getDailyBusinessReport){
+      throw new HttpError(503,"service_unavailable","The service is unavailable.");
+    }
+    const record=await dependencies.checklistPersistence.getDailyBusinessReport({
+      actorUserId:auth.userId,
+      organizationId:org.data,
+      businessDate:query.data.business_date,
+      revision:query.data.revision??null,
+    });
+    if(!record){
+      throw new HttpError(404,"not_found","No daily business report was found for this business date.");
+    }
+
+    if(dependencies.checklistPersistence.getManagedSalesTrackingPeriodSummary){
+      try{
+        record.sales_summary=await dependencies.checklistPersistence.getManagedSalesTrackingPeriodSummary({
+          actorUserId:auth.userId,
+          organizationId:org.data,
+          dateFrom:query.data.business_date,
+          dateTo:query.data.business_date,
+        });
+      }catch{
+        // Keep optional
+      }
+    }
+
+    response.setHeader("Cache-Control","private, no-store");
+    response.status(200).json(dailyBusinessReportRecordSchema.parse(record));
+  }catch(error){next(error instanceof HttpError?error:dailyBusinessReportError(error));}});
 
   function createHttpRequestAbortSignal(request: Request, response: Response): {
     signal: AbortSignal;

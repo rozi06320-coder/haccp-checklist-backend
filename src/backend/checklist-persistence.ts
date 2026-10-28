@@ -8,7 +8,13 @@ import {
   managementSalesTrackingEvidencePageSchema,
   managementSalesTrackingEvidenceRenewalSchema,
   managementSalesTrackingPeriodSummarySchema,
+  type ManagementSalesTrackingPeriodSummary,
 } from "../lib/contracts/management-sales-tracking-period";
+import {
+  dailyBusinessReportRecordSchema,
+  type DailyBusinessReportRecord,
+  type DailyBusinessReportPayload,
+} from "../lib/contracts/daily-business-report";
 import {
   encodeSalesTrackingPeriodCursor,
   type SalesTrackingPeriodCursor,
@@ -301,7 +307,7 @@ export type ChecklistPersistence = {
   setManagedSalesTrackingReviewStatus?(input:{actorUserId:string;organizationId:string;reportId:string;expectedReviewRevision:number;reviewStatus:"needs_review"}):Promise<unknown>;
   getManagedSalesTrackingAttachments?(input:{actorUserId:string;organizationId:string;reportId:string}):Promise<unknown>;
   getManagedSalesTrackingMonthlySummary?(input:{actorUserId:string;organizationId:string;month:string;branchId?:string|null}):Promise<unknown>;
-  getManagedSalesTrackingPeriodSummary?(input:{actorUserId:string;organizationId:string;dateFrom:string;dateTo:string;branchId?:string|null}):Promise<unknown>;
+  getManagedSalesTrackingPeriodSummary?(input:{actorUserId:string;organizationId:string;dateFrom:string;dateTo:string;branchId?:string|null}):Promise<ManagementSalesTrackingPeriodSummary>;
   listManagedSalesTrackingPeriodEvidence?(input:{actorUserId:string;organizationId:string;dateFrom:string;dateTo:string;branchId?:string|null;pageSize:number;cursor:SalesTrackingPeriodCursor|null}):Promise<unknown>;
   renewManagedSalesTrackingPeriodEvidence?(input:{actorUserId:string;organizationId:string;dateFrom:string;dateTo:string;branchId?:string|null;attachmentIds:string[]}):Promise<unknown>;
   listManagedDailyInventoryReconciliation?(input:{actorUserId:string;organizationId:string;fromDate:string;toDate:string;branchId?:string|null;inventoryItemId?:string|null;page?:number;pageSize?:number}):Promise<unknown>;
@@ -332,6 +338,14 @@ export type ChecklistPersistence = {
   getManagedOilTrackingIssue?(actorUserId:string,organizationId:string,issueId:string):Promise<unknown>;
   getManagedColdStorageIssue?(actorUserId:string,organizationId:string,issueId:string):Promise<unknown>;
   getManagedSalesTrackingIssue?(actorUserId:string,organizationId:string,issueId:string):Promise<unknown>;
+  getDailyBusinessReport?(input:{actorUserId:string;organizationId:string;businessDate:string;revision?:number|null}):Promise<DailyBusinessReportRecord|null>;
+  claimDailyBusinessReportJobs?(input:{workerId:string;limit?:number;leaseSeconds?:number}):Promise<Array<{job_id:string;lease_token:string;organization_id:string;business_date:string;due_at:string;source_watermark:string;attempt_count:number;lease_expires_at:string}>>;
+  finalizeDailyBusinessReportJob?(input:{jobId:string;leaseToken:string;organizationId:string;businessDate:string;schemaVersion:number;sourceCutoffAt:string;payload:DailyBusinessReportPayload;sourceWatermark:string;generationReason:string}):Promise<{report_id:string;revision_id:string;revision:number;created:boolean}>;
+  releaseDailyBusinessReportJob?(input:{jobId:string;leaseToken:string;result:"retry"|"failed";errorCode:string}):Promise<{job_id:string;state:string;next_attempt_at:string}>;
+  enqueueDailyBusinessReportJob?(input:{organizationId:string;businessDate:string;sourceWatermark:string}):Promise<{job_id:string;state:string;due_at:string}>;
+  requeueDailyBusinessReportJob?(input:{actorUserId:string;jobId:string;expectedWatermark:string;recoveryReason:string}):Promise<{job_id:string;state:string;requeue_count:number}>;
+  configureDailyReportModuleApplicability?(input:{actorUserId:string;organizationId:string;branchId:string;moduleKey:string;required:boolean;effectiveFromBusinessDate:string}):Promise<boolean>;
+  getDailyReportAuthoritativeApplicability?(input:{actorUserId?:string|null;organizationId:string;businessDate:string;jobId?:string|null;leaseToken?:string|null}):Promise<Array<{branch_id:string;timezone:string;close_at:string;module_key:string;required:boolean;requirement_basis:string}>>;
 };
 
 export type SalesTrackingDraftPayload = {
@@ -1405,5 +1419,83 @@ export function createChecklistPersistence(
   getManagedOilTrackingIssue:(actorUserId,organizationId,issueId)=>rpc("get_oil_tracking_managed_issue",{actor_user_id:actorUserId,target_organization_id:organizationId,target_issue_id:issueId}),
   getManagedColdStorageIssue:(actorUserId,organizationId,issueId)=>rpc("get_cold_storage_managed_issue",{actor_user_id:actorUserId,target_organization_id:organizationId,target_issue_id:issueId}),
   getManagedSalesTrackingIssue:(actorUserId,organizationId,issueId)=>rpc("get_sales_tracking_managed_issue",{actor_user_id:actorUserId,target_organization_id:organizationId,target_issue_id:issueId}),
+  async getDailyBusinessReport(input) {
+    const rows = (await rpc("get_daily_business_report", {
+      p_actor_user_id: input.actorUserId,
+      p_organization_id: input.organizationId,
+      p_business_date: input.businessDate,
+      p_revision: input.revision ?? null,
+    })) as unknown[];
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+    return dailyBusinessReportRecordSchema.parse(rows[0]);
+  },
+  async claimDailyBusinessReportJobs(input) {
+    return (await rpc("claim_daily_business_report_generation_jobs", {
+      p_worker_id: input.workerId,
+      p_limit: input.limit ?? 20,
+      p_lease_seconds: input.leaseSeconds ?? 120,
+    })) as any;
+  },
+  async finalizeDailyBusinessReportJob(input) {
+    const rows = (await rpc("finalize_daily_business_report_generation_job", {
+      p_job_id: input.jobId,
+      p_lease_token: input.leaseToken,
+      p_organization_id: input.organizationId,
+      p_business_date: input.businessDate,
+      p_schema_version: input.schemaVersion,
+      p_source_cutoff_at: input.sourceCutoffAt,
+      p_payload: input.payload,
+      p_source_watermark: input.sourceWatermark,
+      p_generation_reason: input.generationReason,
+    })) as any[];
+    return rows[0];
+  },
+  async releaseDailyBusinessReportJob(input) {
+    const rows = (await rpc("release_daily_business_report_generation_job", {
+      p_job_id: input.jobId,
+      p_lease_token: input.leaseToken,
+      p_result: input.result,
+      p_error_code: input.errorCode,
+    })) as any[];
+    return rows[0];
+  },
+  async enqueueDailyBusinessReportJob(input) {
+    const rows = (await rpc("enqueue_daily_business_report_generation_job", {
+      p_organization_id: input.organizationId,
+      p_business_date: input.businessDate,
+      p_source_watermark: input.sourceWatermark,
+    })) as any[];
+    return rows[0];
+  },
+  async requeueDailyBusinessReportJob(input) {
+    const rows = (await rpc("requeue_failed_daily_business_report_generation_job", {
+      p_actor_user_id: input.actorUserId,
+      p_job_id: input.jobId,
+      p_expected_source_watermark: input.expectedWatermark,
+      p_recovery_reason: input.recoveryReason,
+    })) as any[];
+    return rows[0];
+  },
+  async configureDailyReportModuleApplicability(input) {
+    return (await rpc("configure_daily_report_module_applicability", {
+      p_actor_user_id: input.actorUserId,
+      p_organization_id: input.organizationId,
+      p_branch_id: input.branchId,
+      p_module_key: input.moduleKey,
+      p_required: input.required,
+      p_effective_from_business_date: input.effectiveFromBusinessDate,
+    })) as boolean;
+  },
+  async getDailyReportAuthoritativeApplicability(input) {
+    const rows = (await rpc("get_daily_report_authoritative_applicability", {
+      p_actor_user_id: input.actorUserId ?? null,
+      p_organization_id: input.organizationId,
+      p_business_date: input.businessDate,
+      p_job_id: input.jobId ?? null,
+      p_lease_token: input.leaseToken ?? null,
+    })) as any[];
+    if (!Array.isArray(rows)) return [];
+    return rows;
+  },
  };
 }

@@ -46,6 +46,11 @@ import {
   type OrganizationManagerPushWorker,
 } from "./organization-manager-push-worker";
 
+import {
+  createDailyBusinessReportService,
+  type DailyBusinessReportService,
+} from "./daily-business-report";
+
 export type AuthVerifier = {
   verify(token: string): Promise<{ userId: string; email: string; sessionId?: string } | null>;
 };
@@ -89,6 +94,7 @@ export type BackendDependencies = {
   trainingProgressService?: TrainingProgressService;
   trainingEmployeePreviewService?: TrainingEmployeePreviewService;
   trainingPublicationService?: TrainingPublicationService;
+  dailyBusinessReportService?: DailyBusinessReportService;
   now?: () => Date;
 };
 
@@ -142,6 +148,8 @@ export function createDefaultDependencies(
     config.supabase.publishableKey,
     { auth: clientAuthOptions },
   );
+  const checklistPersistence = createChecklistPersistence(config.supabase.url, config.supabase.secretKey);
+
   return {
     passwordChange: createPasswordChangeService(
       config.supabase.url,
@@ -170,7 +178,8 @@ export function createDefaultDependencies(
     trainingBranchAccessAdmin: createTrainingBranchAccessAdmin(config.supabase.url, config.supabase.secretKey),
     pinCrypto: createPinCrypto(config.dailyAuditGrantSecret),
     operationalAdmin: createOperationalAdmin(config.supabase.url, config.supabase.secretKey),
-    checklistPersistence: createChecklistPersistence(config.supabase.url, config.supabase.secretKey),
+    checklistPersistence,
+    dailyBusinessReportService: createDailyBusinessReportService(config.supabase.url, config.supabase.secretKey, checklistPersistence),
     evidenceService: createEvidenceService(config.supabase.url, config.supabase.secretKey),
     brandingService: createBrandingService(config.supabase.url, config.supabase.secretKey),
     maintenancePush: createMaintenancePushService(config),
