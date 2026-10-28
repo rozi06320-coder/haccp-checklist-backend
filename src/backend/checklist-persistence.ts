@@ -26,6 +26,12 @@ export class ChecklistConflictError extends Error {
     this.name = "ChecklistConflictError";
   }
 }
+export class ChecklistAlreadySubmittedError extends Error {
+  constructor() {
+    super("Checklist already submitted.");
+    this.name = "ChecklistAlreadySubmittedError";
+  }
+}
 export class ChecklistInputError extends Error {}
 export class SalesTrackingOnlineProviderBreakdownRequiredError extends ChecklistInputError {}
 export class ChecklistAccessError extends Error {}
@@ -68,7 +74,8 @@ export type ColdStorageDraftDiagnostics = {
   log: (event: ColdStorageDraftDiagnosticEvent) => void;
 };
 
-function throwChecklistRpcError(code:string|undefined,message?:string):never{
+export function classifyChecklistRpcError(code:string|undefined,openingMutation=false,message?:string):never{
+ if(code==="55000"&&openingMutation)throw new ChecklistAlreadySubmittedError();
  if(code==="23505"||code==="23514"||code==="40001"||code==="PT409"||code==="55000")throw new ChecklistConflictError(code);
  if(code==="22023"&&message==="online provider breakdown required")throw new SalesTrackingOnlineProviderBreakdownRequiredError();
  if(code==="22023")throw new ChecklistInputError();
@@ -76,6 +83,7 @@ function throwChecklistRpcError(code:string|undefined,message?:string):never{
  if(code==="P0002")throw new ChecklistNotFoundError();
  throw new Error("Checklist persistence unavailable.");
 }
+function throwChecklistRpcError(code:string|undefined,message?:string):never{return classifyChecklistRpcError(code,false,message);}
 
 export type SalesTrackingCorrectionSaveDiagnosticCategory="stale_revision"|"validation_check"|"lifecycle_conflict"|"unique_conflict"|"authorization"|"unknown";
 export type SalesTrackingCorrectionSaveDiagnosticReason="online_provider_total_mismatch"|"online_amount_row_validation"|"online_amount_scope_validation"|"online_provider_scope_validation"|"online_amount_validation"|"refund_validation"|"sales_validation"|"cash_validation"|"period_validation"|"report_validation"|"validation_check_unknown";
@@ -145,7 +153,7 @@ export async function runSalesTrackingCorrectionSaveRpc<T>(call:()=>PromiseLike<
  };
  try{
   const result=await call();
-  if(result.error){log(result.error.code,result.error.message);throwChecklistRpcError(result.error.code,result.error.message);}
+  if(result.error){log(result.error.code,result.error.message);classifyChecklistRpcError(result.error.code,false,result.error.message);}
   return result.data;
  }catch(error){
   if(!logged)log(error instanceof ChecklistConflictError?error.sqlstate:error instanceof ChecklistAccessError?"42501":null);
@@ -233,7 +241,7 @@ export async function runColdStorageDraftRpc<T>(call:()=>PromiseLike<{data:T;err
   if(result.error){
    ended=true;
    log({event:"cold_storage_draft_rpc_end",timestamp:new Date().toISOString(),durationMs,outcome:"error",errorCode:safeColdStorageErrorCode(result.error.code)});
-   throwChecklistRpcError(result.error.code);
+   classifyChecklistRpcError(result.error.code);
   }
   ended=true;
   log({event:"cold_storage_draft_rpc_end",timestamp:new Date().toISOString(),durationMs,outcome:"success",errorCode:null});
@@ -987,7 +995,7 @@ export function createChecklistPersistence(
   const salesTrackingPhotoStorage = client.storage.from(SALES_TRACKING_EVIDENCE_BUCKET);
  async function rpc(name:string,args:Record<string,unknown>){
   const result=await client.rpc(name,args);
-  if(result.error)throwChecklistRpcError(result.error.code,result.error.message);
+ if(result.error)classifyChecklistRpcError(result.error.code,name==="save_phase4a_draft"||name==="submit_phase4a_opening",result.error.message);
   return result.data;
  }
  async function productSalesRpc(name:string,args:Record<string,unknown>){
@@ -1012,7 +1020,7 @@ export function createChecklistPersistence(
     }
     throw new CatalogMappedIngredientError(products);
    }
-   throwChecklistRpcError(result.error.code);
+   classifyChecklistRpcError(result.error.code);
   }
   return result.data;
  }
@@ -1227,7 +1235,7 @@ export function createChecklistPersistence(
       detailsPresent:Boolean(result.error.details&&typeof result.error.details==="string"&&result.error.details.trim().length>0),
      });
     }
-    throwChecklistRpcError(code);
+    classifyChecklistRpcError(code);
    }
    return result.data;
   },

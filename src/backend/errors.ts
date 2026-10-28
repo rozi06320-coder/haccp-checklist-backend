@@ -7,6 +7,7 @@ import type {
 
 type ErrorCode =
   | "bad_request"
+  | "already_submitted"
   | "conflict"
   | "duplicate_equipment_code"
   | "duplicate_employee_code"
