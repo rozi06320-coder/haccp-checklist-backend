@@ -1028,7 +1028,7 @@ export function createDailyBusinessReportService(
       const salesCases = await readSource(requestId ?? null, "sales_tracking_report_cases", async () => {
         const result = await client
           .from("sales_tracking_report_cases")
-          .select("id, authoritative_report_id, organization_id, branch_id, business_date, sales_tracking_reports!inner(id, state, submitted_at, currency_code)")
+          .select("id, authoritative_report_id, organization_id, branch_id, business_date, sales_tracking_reports!sales_tracking_report_cases_authoritative_fkey!inner(id, state, submitted_at, currency_code)")
           .eq("organization_id", organizationId)
           .eq("business_date", businessDate)
           .in("branch_id", activeBranchIds);
