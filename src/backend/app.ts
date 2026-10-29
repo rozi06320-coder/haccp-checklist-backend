@@ -42,6 +42,7 @@ import {
   dailyBusinessReportPreviewSchema,
   dailyBusinessReportRecordSchema,
 } from "../lib/contracts/daily-business-report";
+import { historicalDailyBusinessReportPreviewSchema } from "../lib/contracts/daily-business-report-historical";
 import {
   DailyBusinessReportError,
   DailyBusinessReportAccessError,
@@ -1943,6 +1944,11 @@ const overviewCompletionAnswered=(value:{checklist_type:z.infer<typeof superviso
 const phase4aOverviewChecklistSchema=overviewCountsSchema.extend({checklist_type:supervisorProductionOverviewChecklistTypeSchema,state:z.enum(["not_started","draft","submitted"])}).strict().superRefine((value,context)=>{if(value.completion_percentage!==overviewCompletionPercentage(overviewCompletionAnswered(value),value.expected_checks))context.addIssue({code:"custom",message:"Invalid completion percentage."});});
 const phase4aOverviewSchema=z.object({business_date:dateOnlySchema,totals:overviewCountsSchema,checklists:z.array(phase4aOverviewChecklistSchema).length(5)}).strict().superRefine((value,context)=>{const types=value.checklists.map(x=>x.checklist_type);if(new Set(types).size!==5||!["kitchen_opening","foh_opening","staff_hygiene","oil_tracking","cold_storage"].every(type=>types.includes(type as never)))context.addIssue({code:"custom",message:"Invalid checklist set."});for(const key of ["expected_checks","answered_checks","compliant_checks","issue_checks","pending_checks"] as const)if(value.totals[key]!==value.checklists.reduce((sum,row)=>sum+row[key],0))context.addIssue({code:"custom",message:`Invalid ${key} total.`});const completionAnswered=value.checklists.reduce((sum,row)=>sum+overviewCompletionAnswered(row),0);if(value.totals.completion_percentage!==overviewCompletionPercentage(completionAnswered,value.totals.expected_checks))context.addIssue({code:"custom",message:"Invalid completion percentage total."});});
 const phase4aMutationSchema=z.object({id:z.uuid(),business_date:z.string(),checklist_type:checklistTypeSchema,state:z.enum(["draft","submitted"]),created_at:z.string().optional(),updated_at:z.string().optional(),submitted_at:z.string().optional(),issue_count:z.number().int().nonnegative().optional(),revision:z.number().int().nonnegative().optional()});
+const staffHygieneApplicabilityRowSchema=z.object({branch_id:z.uuid(),business_date:dateOnlySchema,operational_team_id:z.uuid().nullable(),eligible_staff_count:z.number().int().nonnegative(),required:z.boolean(),applicability:z.enum(["required","not_applicable"])}).strict();
+const staffHygieneApplicabilityResponseSchema=z.object({branch_id:z.uuid(),business_date:dateOnlySchema,teams:z.array(staffHygieneApplicabilityRowSchema).min(1).max(200)}).strict();
+const managerStaffHygieneApplicabilityResponseSchema=z.object({organization_id:z.uuid(),business_date:dateOnlySchema,teams:z.array(staffHygieneApplicabilityRowSchema).max(500)}).strict();
+const managerStaffHygieneApplicabilityRangeQuerySchema=z.object({date_from:dateOnlySchema,date_to:dateOnlySchema}).strict().superRefine((value,context)=>{const from=Date.parse(`${value.date_from}T00:00:00Z`),to=Date.parse(`${value.date_to}T00:00:00Z`);if(from>to)context.addIssue({code:"custom",message:"Invalid date range."});if(Number.isFinite(from)&&Number.isFinite(to)&&Math.floor((to-from)/86400000)+1>31)context.addIssue({code:"custom",message:"Date range exceeds 31 business dates."});});
+const managerStaffHygieneApplicabilityRangeResponseSchema=z.object({organization_id:z.uuid(),date_from:dateOnlySchema,date_to:dateOnlySchema,dates:z.array(z.object({business_date:dateOnlySchema,teams:z.array(staffHygieneApplicabilityRowSchema).max(500)}).strict()).max(31)}).strict();
 const coldStorageMissedMetadataSchema={missed_check_count:z.number().int().nonnegative().optional(),missed_slots:z.array(coldPersistedSlotSchema).max(3).optional()};
 const recordKindSchema=z.enum(["submission","derived_missing"]);
 const phase4aListSchema=z.object({reports:z.array(z.object({id:z.uuid(),branch_id:z.uuid(),branch_name:z.string().optional(),branch_code:z.string().optional(),checklist_type:supervisorChecklistTypeSchema,business_date:z.string(),submitted_at:z.string().nullable(),submitted_by:z.string().nullable(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),completion:z.number().optional(),issue_count:z.number().int().nonnegative(),status:z.string(),review_status:z.enum(["none","needs_review","reviewed"]).optional(),review_revision:z.number().int().nonnegative().optional(),reviewed_at:z.string().nullable().optional(),reviewed_by_user_id:z.uuid().nullable().optional(),reviewed_by:z.string().nullable().optional(),record_kind:recordKindSchema.optional(),source_submission_id:z.uuid().nullable().optional(),submitted_slots:z.array(coldPersistedSlotSchema).max(3).optional(),...coldStorageMissedMetadataSchema})).max(50),page:z.number().int().positive(),page_size:z.number().int().positive().max(50),total:z.number().int().nonnegative()});
@@ -9552,6 +9558,17 @@ export function createApp(
     response.setHeader("Cache-Control","private, no-store");response.status(200).json(overview);
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
+  app.get("/api/v1/supervisor/branches/:branchId/staff-hygiene/applicability",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),query=z.object({business_date:dateOnlySchema.optional()}).strict().safeParse(request.query);
+    if(!branch.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.getSupervisorStaffHygieneApplicability)throw new HttpError(403,"forbidden","Access is denied.");
+    const rows=await dependencies.checklistPersistence.getSupervisorStaffHygieneApplicability({actorUserId:auth.userId,branchId:branch.data,businessDate:query.data.business_date??null});
+    const parsed=z.array(staffHygieneApplicabilityRowSchema).min(1).max(200).parse(rows);
+    if(parsed.some((row)=>row.branch_id!==branch.data))throw new Error("staff hygiene applicability scope mismatch");
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json(staffHygieneApplicabilityResponseSchema.parse({branch_id:branch.data,business_date:parsed[0].business_date,teams:parsed}));
+  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
   app.put("/api/v1/supervisor/branches/:branchId/checklists/draft",protectedRateLimit,authenticate,mutationRateLimiter.middleware("opening_draft"),async(request,response,next)=>{try{
     const branch=branchIdSchema.safeParse(request.params.branchId),opening=openingBodySchema.safeParse(request.body),hygiene=hygieneDraftBodySchema.safeParse(request.body);
     if(!branch.success||(!opening.success&&!hygiene.success))throw new HttpError(400,"bad_request","The request is invalid.");
@@ -9642,6 +9659,29 @@ export function createApp(
     }
   });
 
+  const staffHygieneApplicabilityRead=async(request:Request,response:Response,next:NextFunction)=>{try{
+    const organization=organizationIdSchema.safeParse(request.params.organizationId),query=z.object({business_date:dateOnlySchema}).strict().safeParse(request.query);
+    if(!organization.success||!query.success)throw new HttpError(400,"bad_request","A business_date is required.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request),allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,organization.data);
+    if(context.must_change_password||!allowed||!dependencies.checklistPersistence?.getManagerStaffHygieneApplicabilityRange)throw new HttpError(403,"forbidden","Access is denied.");
+    const raw=await dependencies.checklistPersistence.getManagerStaffHygieneApplicabilityRange({actorUserId:auth.userId,organizationId:organization.data,dateFrom:query.data.business_date,dateTo:query.data.business_date});
+    const rows=raw.filter((row)=>row.business_date===query.data.business_date).map((row)=>staffHygieneApplicabilityRowSchema.parse(row));
+    if(raw.some((row)=>row.business_date!==query.data.business_date))throw new Error("staff hygiene applicability date scope mismatch");
+    if(rows.length===0)throw new Error("staff hygiene applicability result incomplete");
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json(managerStaffHygieneApplicabilityResponseSchema.parse({organization_id:organization.data,business_date:query.data.business_date,teams:rows}));
+  }catch(error){next(error instanceof HttpError?error:checklistError(error));}};
+  app.get("/api/v1/management/organizations/:organizationId/staff-hygiene/applicability",protectedRateLimit,authenticate,staffHygieneApplicabilityRead);
+  app.get("/api/v1/management/organizations/:organizationId/reports/applicability",protectedRateLimit,authenticate,staffHygieneApplicabilityRead);
+  app.get("/api/v1/management/organizations/:organizationId/reports/applicability-range",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const organization=organizationIdSchema.safeParse(request.params.organizationId),query=managerStaffHygieneApplicabilityRangeQuerySchema.safeParse(request.query);
+    if(!organization.success||!query.success)throw new HttpError(400,"bad_request","A valid date range of at most 31 business dates is required.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request),allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,organization.data);
+    if(context.must_change_password||!allowed||!dependencies.checklistPersistence?.getManagerStaffHygieneApplicabilityRange)throw new HttpError(403,"forbidden","Access is denied.");
+    const raw=await dependencies.checklistPersistence.getManagerStaffHygieneApplicabilityRange({actorUserId:auth.userId,organizationId:organization.data,dateFrom:query.data.date_from,dateTo:query.data.date_to});
+    const dates=Array.from(new Set(raw.map((row)=>row.business_date))).sort().map((businessDate)=>({business_date:businessDate,teams:raw.filter((row)=>row.business_date===businessDate).map((row)=>staffHygieneApplicabilityRowSchema.parse(row))}));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json(managerStaffHygieneApplicabilityRangeResponseSchema.parse({organization_id:organization.data,date_from:query.data.date_from,date_to:query.data.date_to,dates}));
+  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
 	  app.get("/api/v1/management/organizations/:organizationId/sales-tracking",protectedRateLimit,authenticate,async(request,response,next)=>{try{
     const org=organizationIdSchema.safeParse(request.params.organizationId),q=managerSalesTrackingQuerySchema.safeParse(request.query);
     if(!org.success||!q.success)throw new HttpError(400,"bad_request","The request is invalid.");
@@ -9687,6 +9727,19 @@ export function createApp(
     });
     response.setHeader("Cache-Control","private, no-store");
     response.status(200).json(dailyBusinessReportPreviewSchema.parse(preview));
+  }catch(error){next(error instanceof HttpError?error:dailyBusinessReportError(error));}});
+
+  app.get("/api/v1/management/organizations/:organizationId/daily-business-reports/historical-preview",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const org=organizationIdSchema.safeParse(request.params.organizationId);
+    const query=dailyBusinessReportQuerySchema.pick({business_date:true}).safeParse(request.query);
+    if(!org.success||!query.success||query.data.business_date>="2026-10-27")throw new HttpError(400,"bad_request","Historical preview is available only before the current applicability boundary.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    const allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);
+    if(context.must_change_password||!allowed)throw new HttpError(403,"forbidden","Access is denied.");
+    if(!dependencies.dailyBusinessReportService?.getHistoricalReportPreview)throw new HttpError(503,"service_unavailable","Historical daily business report preview is unavailable.");
+    const preview=await dependencies.dailyBusinessReportService.getHistoricalReportPreview({actorUserId:auth.userId,organizationId:org.data,businessDate:query.data.business_date,requestId:request.id});
+    response.setHeader("Cache-Control","private, no-store");
+    response.status(200).json(historicalDailyBusinessReportPreviewSchema.parse(preview));
   }catch(error){next(error instanceof HttpError?error:dailyBusinessReportError(error));}});
 
   app.get("/api/v1/management/organizations/:organizationId/daily-business-reports",protectedRateLimit,authenticate,async(request,response,next)=>{try{

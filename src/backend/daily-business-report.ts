@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { createClient } from "@supabase/supabase-js";
+import { z } from "zod";
 import type {
   DailyBusinessReportBranch,
   DailyBusinessReportBranchModules,
@@ -14,6 +15,7 @@ import type {
   DailyBusinessReportSummary,
 } from "../lib/contracts/daily-business-report";
 import type { ManagementSalesTrackingPeriodSummary } from "../lib/contracts/management-sales-tracking-period";
+import type { HistoricalDailyBusinessReportPreview } from "../lib/contracts/daily-business-report-historical";
 import {
   ChecklistAccessError,
   ChecklistConflictError,
@@ -162,6 +164,38 @@ export type ReconciliationDataSources = {
   maintenanceIssues?: MaintenanceIssueRecord[];
   salesPeriodSummary?: ManagementSalesTrackingPeriodSummary;
 };
+
+type HistoricalEvidenceRow = {
+  organizationId: string;
+  id: string;
+  branchId: string;
+  businessDate: string;
+  moduleKey: "kitchen_opening" | "foh_opening" | "staff_hygiene" | "daily_audit" | "cold_storage" | "oil_tracking" | "sales_tracking";
+  teamId?: string | null;
+  evidenceBasis: "checklist_submission" | "cold_storage_submission" | "oil_tracking_submission" | "sales_tracking_submission";
+};
+
+type HistoricalBranch = { id: string; organizationId: string; timezone: string };
+type HistoricalData = { branches: HistoricalBranch[]; evidence: HistoricalEvidenceRow[] };
+
+const historicalModuleKeySchema = z.enum(["kitchen_opening", "foh_opening", "staff_hygiene", "daily_audit", "cold_storage", "oil_tracking", "sales_tracking"]);
+const historicalEvidenceSchema = z.object({
+  organizationId: z.uuid(),
+  id: z.uuid(),
+  branchId: z.uuid(),
+  businessDate: z.iso.date(),
+  moduleKey: historicalModuleKeySchema,
+  teamId: z.uuid().nullable().optional(),
+  evidenceBasis: z.enum(["checklist_submission", "cold_storage_submission", "oil_tracking_submission", "sales_tracking_submission"]),
+}).strict();
+const historicalBranchSchema = z.object({ id: z.uuid(), organizationId: z.uuid(), timezone: z.string().min(1).max(80) }).strict();
+const historicalAuthoritativeSalesCaseSchema = z.object({
+  authoritative_report_id: z.uuid(),
+  organization_id: z.uuid(),
+  branch_id: z.uuid(),
+  business_date: z.iso.date(),
+  report_state: z.literal("submitted"),
+}).passthrough();
 
 /**
  * Calculates the authoritative local close time for a business date in a specific IANA timezone:
@@ -780,6 +814,12 @@ export type DailyBusinessReportService = {
     businessDate: string;
     requestId?: string | null;
   }): Promise<DailyBusinessReportPreview>;
+  getHistoricalReportPreview(input: {
+    actorUserId: string;
+    organizationId: string;
+    businessDate: string;
+    requestId?: string | null;
+  }): Promise<HistoricalDailyBusinessReportPreview>;
   generateReport?(input: {
     workerId: string;
     jobId: string;
@@ -800,6 +840,7 @@ export type DailyBusinessReportServiceOptions = {
   ) => Promise<ReconciliationDataSources>;
   nowProvider?: () => Date;
   diagnosticLogger?: (event: DailyBusinessReportDiagnosticEvent) => void;
+  historicalDataSourceProvider?: (organizationId: string, businessDate: string, actorUserId: string, requestId?: string | null) => Promise<HistoricalData>;
 };
 
 export type DailyBusinessReportDiagnosticEvent = {
@@ -1065,22 +1106,30 @@ export function createDailyBusinessReportService(
     // 6. Fetch operational teams for staff hygiene
     let operationalTeams: OperationalTeamRoster[] = [];
     if (activeBranchIds.length > 0) {
-      const teams = await readSource(requestId ?? null, "branch_operational_teams", async () => {
-        const result = await client
-          .from("branch_operational_teams")
-          .select("id, branch_id, active")
-          .eq("organization_id", organizationId)
-          .in("branch_id", activeBranchIds)
-          .eq("active", true);
-        return { data: result.data as any[] | null, error: result.error };
+      const teams = await readSource(requestId ?? null, "staff_hygiene_applicability", async () => {
+        if (!checklistPersistence?.getDailyReportStaffHygieneApplicability) {
+          return { data: null, error: { code: "DBR_RPC_UNAVAILABLE" } };
+        }
+        try {
+          const rows = await checklistPersistence.getDailyReportStaffHygieneApplicability({
+            actorUserId: actorUserId ?? null,
+            organizationId,
+            businessDate,
+            jobId: jobContext?.jobId ?? null,
+            leaseToken: jobContext?.leaseToken ?? null,
+          });
+          return { data: rows as any[] | null, error: null };
+        } catch {
+          return { data: null, error: { code: "DBR_RPC_QUERY_ERROR" } };
+        }
       });
 
       if (Array.isArray(teams)) {
         operationalTeams = teams.map((t: any) => ({
-          teamId: t.id,
+          teamId: t.operational_team_id,
           branchId: t.branch_id,
-          active: t.active,
-          hasOnDutyStaff: true,
+          active: true,
+          hasOnDutyStaff: t.required === true && Number(t.eligible_staff_count) > 0,
         }));
       }
     }
@@ -1122,7 +1171,112 @@ export function createDailyBusinessReportService(
   };
 
   const dataSourceProvider = options?.dataSourceProvider ?? defaultDataSourceProvider;
+  const historicalDataSourceProvider = options?.historicalDataSourceProvider ?? (async (organizationId: string, businessDate: string, actorUserId: string, requestId?: string | null) => {
+    const read = async <T>(source: string, query: PromiseLike<{ data: T[] | null; error: { message?: string } | null }>): Promise<T[]> => {
+      const startedAt = performance.now();
+      let result: { data: T[] | null; error: { message?: string } | null };
+      try {
+        result = await query;
+      } catch {
+        diagnosticLogger({ requestId: requestId ?? null, source, outcome: "failure", category: "query_error", durationMs: Math.round((performance.now() - startedAt) * 100) / 100 });
+        throw new DailyBusinessReportUnavailableError(`Historical Daily Business Report source unavailable: ${source}`);
+      }
+      if (result.error || !Array.isArray(result.data)) {
+        diagnosticLogger({ requestId: requestId ?? null, source, outcome: "failure", category: "query_error", durationMs: Math.round((performance.now() - startedAt) * 100) / 100 });
+        throw new DailyBusinessReportUnavailableError(`Historical Daily Business Report source unavailable: ${source}`);
+      }
+      diagnosticLogger({ requestId: requestId ?? null, source, outcome: "success", category: result.data.length ? "query" : "empty_result", durationMs: Math.round((performance.now() - startedAt) * 100) / 100 });
+      return result.data;
+    };
+    const checklist = await read("historical_checklist_submissions", client.from("checklist_submissions").select("id,branch_id,business_date,checklist_type,operational_team_id").eq("organization_id", organizationId).eq("business_date", businessDate).eq("state", "submitted"));
+    const cold = await read("historical_cold_storage_submissions", client.from("cold_storage_submissions").select("id,branch_id,business_date").eq("organization_id", organizationId).eq("business_date", businessDate).eq("state", "submitted"));
+    const oil = await read("historical_oil_tracking_submissions", client.from("oil_tracking_submissions").select("id,branch_id,business_date").eq("organization_id", organizationId).eq("business_date", businessDate).eq("state", "submitted").not("closing_submitted_at", "is", null));
+    const branches = await read("historical_branches", client.from("branches").select("id,organization_id,timezone").eq("organization_id", organizationId));
+    const branchIds = branches.map((row: any) => row.id);
+    if (!branchIds.length) return { branches: [], evidence: [] };
+    let sales: any[] = [];
+    if (checklistPersistence?.getDailyBusinessReportSalesCases) {
+      const startedAt = performance.now();
+      try {
+        const raw = await checklistPersistence.getDailyBusinessReportSalesCases({
+          actorUserId,
+          organizationId,
+          businessDate,
+          branchIds,
+        });
+        if (!Array.isArray(raw)) throw new Error("historical sales evidence response is not an array");
+        sales = raw.map((row) => {
+          const parsed = historicalAuthoritativeSalesCaseSchema.parse(row);
+          if (parsed.organization_id !== organizationId || parsed.business_date !== businessDate || !branchIds.includes(parsed.branch_id)) {
+            throw new Error("historical sales evidence scope mismatch");
+          }
+          return parsed;
+        });
+        diagnosticLogger({ requestId: requestId ?? null, source: "historical_sales_tracking_cases", outcome: "success", category: sales.length ? "query" : "empty_result", durationMs: Math.round((performance.now() - startedAt) * 100) / 100 });
+      } catch {
+        diagnosticLogger({ requestId: requestId ?? null, source: "historical_sales_tracking_cases", outcome: "failure", category: "query_error", durationMs: Math.round((performance.now() - startedAt) * 100) / 100 });
+        throw new DailyBusinessReportUnavailableError("Historical Daily Business Report source unavailable: sales_tracking_cases");
+      }
+    }
+    const evidence: HistoricalEvidenceRow[] = [
+      ...checklist.map((row: any) => ({ organizationId, id: row.id, branchId: row.branch_id, businessDate: row.business_date, moduleKey: row.checklist_type, teamId: row.operational_team_id ?? null, evidenceBasis: "checklist_submission" as const })),
+      ...cold.map((row: any) => ({ organizationId, id: row.id, branchId: row.branch_id, businessDate: row.business_date, moduleKey: "cold_storage" as const, evidenceBasis: "cold_storage_submission" as const })),
+      ...oil.map((row: any) => ({ organizationId, id: row.id, branchId: row.branch_id, businessDate: row.business_date, moduleKey: "oil_tracking" as const, evidenceBasis: "oil_tracking_submission" as const })),
+      ...sales.map((row: any) => ({ organizationId: row.organization_id, id: row.authoritative_report_id, branchId: row.branch_id, businessDate: row.business_date, moduleKey: "sales_tracking" as const, evidenceBasis: "sales_tracking_submission" as const })),
+    ];
+    const evidenceBranchIds = new Set(evidence.map((row) => row.branchId));
+    return { branches: branches.filter((row: any) => evidenceBranchIds.has(row.id)).map((row: any) => ({ id: row.id, organizationId: row.organization_id, timezone: row.timezone })), evidence };
+  });
   const nowProvider = options?.nowProvider ?? (() => new Date());
+
+  const buildHistoricalPreview = (organizationId: string, businessDate: string, data: HistoricalData): HistoricalDailyBusinessReportPreview => {
+    const moduleKeys = ["kitchen_opening", "foh_opening", "staff_hygiene", "daily_audit", "cold_storage", "oil_tracking", "sales_tracking"] as const;
+    let submittedCount = 0;
+    let issuesDetectedCount = 0;
+    let unknownCount = 0;
+    const branches = data.branches.map((branch) => {
+      const rows = data.evidence.filter((row) => row.branchId === branch.id && row.businessDate === businessDate);
+      const modules = Object.fromEntries(moduleKeys.map((moduleKey) => {
+        const moduleRows = rows.filter((row) => row.moduleKey === moduleKey);
+        const ids = [...new Set(moduleRows.map((row) => row.id))].sort();
+        if (!ids.length) {
+          unknownCount += 1;
+          return [moduleKey, { status: "unknown" as const, verification: "unverified" as const, required: null, expected_count: null, submitted_count: 0, missing_count: null, issue_count: null, source_report_ids: [], detail_paths: [] }];
+        }
+        submittedCount += ids.length;
+        const detailPaths = moduleRows.some((row) => row.evidenceBasis === "checklist_submission")
+          ? ids.map((id) => `/management/reports/${id}`)
+          : [];
+        return [moduleKey, { status: "submitted" as const, verification: "evidence" as const, required: null, expected_count: null, submitted_count: ids.length, missing_count: null, issue_count: null, source_report_ids: ids, detail_paths: detailPaths }];
+      }));
+      return { branch_id: branch.id, timezone: branch.timezone, evidence_basis: [...new Set(rows.map((row) => row.evidenceBasis))], modules };
+    });
+    return { organization_id: organizationId, business_date: businessDate, schema_version: 1, mode: "historical", compliance_verification: "unverified", summary: { submitted_count: submittedCount, issues_detected_count: issuesDetectedCount, unknown_count: unknownCount, verified_required_count: 0, verified_missing_count: 0 }, branches };
+  };
+
+  const validateHistoricalData = (organizationId: string, businessDate: string, data: HistoricalData): void => {
+    const branches = data.branches.map((branch) => historicalBranchSchema.parse(branch));
+    const branchIds = new Set<string>();
+    for (const branch of branches) {
+      if (branch.organizationId !== organizationId || branchIds.has(branch.id)) throw new DailyBusinessReportUnavailableError("Historical Daily Business Report scope is inconsistent.");
+      branchIds.add(branch.id);
+    }
+    const evidenceIds = new Set<string>();
+    const staffTeamDates = new Set<string>();
+    for (const raw of data.evidence) {
+      const evidence = historicalEvidenceSchema.parse(raw);
+      if (evidence.organizationId !== organizationId || evidence.businessDate !== businessDate || !branchIds.has(evidence.branchId)) {
+        throw new DailyBusinessReportUnavailableError("Historical Daily Business Report evidence scope is inconsistent.");
+      }
+      if (evidenceIds.has(evidence.id)) throw new DailyBusinessReportUnavailableError("Historical Daily Business Report evidence is duplicated.");
+      evidenceIds.add(evidence.id);
+      if (evidence.moduleKey === "staff_hygiene") {
+        const key = `${evidence.branchId}:${evidence.businessDate}:${evidence.teamId ?? "unassigned"}`;
+        if (staffTeamDates.has(key)) throw new DailyBusinessReportUnavailableError("Historical Staff Hygiene evidence is duplicated for an operational team.");
+        staffTeamDates.add(key);
+      }
+    }
+  };
 
   return {
     async getReportPreview(input) {
@@ -1200,6 +1354,20 @@ export function createDailyBusinessReportService(
         sales_summary: salesSummary,
         maintenance_summary: maintenanceSummary,
       };
+    },
+    async getHistoricalReportPreview(input) {
+      if (input.businessDate >= "2026-10-27") throw new ChecklistInputError("Historical preview is limited to dates before the current applicability boundary.");
+      const startedAt = performance.now();
+      try {
+        const data = await historicalDataSourceProvider(input.organizationId, input.businessDate, input.actorUserId, input.requestId);
+        validateHistoricalData(input.organizationId, input.businessDate, data);
+        diagnosticLogger({ requestId: input.requestId ?? null, source: "historical_preview_validation", outcome: "success", category: "query", durationMs: Math.round((performance.now() - startedAt) * 100) / 100 });
+        return buildHistoricalPreview(input.organizationId, input.businessDate, data);
+      } catch (error) {
+        diagnosticLogger({ requestId: input.requestId ?? null, source: "historical_preview_validation", outcome: "failure", category: "unavailable", durationMs: Math.round((performance.now() - startedAt) * 100) / 100 });
+        if (error instanceof DailyBusinessReportError) throw error;
+        throw new DailyBusinessReportUnavailableError("Historical Daily Business Report is unavailable.");
+      }
     },
   };
 }

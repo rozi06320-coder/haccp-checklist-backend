@@ -20,6 +20,13 @@ import {
   type SalesTrackingPeriodCursor,
 } from "./sales-tracking-period-cursor";
 
+const dailyReportStaffHygieneApplicabilityRow = z.object({
+  branch_id: z.uuid(),
+  operational_team_id: z.uuid(),
+  eligible_staff_count: z.coerce.number().int().nonnegative(),
+  required: z.boolean(),
+}).strict();
+
 export class ChecklistConflictError extends Error {
   constructor(readonly sqlstate?: string) {
     super("Checklist conflict.");
@@ -354,6 +361,9 @@ export type ChecklistPersistence = {
   requeueDailyBusinessReportJob?(input:{actorUserId:string;jobId:string;expectedWatermark:string;recoveryReason:string}):Promise<{job_id:string;state:string;requeue_count:number}>;
   configureDailyReportModuleApplicability?(input:{actorUserId:string;organizationId:string;branchId:string;moduleKey:string;required:boolean;effectiveFromBusinessDate:string}):Promise<boolean>;
   getDailyReportAuthoritativeApplicability?(input:{actorUserId?:string|null;organizationId:string;businessDate:string;jobId?:string|null;leaseToken?:string|null}):Promise<Array<{branch_id:string;timezone:string;close_at:string;module_key:string;required:boolean;requirement_basis:string}>>;
+  getDailyReportStaffHygieneApplicability?(input:{actorUserId?:string|null;organizationId:string;businessDate:string;jobId?:string|null;leaseToken?:string|null}):Promise<Array<{branch_id:string;operational_team_id:string;eligible_staff_count:number;required:boolean}>>;
+  getSupervisorStaffHygieneApplicability?(input:{actorUserId:string;branchId:string;businessDate?:string|null}):Promise<Array<{branch_id:string;business_date:string;operational_team_id:string|null;eligible_staff_count:number;required:boolean;applicability:"required"|"not_applicable"}>>;
+  getManagerStaffHygieneApplicabilityRange?(input:{actorUserId:string;organizationId:string;dateFrom:string;dateTo:string}):Promise<Array<{branch_id:string;business_date:string;operational_team_id:string|null;eligible_staff_count:number;required:boolean;applicability:"required"|"not_applicable"}>>;
   getDailyBusinessReportSalesCases?(input:{actorUserId?:string|null;organizationId:string;businessDate:string;branchIds:string[];jobId?:string|null;leaseToken?:string|null}):Promise<unknown>;
 };
 
@@ -1083,7 +1093,16 @@ export function createChecklistPersistence(
     if(result.error.code==="42501")throw new ChecklistAccessError();
     throw new ManagementOverviewUnavailableError();
    }
-   return result.data;
+   const overview = result.data as {branches?:Array<{branch_id:string;business_date:string}>};
+   if(!Array.isArray(overview.branches)) return result.data;
+   const dates=[...new Set(overview.branches.map((branch)=>branch.business_date))];
+   const rowsByDate=new Map<string,Array<{branch_id:string;operational_team_id:string;eligible_staff_count:number;required:boolean}>>();
+   for(const businessDate of dates){
+    const rows=await this.getDailyReportStaffHygieneApplicability?.({actorUserId,organizationId,businessDate});
+    if(!rows) return result.data;
+    rowsByDate.set(businessDate,rows);
+   }
+   return {...(result.data as object),branches:overview.branches.map((branch)=>{const rows=(rowsByDate.get(branch.business_date)??[]).filter((row)=>row.branch_id===branch.branch_id);return {...branch,staff_hygiene_applicability:rows.length?rows.map((row)=>({business_date:branch.business_date,operational_team_id:row.operational_team_id,eligible_staff_count:row.eligible_staff_count,required:row.required,applicability:row.required?"required":"not_applicable" as const})): [{business_date:branch.business_date,operational_team_id:null,eligible_staff_count:0,required:false,applicability:"not_applicable" as const}]};})};
   },
   getCurrentState:(actorUserId,branchId,type)=>rpc("get_phase4a_current_state",{actor_user_id:actorUserId,target_branch_id:branchId,target_checklist_type:type}),
   getHygieneCurrentState:(actorUserId,branchId,operationalTeamId)=>rpc("get_operational_team_hygiene_current_state",{actor_user_id:actorUserId,target_branch_id:branchId,target_operational_team_id:operationalTeamId}),
@@ -1505,6 +1524,41 @@ export function createChecklistPersistence(
     })) as any[];
     if (!Array.isArray(rows)) return [];
     return rows;
+  },
+  async getDailyReportStaffHygieneApplicability(input) {
+    const rows = await rpc("get_daily_report_staff_hygiene_applicability", {
+      p_actor_user_id: input.actorUserId ?? null,
+      p_organization_id: input.organizationId,
+      p_business_date: input.businessDate,
+      p_job_id: input.jobId ?? null,
+      p_lease_token: input.leaseToken ?? null,
+    });
+    return z.array(dailyReportStaffHygieneApplicabilityRow).parse(rows);
+  },
+  async getSupervisorStaffHygieneApplicability(input) {
+    const rows = await rpc("get_supervisor_staff_hygiene_applicability", {
+      p_actor_user_id: input.actorUserId,
+      p_branch_id: input.branchId,
+      p_business_date: input.businessDate ?? null,
+    });
+    return z.array(z.object({
+      branch_id: z.uuid(), business_date: z.iso.date(), operational_team_id: z.uuid().nullable(),
+      eligible_staff_count: z.coerce.number().int().nonnegative(), required: z.boolean(),
+      applicability: z.enum(["required", "not_applicable"]),
+    }).strict()).parse(rows);
+  },
+  async getManagerStaffHygieneApplicabilityRange(input) {
+    const rows = await rpc("get_manager_staff_hygiene_applicability_range", {
+      p_actor_user_id: input.actorUserId,
+      p_organization_id: input.organizationId,
+      p_date_from: input.dateFrom,
+      p_date_to: input.dateTo,
+    });
+    return z.array(z.object({
+      branch_id: z.uuid(), business_date: z.iso.date(), operational_team_id: z.uuid().nullable(),
+      eligible_staff_count: z.coerce.number().int().nonnegative(), required: z.boolean(),
+      applicability: z.enum(["required", "not_applicable"]),
+    }).strict()).parse(rows);
   },
   async getDailyBusinessReportSalesCases(input) {
     return rpc("get_daily_business_report_sales_cases", {

@@ -63,6 +63,13 @@ const teamStatesSchema = z.object({
   draft: z.number().int().nonnegative(),
   submitted: z.number().int().nonnegative(),
 }).strict();
+const staffHygieneApplicabilitySchema = z.object({
+  business_date: z.iso.date(),
+  operational_team_id: z.uuid().nullable(),
+  eligible_staff_count: z.number().int().nonnegative(),
+  required: z.boolean(),
+  applicability: z.enum(["required", "not_applicable"]),
+}).strict();
 
 const checklistSchema = managementPerformanceCountsSchema.extend({
   checklist_type: z.enum(checklistTypes),
@@ -79,6 +86,7 @@ const branchSchema = z.object({
   active_team_count: z.number().int().nonnegative(),
   totals: managementPerformanceCountsSchema,
   checklists: z.array(checklistSchema).length(7),
+  staff_hygiene_applicability: z.array(staffHygieneApplicabilitySchema).min(1).max(200).optional(),
 }).strict().superRefine((value, context) => {
   const types = value.checklists.map((checklist) => checklist.checklist_type);
   if (new Set(types).size !== checklistTypes.length
