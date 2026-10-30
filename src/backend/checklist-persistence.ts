@@ -1093,26 +1093,9 @@ export function createChecklistPersistence(
     if(result.error.code==="42501")throw new ChecklistAccessError();
     throw new ManagementOverviewUnavailableError();
    }
-   const overview = result.data as {branches?:Array<{branch_id:string;business_date:string}>};
-   if(!Array.isArray(overview.branches)) return result.data;
-   try {
-    if(!this.getDailyReportStaffHygieneApplicability){
-     console.info("Management overview Staff Hygiene enrichment unavailable",{stage:"staff_hygiene_applicability",category:"not_configured"});
-     return result.data;
-    }
-    const dates=[...new Set(overview.branches.map((branch)=>branch.business_date))];
-    const rowsByDate=new Map<string,Array<{branch_id:string;operational_team_id:string;eligible_staff_count:number;required:boolean}>>();
-    for(const businessDate of dates){
-     const rows=await this.getDailyReportStaffHygieneApplicability({actorUserId,organizationId,businessDate});
-     rowsByDate.set(businessDate,rows);
-    }
-    return {...(result.data as object),branches:overview.branches.map((branch)=>{const rows=(rowsByDate.get(branch.business_date)??[]).filter((row)=>row.branch_id===branch.branch_id);const applicability=rows.length?rows.map((row)=>({business_date:branch.business_date,operational_team_id:row.operational_team_id,eligible_staff_count:row.eligible_staff_count,required:row.required,applicability:row.required?"required":"not_applicable" as const})):null;return {...branch,...(applicability?{staff_hygiene_applicability:applicability}:{})};})};
-   } catch {
-    // Staff Hygiene is optional enrichment. Never turn an unverifiable read into a
-    // fabricated Required, N/A, Missing, or Submitted status.
-    console.info("Management overview Staff Hygiene enrichment unavailable",{stage:"staff_hygiene_applicability",category:"dependency_unavailable"});
-    return result.data;
-   }
+   // Staff Hygiene applicability is fetched through its dedicated read endpoint.
+   // Keep this response identical to the established overview RPC contract.
+   return result.data;
   },
   getCurrentState:(actorUserId,branchId,type)=>rpc("get_phase4a_current_state",{actor_user_id:actorUserId,target_branch_id:branchId,target_checklist_type:type}),
   getHygieneCurrentState:(actorUserId,branchId,operationalTeamId)=>rpc("get_operational_team_hygiene_current_state",{actor_user_id:actorUserId,target_branch_id:branchId,target_operational_team_id:operationalTeamId}),
