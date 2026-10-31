@@ -55,7 +55,7 @@ const persistence = {
     if (mode === "not-found") throw new ChecklistNotFoundError();
     return inventoryCurrent;
   },
-  async deleteInventoryItemUsageItem(input: { actorUserId: string; branchId: string; itemUsageId: string }) {
+  async deleteInventoryItemUsageItem(input: { actorUserId: string; branchId: string; itemUsageId: string; expectedUsage: Record<string, string | number> }) {
     calls.push({ name: "deleteInventoryItemUsageItem", input });
     if (mode === "access" || input.branchId !== branch) throw new ChecklistAccessError();
     if (mode === "conflict") throw new ChecklistConflictError("23505");
@@ -233,22 +233,24 @@ describe("Inventory Items Beef Production field labels API", () => {
     assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/beef-production/not-a-uuid`, "supervisor", { method: "PATCH", headers: { "Content-Type": "application/json" }, body })).status, 400);
   });
 
-  it("deletes an authorized empty Item Usage row and returns authoritative state", async () => {
-    const response = await request(`/api/v1/supervisor/branches/${branch}/inventory-items/item-usage/${itemUsageId}`, "supervisor", { method: "DELETE" });
+  it("deletes an authorized Item Usage row with its expected snapshot and returns authoritative state", async () => {
+    const response = await request(`/api/v1/supervisor/branches/${branch}/inventory-items/item-usage/${itemUsageId}`, "supervisor", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_usage: { "1": "2.5" } }) });
     assert.equal(response.status, 200);
     assert.deepEqual(await response.json(), { current: inventoryCurrent });
     assert.deepEqual(calls, [{
       name: "deleteInventoryItemUsageItem",
-      input: { actorUserId: supervisor, branchId: branch, itemUsageId },
+      input: { actorUserId: supervisor, branchId: branch, itemUsageId, expectedUsage: { "1": "2.5" } },
     }]);
   });
 
   it("rejects populated/closed conflicts and unauthorized Item Usage deletes safely", async () => {
     mode = "conflict";
-    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/item-usage/${itemUsageId}`, "supervisor", { method: "DELETE" })).status, 409);
+    const body = JSON.stringify({ expected_usage: {} });
+    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/item-usage/${itemUsageId}`, "supervisor", { method: "DELETE", headers: { "Content-Type": "application/json" }, body })).status, 409);
     mode = "ok";
-    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/item-usage/not-a-uuid`, "supervisor", { method: "DELETE" })).status, 400);
-    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/item-usage/${itemUsageId}`, "manager", { method: "DELETE" })).status, 403);
-    assert.equal((await request(`/api/v1/supervisor/branches/${otherBranch}/inventory-items/item-usage/${itemUsageId}`, "supervisor", { method: "DELETE" })).status, 403);
+    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/item-usage/not-a-uuid`, "supervisor", { method: "DELETE", headers: { "Content-Type": "application/json" }, body })).status, 400);
+    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/item-usage/${itemUsageId}`, "manager", { method: "DELETE", headers: { "Content-Type": "application/json" }, body })).status, 403);
+    assert.equal((await request(`/api/v1/supervisor/branches/${otherBranch}/inventory-items/item-usage/${itemUsageId}`, "supervisor", { method: "DELETE", headers: { "Content-Type": "application/json" }, body })).status, 403);
+    assert.equal((await request(`/api/v1/supervisor/branches/${branch}/inventory-items/item-usage/${itemUsageId}`, "supervisor", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expected_usage: { "32": "1" } }) })).status, 400);
   });
 });

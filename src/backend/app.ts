@@ -1562,6 +1562,9 @@ const inventoryItemsBodySchema=z.object({
   beef_rows:z.array(inventoryBeefRowInputSchema).max(62),
   item_usage:inventoryItemUsageInputSchema,
 }).strict();
+const inventoryItemUsageDeleteBodySchema=z.object({
+  expected_usage:inventoryUsageValueSchema.refine(value=>Object.keys(value).length<=31),
+}).strict();
 const inventoryBeefProductionFieldLabelsBodySchema=z.object({
   russian_label:z.string().max(120).nullable().optional(),
   australian_label:z.string().max(120).nullable().optional(),
@@ -9323,11 +9326,11 @@ export function createApp(
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
   app.delete("/api/v1/supervisor/branches/:branchId/inventory-items/item-usage/:itemUsageId",protectedRateLimit,authenticate,async(request,response,next)=>{try{
-    const branch=branchIdSchema.safeParse(request.params.branchId),itemUsageId=z.uuid().safeParse(request.params.itemUsageId);
-    if(!branch.success||!itemUsageId.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const branch=branchIdSchema.safeParse(request.params.branchId),itemUsageId=z.uuid().safeParse(request.params.itemUsageId),body=inventoryItemUsageDeleteBodySchema.safeParse(request.body);
+    if(!branch.success||!itemUsageId.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
     const auth=requireAuthContext(request),context=await loadActiveUser(request);
     if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.deleteInventoryItemUsageItem)throw new HttpError(403,"forbidden","Access is denied.");
-    const current=inventoryItemsCurrentSchema.parse(await dependencies.checklistPersistence.deleteInventoryItemUsageItem({actorUserId:auth.userId,branchId:branch.data,itemUsageId:itemUsageId.data}));
+    const current=inventoryItemsCurrentSchema.parse(await dependencies.checklistPersistence.deleteInventoryItemUsageItem({actorUserId:auth.userId,branchId:branch.data,itemUsageId:itemUsageId.data,expectedUsage:body.data.expected_usage}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 

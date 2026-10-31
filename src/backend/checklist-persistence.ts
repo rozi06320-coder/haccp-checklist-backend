@@ -301,7 +301,7 @@ export type ChecklistPersistence = {
   updateInventoryBeefProductionRow?(input:{actorUserId:string;branchId:string;rowId:string;expectedUpdatedAt:string;rowValues:InventoryBeefProductionRowValues}):Promise<unknown>;
   saveInventoryItemsDraft?(input:{actorUserId:string;branchId:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
   submitInventoryItems?(input:{actorUserId:string;branchId:string;idempotencyKey:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
-  deleteInventoryItemUsageItem?(input:{actorUserId:string;branchId:string;itemUsageId:string}):Promise<unknown>;
+  deleteInventoryItemUsageItem?(input:{actorUserId:string;branchId:string;itemUsageId:string;expectedUsage:Record<string,string|number>}):Promise<unknown>;
   listBranchCatalog?(actorUserId:string,branchId:string):Promise<unknown>;
   createBranchCatalogProduct?(input:{actorUserId:string;branchId:string;payload:BranchCatalogProductInput}):Promise<unknown>;
   archiveBranchCatalogProduct?(input:{actorUserId:string;branchId:string;productId:string;expectedUpdatedAt:string}):Promise<unknown>;
@@ -1205,7 +1205,7 @@ export function createChecklistPersistence(
    return inventoryItemsCurrent.parse(await rpc("submit_inventory_items",inventoryItemsSubmitRpcArgs(input.actorUserId,input.branchId,input.idempotencyKey,input.payload)));
   },
   async deleteInventoryItemUsageItem(input){
-   return inventoryItemsCurrent.parse(await rpc("delete_inventory_item_usage_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_item_usage_id:input.itemUsageId}));
+   return inventoryItemsCurrent.parse(await rpc("delete_inventory_item_usage_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_item_usage_id:input.itemUsageId,expected_usage:input.expectedUsage}));
   },
   listBranchCatalog:(actorUserId,branchId)=>rpc("list_branch_catalog",{actor_user_id:actorUserId,target_branch_id:branchId}),
   createBranchCatalogProduct:(input)=>rpc("create_branch_catalog_product",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,payload:{name:input.payload.name,inventory_behavior:input.payload.inventoryBehavior,unit:input.payload.unit??null,recipe_rows:input.payload.recipeRows??[]}}),
