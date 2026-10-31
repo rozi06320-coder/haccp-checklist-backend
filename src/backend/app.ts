@@ -755,6 +755,10 @@ const managerNotificationQuerySchema = z.object({
   before: z.iso.datetime({ offset: true }).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
 }).strict();
+const managerNotificationCursorQuerySchema = z.object({
+  cursor: z.string().trim().min(1).max(512).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+}).strict();
 const managerNotificationSchema = z.object({
   id: z.uuid(),
   organization_id: z.uuid(),
@@ -772,6 +776,27 @@ const managerNotificationSchema = z.object({
 }).strict();
 const managerNotificationListResponseSchema = z.object({
   notifications: z.array(managerNotificationSchema).max(100),
+}).strict();
+const managerNotificationProjectionSchema = z.object({
+  id: z.uuid(),
+  organization_id: z.uuid(),
+  category: z.enum(["sales_tracking_missing", "maintenance_issue", "incomplete_branch_tasks"]),
+  branch_id: z.uuid().nullable(),
+  business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
+  source_type: z.string().nullable(),
+  source_id: z.uuid().nullable(),
+  legacy_notification_id: z.uuid().nullable(),
+  occurrence_key: z.string().min(1).max(200),
+  category_context: z.record(z.string(), z.unknown()),
+  read_at: z.string().nullable(),
+  created_at: z.string(),
+}).strict();
+const managerNotificationProjectionResponseSchema = z.object({
+  notifications: z.array(managerNotificationProjectionSchema).max(100),
+  unread_count: z.number().int().nonnegative(),
+}).strict();
+const managerNotificationProjectionCursorResponseSchema = managerNotificationProjectionResponseSchema.extend({
+  next_cursor: z.string().nullable(),
 }).strict();
 const managerNotificationReadResponseSchema = z.object({
   notification: z.object({ id: z.uuid(), read_at: z.string() }).strict(),
@@ -8509,6 +8534,40 @@ export function createApp(
         const result=managerNotificationListResponseSchema.parse(await dependencies.organizationManagerNotifications.listNotifications({
           actorUserId:auth.userId,organizationId:organizationId.data,before:query.data.before,limit:query.data.limit,
         }));
+        response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+      }catch(error){next(error instanceof HttpError?error:managerNotificationError(error));}
+    });
+
+  app.get("/api/v1/management/organizations/:organizationId/notification-categories-v2", protectedRateLimit, authenticate,
+    async(request,response,next)=>{
+      try{
+        const organizationId=organizationIdSchema.safeParse(request.params.organizationId);
+        const query=managerNotificationCursorQuerySchema.safeParse(request.query);
+        if(!organizationId.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const auth=requireAuthContext(request),context=await loadActiveUser(request);
+        if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data))throw new HttpError(403,"forbidden","Access is denied.");
+        if(!dependencies.organizationManagerNotifications?.listNotificationProjectionCursor)throw new HttpError(503,"service_unavailable","Notifications are temporarily unavailable.");
+        const result=managerNotificationProjectionCursorResponseSchema.parse(await dependencies.organizationManagerNotifications.listNotificationProjectionCursor({
+          actorUserId:auth.userId,organizationId:organizationId.data,cursor:query.data.cursor??null,limit:query.data.limit,
+        }));
+        if(result.notifications.some(item=>item.organization_id!==organizationId.data))throw new HttpError(503,"service_unavailable","Notifications are temporarily unavailable.");
+        response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+      }catch(error){next(error instanceof HttpError?error:managerNotificationError(error));}
+    });
+
+  app.get("/api/v1/management/organizations/:organizationId/notification-categories", protectedRateLimit, authenticate,
+    async(request,response,next)=>{
+      try{
+        const organizationId=organizationIdSchema.safeParse(request.params.organizationId);
+        const query=managerNotificationQuerySchema.safeParse(request.query);
+        if(!organizationId.success||!query.success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const auth=requireAuthContext(request),context=await loadActiveUser(request);
+        if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data))throw new HttpError(403,"forbidden","Access is denied.");
+        if(!dependencies.organizationManagerNotifications)throw new HttpError(503,"service_unavailable","Notifications are temporarily unavailable.");
+        const result=managerNotificationProjectionResponseSchema.parse(await dependencies.organizationManagerNotifications.listNotificationProjection({
+          actorUserId:auth.userId,organizationId:organizationId.data,before:query.data.before,limit:query.data.limit,
+        }));
+        if(result.notifications.some(item=>item.organization_id!==organizationId.data))throw new HttpError(503,"service_unavailable","Notifications are temporarily unavailable.");
         response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
       }catch(error){next(error instanceof HttpError?error:managerNotificationError(error));}
     });

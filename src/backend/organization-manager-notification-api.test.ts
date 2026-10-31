@@ -66,6 +66,12 @@ describe("Organization Manager notification API", () => {
         created_at: "2026-10-21T10:00:00.000Z",
       }] };
     },
+    async listNotificationProjection() {
+      return { notifications: [], unread_count: 0 };
+    },
+    async listNotificationProjectionCursor() {
+      return { notifications: [], unread_count: 0, next_cursor: null };
+    },
     async markRead() {
       return { notification: { id: ids.notification, read_at: "2026-10-21T10:01:00.000Z" } };
     },
