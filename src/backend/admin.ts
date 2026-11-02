@@ -306,6 +306,41 @@ export type InternalAdminOrganization = {
   logo_path?: string | null;
   logo_url?: string | null;
 };
+export type InternalAdminAccessAssignment = {
+  assignment_id: string;
+  user_id: string;
+  full_name: string | null;
+  full_name_ar?: string | null;
+  email: string;
+  phone_number?: string | null;
+  access_type: "supervisor" | "training_supervisor";
+  branch_id: string | null;
+  branch_name: string | null;
+  branch_name_ar?: string | null;
+  branch_code: string | null;
+  status: "active" | "suspended" | "revoked" | "unassigned";
+  must_change_password: boolean;
+  created_at: string;
+  updated_at: string;
+};
+export type TrainingSupervisorContext = {
+  user_id: string;
+  account_name: string;
+  email: string;
+  organization_id: string;
+  organization_name: string;
+  organization_name_ar?: string | null;
+  active: boolean;
+  training_role: "training_supervisor";
+  credential_version: string;
+  branches: Array<{
+    id: string;
+    name: string;
+    name_ar?: string | null;
+    code: string;
+    active: boolean;
+  }>;
+};
 export type ManagedMaintenanceUser = {
   id: string;
   full_name: string | null;
@@ -636,6 +671,46 @@ export type ManagementAdmin = {
     userId: string;
   }): Promise<void>;
   getTrainingAccountContext?(actorUserId: string): Promise<TrainingAccountContext>;
+  listAccessAssignmentsForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    branchId?: string | null;
+    accessType?: "supervisor" | "training_supervisor" | null;
+    status?: "active" | "suspended" | "revoked" | "unassigned" | null;
+  }): Promise<InternalAdminAccessAssignment[]>;
+  grantTrainingSupervisorForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    userId: string;
+    branchIds: string[];
+  }): Promise<void>;
+  suspendTrainingSupervisorForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    userId: string;
+  }): Promise<void>;
+  reactivateTrainingSupervisorForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    userId: string;
+    branchIds?: string[];
+  }): Promise<void>;
+  revokeTrainingSupervisorForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    userId: string;
+  }): Promise<void>;
+  reassignTrainingSupervisorForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    userId: string;
+    branchIds: string[];
+  }): Promise<void>;
+  establishTrainingSupervisorSession?(actorUserId: string): Promise<TrainingSupervisorContext>;
+  getTrainingSupervisorContext?(input: {
+    actorUserId: string;
+    expectedCredentialVersion: string;
+  }): Promise<TrainingSupervisorContext>;
 };
 
 export type SupervisedBranch = {
@@ -1858,6 +1933,166 @@ export function createManagementAdmin(
         updated_at: z.string(),
       }).strict()).length(1).safeParse(data);
       if (!rows.success) throw new AdminOperationError();
+    },
+    async listAccessAssignmentsForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("list_internal_admin_access_assignments", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        filter_branch_id: input.branchId ?? null,
+        filter_access_type: input.accessType ?? null,
+        filter_status: input.status ?? null,
+      });
+      if (error || !Array.isArray(data)) {
+        if (error?.code === "42501") throw new AdminAccessError();
+        if (error?.code === "22023") throw new AdminInputError();
+        throw new AdminOperationError();
+      }
+      const rows = z.array(z.object({
+        assignment_id: z.string().uuid(),
+        user_id: z.string().uuid(),
+        full_name: z.string().nullable(),
+        full_name_ar: z.string().nullable().optional(),
+        email: z.string().email(),
+        phone_number: z.string().nullable().optional(),
+        access_type: z.enum(["supervisor", "training_supervisor"]),
+        branch_id: z.string().uuid().nullable(),
+        branch_name: z.string().nullable(),
+        branch_name_ar: z.string().nullable().optional(),
+        branch_code: z.string().nullable().optional().transform((v) => v ?? null),
+        status: z.enum(["active", "suspended", "revoked", "unassigned"]),
+        must_change_password: z.boolean(),
+        created_at: z.string(),
+        updated_at: z.string(),
+      }).strict()).safeParse(data);
+      if (!rows.success) throw new AdminOperationError();
+      return rows.data;
+    },
+    async grantTrainingSupervisorForInternalAdmin(input) {
+      const { error } = await admin.rpc("grant_internal_admin_training_supervisor", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_user_id: input.userId,
+        target_branch_ids: input.branchIds,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "23514" || error.code === "23505") throw new AdminConflictError();
+        if (error.code === "22023") throw new AdminInputError();
+        throw new AdminOperationError();
+      }
+    },
+    async suspendTrainingSupervisorForInternalAdmin(input) {
+      const { error } = await admin.rpc("suspend_internal_admin_training_supervisor", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_user_id: input.userId,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        throw new AdminOperationError();
+      }
+    },
+    async reactivateTrainingSupervisorForInternalAdmin(input) {
+      const { error } = await admin.rpc("reactivate_internal_admin_training_supervisor", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_user_id: input.userId,
+        target_branch_ids: input.branchIds ?? null,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "23514" || error.code === "23505") throw new AdminConflictError();
+        if (error.code === "22023") throw new AdminInputError();
+        throw new AdminOperationError();
+      }
+    },
+    async revokeTrainingSupervisorForInternalAdmin(input) {
+      const { error } = await admin.rpc("revoke_internal_admin_training_supervisor", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_user_id: input.userId,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        throw new AdminOperationError();
+      }
+    },
+    async reassignTrainingSupervisorForInternalAdmin(input) {
+      const { error } = await admin.rpc("reassign_internal_admin_training_supervisor", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_user_id: input.userId,
+        target_branch_ids: input.branchIds,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "22023") throw new AdminInputError();
+        throw new AdminOperationError();
+      }
+    },
+    async establishTrainingSupervisorSession(actorUserId) {
+      const { data, error } = await admin.rpc("establish_training_supervisor_session", {
+        actor_user_id: actorUserId,
+      });
+      if (error || !Array.isArray(data)) {
+        if (error?.code === "42501") throw new AdminAccessError();
+        throw new AdminOperationError();
+      }
+      const rows = z.array(z.object({
+        user_id: z.string().uuid(),
+        account_name: z.string(),
+        email: z.string().email(),
+        organization_id: z.string().uuid(),
+        organization_name: z.string(),
+        organization_name_ar: z.string().nullable().optional(),
+        active: z.boolean(),
+        training_role: z.literal("training_supervisor"),
+        credential_version: z.string().uuid(),
+        branches: z.array(z.object({
+          id: z.string().uuid(),
+          name: z.string(),
+          name_ar: z.string().nullable().optional(),
+          code: z.string(),
+          active: z.boolean(),
+        }).strict()),
+      }).strict()).length(1).safeParse(data);
+      if (!rows.success) throw new AdminOperationError();
+      return rows.data[0];
+    },
+    async getTrainingSupervisorContext(input) {
+      const { data, error } = await admin.rpc("get_training_supervisor_context", {
+        actor_user_id: input.actorUserId,
+        p_expected_credential_version: input.expectedCredentialVersion,
+      });
+      if (error || !Array.isArray(data)) {
+        if (error?.code === "42501") throw new AdminAccessError();
+        throw new AdminOperationError();
+      }
+      const rows = z.array(z.object({
+        user_id: z.string().uuid(),
+        account_name: z.string(),
+        email: z.string().email(),
+        organization_id: z.string().uuid(),
+        organization_name: z.string(),
+        organization_name_ar: z.string().nullable().optional(),
+        active: z.boolean(),
+        training_role: z.literal("training_supervisor"),
+        credential_version: z.string().uuid(),
+        branches: z.array(z.object({
+          id: z.string().uuid(),
+          name: z.string(),
+          name_ar: z.string().nullable().optional(),
+          code: z.string(),
+          active: z.boolean(),
+        }).strict()),
+      }).strict()).length(1).safeParse(data);
+      if (!rows.success) throw new AdminOperationError();
+      return rows.data[0];
     },
   };
 }

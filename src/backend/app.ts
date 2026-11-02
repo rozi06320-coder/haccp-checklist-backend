@@ -1254,6 +1254,23 @@ const trainingAccountUpdateBodySchema = z.object({
 const trainingAccountPasswordResetBodySchema = z.object({
   temporary_password: z.string().min(6).max(128),
 }).strict();
+const accessAssignmentQuerySchema = z.object({
+  branch_id: z.uuid().optional(),
+  access_type: z.enum(["supervisor", "training_supervisor"]).optional(),
+  status: z.enum(["active", "suspended", "revoked", "unassigned"]).optional(),
+}).strict();
+const grantTrainingSupervisorBodySchema = z.object({
+  user_id: z.uuid(),
+  branch_ids: z.array(z.uuid()).min(1).max(50),
+}).strict().superRefine(rejectDuplicateBranchIds);
+const reassignTrainingSupervisorBodySchema = z.object({
+  branch_ids: z.array(z.uuid()).min(1).max(50),
+}).strict().superRefine(rejectDuplicateBranchIds);
+const reactivateTrainingSupervisorBodySchema = z.object({
+  branch_ids: z.array(z.uuid()).min(1).max(50).optional(),
+}).strict().superRefine((val, ctx) => {
+  if (val.branch_ids) rejectDuplicateBranchIds({ branch_ids: val.branch_ids }, ctx);
+});
 const organizationManagerBodySchema = maintenanceUserBodySchema.extend({
   full_name_ar: optionalDisplayNameSchema,
 }).strict();
@@ -6743,6 +6760,257 @@ export function createApp(
         if (error instanceof HttpError) next(error);
         else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
         else next(new HttpError(503, "service_unavailable", "Supervisors are unavailable."));
+      }
+    },
+  );
+  app.get(
+    "/api/v1/internal-admin/organizations/:organizationId/access-assignments",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const query = accessAssignmentQuerySchema.safeParse(request.query);
+        if (!organizationId.success || !query.success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.listAccessAssignmentsForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Access assignments are unavailable.");
+        }
+        const assignments = await dependencies.managementAdmin.listAccessAssignmentsForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          branchId: query.data.branch_id,
+          accessType: query.data.access_type,
+          status: query.data.status,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ assignments });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof AdminInputError) next(new HttpError(400, "bad_request", "The request is invalid."));
+        else next(new HttpError(503, "service_unavailable", "Access assignments are unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/access-assignments/training-supervisors",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const body = grantTrainingSupervisorBodySchema.safeParse(request.body);
+        if (!organizationId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.grantTrainingSupervisorForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Training Supervisor access is unavailable.");
+        }
+        await dependencies.managementAdmin.grantTrainingSupervisorForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: body.data.user_id,
+          branchIds: body.data.branch_ids,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(201).json({ success: true });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "The user or branch was not found."));
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Training Supervisor access conflicts with existing roles."));
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter valid Training Supervisor parameters."));
+        else next(new HttpError(503, "service_unavailable", "Training Supervisor access is unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/access-assignments/training-supervisors/:userId/suspend",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        if (!organizationId.success || !userId.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.suspendTrainingSupervisorForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Training Supervisor access is unavailable.");
+        }
+        await dependencies.managementAdmin.suspendTrainingSupervisorForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Training Supervisor assignment not found."));
+        else next(new HttpError(503, "service_unavailable", "Training Supervisor access is unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/access-assignments/training-supervisors/:userId/reactivate",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        const body = reactivateTrainingSupervisorBodySchema.safeParse(request.body);
+        if (!organizationId.success || !userId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.reactivateTrainingSupervisorForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Training Supervisor access is unavailable.");
+        }
+        await dependencies.managementAdmin.reactivateTrainingSupervisorForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+          branchIds: body.data.branch_ids,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Training Supervisor assignment not found."));
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Training Supervisor access conflicts with existing roles."));
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter valid branch assignments."));
+        else next(new HttpError(503, "service_unavailable", "Training Supervisor access is unavailable."));
+      }
+    },
+  );
+  app.delete(
+    "/api/v1/internal-admin/organizations/:organizationId/access-assignments/training-supervisors/:userId",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        if (!organizationId.success || !userId.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.revokeTrainingSupervisorForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Training Supervisor access is unavailable.");
+        }
+        await dependencies.managementAdmin.revokeTrainingSupervisorForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Training Supervisor assignment not found."));
+        else next(new HttpError(503, "service_unavailable", "Training Supervisor access is unavailable."));
+      }
+    },
+  );
+  app.patch(
+    "/api/v1/internal-admin/organizations/:organizationId/access-assignments/training-supervisors/:userId/reassign",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        const body = reassignTrainingSupervisorBodySchema.safeParse(request.body);
+        if (!organizationId.success || !userId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.reassignTrainingSupervisorForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Training Supervisor access is unavailable.");
+        }
+        await dependencies.managementAdmin.reassignTrainingSupervisorForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+          branchIds: body.data.branch_ids,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(204).end();
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Training Supervisor assignment not found."));
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter valid branch assignments."));
+        else next(new HttpError(503, "service_unavailable", "Training Supervisor access is unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/training-supervisor/session",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        if (!emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        if (!dependencies.managementAdmin.establishTrainingSupervisorSession) {
+          throw new HttpError(503, "service_unavailable", "Training Supervisor access is temporarily unavailable.");
+        }
+        const context = await dependencies.managementAdmin.establishTrainingSupervisorSession(auth.userId);
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ context });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Training Supervisor access is temporarily unavailable."));
+      }
+    },
+  );
+  app.get(
+    "/api/v1/training-supervisor/context",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const auth = requireAuthContext(request);
+        const query = z.object({
+          credential_version: z.string().uuid().optional(),
+        }).strict().safeParse(request.query);
+        if (!query.success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        if (!dependencies.managementAdmin.getTrainingSupervisorContext) {
+          throw new HttpError(503, "service_unavailable", "Training Supervisor access is temporarily unavailable.");
+        }
+        const headerVersion = request.headers["x-credential-version"];
+        let expectedVersion: string | null = null;
+        if (typeof headerVersion === "string" && headerVersion.trim() !== "") {
+          const parsed = z.string().uuid().safeParse(headerVersion.trim());
+          if (!parsed.success) {
+            throw new HttpError(400, "bad_request", "Invalid credential version header.");
+          }
+          expectedVersion = parsed.data;
+        } else if (query.data.credential_version) {
+          expectedVersion = query.data.credential_version;
+        }
+
+        if (!expectedVersion) {
+          throw new HttpError(403, "forbidden", "Credential version is required.");
+        }
+
+        const context = await dependencies.managementAdmin.getTrainingSupervisorContext({
+          actorUserId: auth.userId,
+          expectedCredentialVersion: expectedVersion,
+        });
+
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ context });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Training Supervisor access is temporarily unavailable."));
       }
     },
   );
