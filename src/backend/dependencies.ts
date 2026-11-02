@@ -45,6 +45,10 @@ import {
   createOrganizationManagerPushWorker,
   type OrganizationManagerPushWorker,
 } from "./organization-manager-push-worker";
+import {
+  createOrganizationManagerNotificationProducer,
+  type OrganizationManagerNotificationProducer,
+} from "./organization-manager-notification-producer";
 
 import {
   createDailyBusinessReportService,
@@ -76,6 +80,7 @@ export type BackendDependencies = {
   organizationManagerPasswordReset?: OrganizationManagerPasswordResetService;
   organizationManagerNotifications?: OrganizationManagerNotificationService;
   organizationManagerPushWorker?: OrganizationManagerPushWorker;
+  organizationManagerNotificationProducer?: OrganizationManagerNotificationProducer;
   provisioningAdmin: ProvisioningAdmin;
   managementAdmin: ManagementAdmin;
   branchManagementAdmin: BranchManagementAdmin;
@@ -164,6 +169,9 @@ export function createDefaultDependencies(
     ),
     organizationManagerNotifications: createOrganizationManagerNotificationService(config),
     organizationManagerPushWorker: createOrganizationManagerPushWorker(config),
+    organizationManagerNotificationProducer: createOrganizationManagerNotificationProducer(config, {
+      enabled: config.organizationManagerNotificationProducerEnabled === true,
+    }),
     provisioningAdmin: createProvisioningAdmin(
       config.supabase.url,
       config.supabase.secretKey,

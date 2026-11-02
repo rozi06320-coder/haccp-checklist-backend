@@ -3,6 +3,7 @@ import { createApp } from "./app";
 import { loadBackendConfig } from "./config";
 import { createDefaultDependencies } from "./dependencies";
 import { startOrganizationManagerPushWorker } from "./organization-manager-push-worker";
+import { startOrganizationManagerNotificationScheduler } from "./organization-manager-notification-producer";
 
 async function start() {
   const config = loadBackendConfig();
@@ -37,6 +38,14 @@ async function start() {
     })
     : null;
 
+  const managerNotificationProducerController = config.organizationManagerNotificationProducerEnabled
+    && dependencies.organizationManagerNotificationProducer?.enabled
+    ? startOrganizationManagerNotificationScheduler({
+      producer: dependencies.organizationManagerNotificationProducer,
+      logger: (event) => console.info("ORGANIZATION_MANAGER_NOTIFICATION_PRODUCER", event),
+    })
+    : null;
+
   let shuttingDown = false;
   const shutdown = async (signal: NodeJS.Signals) => {
     if (shuttingDown) return;
@@ -49,7 +58,10 @@ async function start() {
     }, 10_000);
     shutdownTimer.unref();
 
-    await managerPushController?.stop();
+    await Promise.all([
+      managerPushController?.stop(),
+      managerNotificationProducerController?.stop(),
+    ]);
 
     server.close((error) => {
       if (error) {

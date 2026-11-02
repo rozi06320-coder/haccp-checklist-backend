@@ -26,6 +26,7 @@ describe("backend configuration", () => {
     assert.equal(config.trainingLearnerAllowedOrigin, undefined);
     assert.equal(config.supervisorNotificationSchedulerSecret, undefined);
     assert.equal(config.organizationManagerPushWorkerEnabled, false);
+    assert.equal(config.organizationManagerNotificationProducerEnabled, false);
     assert.equal(loadBackendConfig({ ...validEnvironment, SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET: "test-supervisor-notification-scheduler-secret" }).supervisorNotificationSchedulerSecret, "test-supervisor-notification-scheduler-secret");
   });
 
@@ -43,6 +44,19 @@ describe("backend configuration", () => {
       VAPID_SUBJECT: "mailto:push@example.invalid",
     });
     assert.equal(configured.organizationManagerPushWorkerEnabled, true);
+  });
+
+  it("keeps the Organization Manager notification producer disabled unless service credential exists", () => {
+    assert.throws(() => loadBackendConfig({
+      ...validEnvironment,
+      ORGANIZATION_MANAGER_NOTIFICATION_PRODUCER_ENABLED: "true",
+    }), BackendConfigurationError);
+    const configured = loadBackendConfig({
+      ...validEnvironment,
+      ORGANIZATION_MANAGER_NOTIFICATION_PRODUCER_ENABLED: "true",
+      SUPABASE_SECRET_KEY: "test-service-key",
+    });
+    assert.equal(configured.organizationManagerNotificationProducerEnabled, true);
   });
 
   it("keeps employee draft preview independently disabled by default",()=>{

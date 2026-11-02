@@ -39,6 +39,7 @@ const environmentSchema = z
     VAPID_PRIVATE_KEY: z.string().trim().min(1).max(4_096).optional(),
     VAPID_SUBJECT: z.string().trim().min(1).max(512).optional(),
     ORGANIZATION_MANAGER_PUSH_WORKER_ENABLED: disabledByDefaultFlag,
+    ORGANIZATION_MANAGER_NOTIFICATION_PRODUCER_ENABLED: disabledByDefaultFlag,
     SUPERVISOR_MUTATION_RATE_LIMIT_ENABLED: disabledByDefaultFlag,
     SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET: z.string().min(32).max(4_096).optional(),
     TRAINING_ORGANIZATION_SLUG: z.string().trim().toLowerCase().min(1).max(120).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional(),
@@ -91,6 +92,13 @@ const environmentSchema = z
         message: "requires the service credential and complete VAPID configuration",
       });
     }
+    if (environment.ORGANIZATION_MANAGER_NOTIFICATION_PRODUCER_ENABLED && !environment.SUPABASE_SECRET_KEY) {
+      context.addIssue({
+        code: "custom",
+        path: ["ORGANIZATION_MANAGER_NOTIFICATION_PRODUCER_ENABLED"],
+        message: "requires the service credential (SUPABASE_SECRET_KEY)",
+      });
+    }
     const publicationSigningValues=[environment.TRAINING_PUBLICATION_SIGNING_PRIVATE_KEY_BASE64,
       environment.TRAINING_PUBLICATION_AUDIENCE,environment.TRAINING_PUBLICATION_SIGNING_KEY_ID];
     if(publicationSigningValues.some(Boolean)&&!publicationSigningValues.every(Boolean)){
@@ -117,6 +125,7 @@ export type BackendConfig = {
   };
   supervisorNotificationSchedulerSecret?: string;
   organizationManagerPushWorkerEnabled?: boolean;
+  organizationManagerNotificationProducerEnabled?: boolean;
   supervisorMutationRateLimitEnabled?: boolean;
   trainingOrganizationSlug?: string;
   trainingLearnerAuthEnabled?: boolean;
@@ -167,6 +176,7 @@ export function loadBackendConfig(
     },
     supervisorNotificationSchedulerSecret: result.data.SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET,
     organizationManagerPushWorkerEnabled: result.data.ORGANIZATION_MANAGER_PUSH_WORKER_ENABLED,
+    organizationManagerNotificationProducerEnabled: result.data.ORGANIZATION_MANAGER_NOTIFICATION_PRODUCER_ENABLED,
     supervisorMutationRateLimitEnabled: result.data.SUPERVISOR_MUTATION_RATE_LIMIT_ENABLED,
     trainingOrganizationSlug: result.data.TRAINING_ORGANIZATION_SLUG,
     trainingLearnerAuthEnabled: result.data.TRAINING_LEARNER_AUTH_ENABLED,
