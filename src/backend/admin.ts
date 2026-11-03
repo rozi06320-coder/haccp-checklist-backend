@@ -711,6 +711,20 @@ export type ManagementAdmin = {
     actorUserId: string;
     expectedCredentialVersion: string;
   }): Promise<TrainingSupervisorContext>;
+  transitionAccessRoleForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    userId: string;
+    expectedSourceRole: "supervisor" | "training_supervisor";
+    destinationRole: "supervisor" | "training_supervisor";
+    branchIds: string[];
+    supervisorTeamAssignments?: SupervisorTeamAssignmentInput[];
+  }): Promise<{
+    userId: string;
+    previousRole: "supervisor" | "training_supervisor";
+    newRole: "supervisor" | "training_supervisor";
+    updatedAt: string;
+  }>;
 };
 
 export type SupervisedBranch = {
@@ -2093,6 +2107,44 @@ export function createManagementAdmin(
       }).strict()).length(1).safeParse(data);
       if (!rows.success) throw new AdminOperationError();
       return rows.data[0];
+    },
+    async transitionAccessRoleForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("transition_internal_admin_access_role", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_user_id: input.userId,
+        source_role: input.expectedSourceRole,
+        target_role: input.destinationRole,
+        target_branch_id: null,
+        target_branch_ids: input.branchIds,
+        target_team_assignments: input.supervisorTeamAssignments && input.supervisorTeamAssignments.length > 0
+          ? input.supervisorTeamAssignments.map((assignment) => ({
+              operational_team_id: assignment.operationalTeamId,
+              assignment_role: assignment.assignmentRole,
+            }))
+          : null,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "23514" || error.code === "23505") throw new AdminConflictError();
+        if (error.code === "22023") throw new AdminInputError();
+        throw new AdminOperationError();
+      }
+      const rows = z.array(z.object({
+        user_id: z.string().uuid(),
+        previous_role: z.enum(["supervisor", "training_supervisor"]),
+        new_role: z.enum(["supervisor", "training_supervisor"]),
+        updated_at: z.string(),
+      }).strict()).length(1).safeParse(data);
+      if (!rows.success) throw new AdminOperationError();
+      const row = rows.data[0];
+      return {
+        userId: row.user_id,
+        previousRole: row.previous_role,
+        newRole: row.new_role,
+        updatedAt: row.updated_at,
+      };
     },
   };
 }

@@ -1271,6 +1271,19 @@ const reactivateTrainingSupervisorBodySchema = z.object({
 }).strict().superRefine((val, ctx) => {
   if (val.branch_ids) rejectDuplicateBranchIds({ branch_ids: val.branch_ids }, ctx);
 });
+const transitionAccessRoleBodySchema = z.object({
+  user_id: z.uuid(),
+  expected_source_role: z.enum(["supervisor", "training_supervisor"]),
+  destination_role: z.enum(["supervisor", "training_supervisor"]),
+  branch_ids: z.array(z.uuid()).min(1).max(50),
+  supervisor_team_assignments: z.array(supervisorTeamAssignmentBodySchema).max(50).optional(),
+}).strict().superRefine(rejectDuplicateBranchIds).refine(
+  (data) => data.expected_source_role !== data.destination_role,
+  {
+    message: "expected_source_role and destination_role must be different.",
+    path: ["destination_role"],
+  },
+);
 const organizationManagerBodySchema = maintenanceUserBodySchema.extend({
   full_name_ar: optionalDisplayNameSchema,
 }).strict();
@@ -6946,6 +6959,49 @@ export function createApp(
         else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Training Supervisor assignment not found."));
         else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter valid branch assignments."));
         else next(new HttpError(503, "service_unavailable", "Training Supervisor access is unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/access-assignments/transition",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const body = transitionAccessRoleBodySchema.safeParse(request.body);
+        if (!organizationId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.transitionAccessRoleForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Role transition is unavailable.");
+        }
+        const result = await dependencies.managementAdmin.transitionAccessRoleForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: body.data.user_id,
+          expectedSourceRole: body.data.expected_source_role,
+          destinationRole: body.data.destination_role,
+          branchIds: body.data.branch_ids,
+          supervisorTeamAssignments: body.data.supervisor_team_assignments?.map((item) => ({
+            operationalTeamId: item.operational_team_id,
+            assignmentRole: item.assignment_role,
+          })),
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({
+          user_id: result.userId,
+          previous_role: result.previousRole,
+          new_role: result.newRole,
+          updated_at: result.updatedAt,
+        });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "The specified user was not found."));
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "The user role could not be transitioned due to a conflicting assignment state."));
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter valid role transition parameters."));
+        else next(new HttpError(503, "service_unavailable", "Role transition is unavailable."));
       }
     },
   );
