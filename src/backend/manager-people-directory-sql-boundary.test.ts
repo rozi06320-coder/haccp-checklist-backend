@@ -81,3 +81,35 @@ describe("Manager unified people directory migration boundary", () => {
     assert.match(source, /grant execute on function public\.list_managed_people_directory\(uuid, uuid, uuid, date, text, text\)\s+to service_role/);
   });
 });
+
+describe("Manager Training Supervisor directory forward migration boundary", () => {
+  const forwardMigrationPath = new URL(
+    "../../supabase/migrations/20261103120000_manager_directory_training_supervisor.sql",
+    import.meta.url,
+  );
+  const forwardSource = readFileSync(forwardMigrationPath, "utf8");
+
+  it("adds Training Supervisor support using authoritative tables and strict org isolation", () => {
+    assert.match(forwardSource, /from public\.training_memberships tm/);
+    assert.match(forwardSource, /join public\.training_membership_branches tmb/);
+    assert.match(forwardSource, /tm\.organization_id = target_organization_id/);
+    assert.match(forwardSource, /tm\.active/);
+    assert.match(forwardSource, /tm\.training_role = 'training_supervisor'/);
+    assert.match(forwardSource, /branch\.organization_id = target_organization_id/);
+    assert.match(forwardSource, /branch\.active/);
+  });
+
+  it("preserves supervisor person_type while exposing explicit supervisor_role metadata", () => {
+    assert.match(forwardSource, /'supervisor'::text as supervisor_role/);
+    assert.match(forwardSource, /'training_supervisor'::text as supervisor_role/);
+    assert.match(forwardSource, /'person_type', 'supervisor'/);
+    assert.match(forwardSource, /'supervisor_role', supervisor\.supervisor_role/);
+  });
+
+  it("preserves security definer, search_path isolation, and service_role execution", () => {
+    assert.match(forwardSource, /security definer/);
+    assert.match(forwardSource, /set search_path = ''/);
+    assert.match(forwardSource, /revoke all on function public\.list_managed_people_directory\(uuid, uuid, uuid, date, text, text\)\s+from public, anon, authenticated/);
+    assert.match(forwardSource, /grant execute on function public\.list_managed_people_directory\(uuid, uuid, uuid, date, text, text\)\s+to service_role/);
+  });
+});

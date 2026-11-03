@@ -115,9 +115,9 @@ insert into public.operational_staff_health_cards(
 );
 
 insert into public.operational_staff_monthly_evaluations(
-  organization_id,branch_id,supervisor_team_id,operational_staff_id,evaluation_month,status
+  organization_id,branch_id,supervisor_team_id,operational_staff_id,evaluation_month,status,evaluated_by_user_id
 ) values(
-  '29000000-0000-4000-8000-000000000001','39000000-0000-4000-8000-000000000001','49000000-0000-4000-8000-000000000001','59000000-0000-4000-8000-000000000001',pg_catalog.date_trunc('month',current_date)::date,'draft'
+  '29000000-0000-4000-8000-000000000001','39000000-0000-4000-8000-000000000001','49000000-0000-4000-8000-000000000001','59000000-0000-4000-8000-000000000001',pg_catalog.date_trunc('month',current_date)::date,'draft','19000000-0000-4000-8000-000000000003'
 );
 
 create temporary table people_results(name text primary key,payload jsonb) on commit drop;
@@ -182,7 +182,7 @@ select throws_ok($$select public.list_managed_people_directory('19000000-0000-40
 select ok((select prosecdef from pg_catalog.pg_proc where oid='public.list_managed_people_directory(uuid,uuid,uuid,date,text,text)'::regprocedure),'RPC is SECURITY DEFINER');
 select ok(has_function_privilege('service_role','public.list_managed_people_directory(uuid,uuid,uuid,date,text,text)','execute'),'service_role can execute the RPC');
 select ok(not has_function_privilege('anon','public.list_managed_people_directory(uuid,uuid,uuid,date,text,text)','execute') and not has_function_privilege('authenticated','public.list_managed_people_directory(uuid,uuid,uuid,date,text,text)','execute'),'browser roles cannot execute the RPC');
-select like(pg_catalog.pg_get_functiondef('public.list_managed_people_directory(uuid,uuid,uuid,date,text,text)'::regprocedure),$$%SET search_path TO ''%$$,'RPC fixes an empty search_path');
+select alike(pg_catalog.pg_get_functiondef('public.list_managed_people_directory(uuid,uuid,uuid,date,text,text)'::regprocedure),$$%SET search_path TO ''%$$,'RPC fixes an empty search_path');
 select ok((public.list_managed_employee_team('19000000-0000-4000-8000-000000000001','29000000-0000-4000-8000-000000000001',null,pg_catalog.date_trunc('month',current_date)::date) ? 'employees') and not (public.list_managed_employee_team('19000000-0000-4000-8000-000000000001','29000000-0000-4000-8000-000000000001',null,pg_catalog.date_trunc('month',current_date)::date) ? 'people'),'existing employee-team RPC remains unchanged');
 select ok(not exists(select 1 from all_people where person->>'person_id'='59000000-0000-4000-8000-000000000009') and exists(select 1 from all_people where person->>'person_id'='19000000-0000-4000-8000-000000000011'),'explicitly linked promoted staff is suppressed in favor of returned supervisor');
 select ok(not ((select person from all_people where person->>'person_id'='19000000-0000-4000-8000-000000000003') ?| array['staff_id','assignment_id','operational_team_id','operational_roles','supervisor_training_status']),'supervisor variant omits staff-only keys');

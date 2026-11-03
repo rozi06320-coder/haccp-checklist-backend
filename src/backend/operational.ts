@@ -3042,9 +3042,20 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         display_name_ar: optionalStaffText,
         branches: z.array(branch).min(1),
         status: z.enum(["active", "disabled", "password_change_required"]),
+        supervisor_role: z.enum(["supervisor", "training_supervisor"]).optional(),
+      }).strict();
+      const trainingSupervisor = z.object({
+        person_type: z.literal("training_supervisor"),
+        ...common,
+        display_name: z.string().nullable(),
+        country_code: z.string().regex(/^[A-Z]{2}$/).nullable(),
+        display_name_ar: optionalStaffText,
+        branches: z.array(branch).min(1),
+        status: z.enum(["active", "disabled", "password_change_required"]),
+        supervisor_role: z.enum(["supervisor", "training_supervisor"]).optional(),
       }).strict();
       const result = z.object({
-        people: z.array(z.discriminatedUnion("person_type", [staff, supervisor])).max(1000),
+        people: z.array(z.discriminatedUnion("person_type", [staff, supervisor, trainingSupervisor])).max(1000),
         people_total: z.number().int().nonnegative(),
         people_limit: z.literal(1000),
         people_truncated: z.boolean(),

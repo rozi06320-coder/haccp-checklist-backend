@@ -137,7 +137,10 @@ describe("Manager unified people directory API", () => {
       rpcRequests.push({ path: request.url ?? "", body: raw ? JSON.parse(raw) as Record<string, unknown> : {} });
       response.statusCode = rpcStatus;
       response.setHeader("content-type", "application/json");
-      if (request.url === "/rest/v1/rpc/apply_due_operational_staff_team_moves") {
+      if (
+        request.url === "/rest/v1/rpc/apply_due_operational_staff_team_moves" ||
+        request.url === "/rest/v1/rpc/apply_due_operational_staff_branch_transfers"
+      ) {
         response.end(JSON.stringify([]));
         return;
       }
@@ -261,6 +264,52 @@ describe("Manager unified people directory API", () => {
     const body = await response.json() as typeof validDirectory;
     assert.equal(body.people[0]?.status, "promoted_to_supervisor");
     assert.equal(body.people[1]?.status, "left_company");
+  });
+
+  it("accepts active Training Supervisor records with supervisor_role and multiple branches", async () => {
+    rpcStatus = 200;
+    const trainingSupervisorId = "55000000-0000-4000-8000-000000000001";
+    const secondBranchId = "35000000-0000-4000-8000-000000000002";
+    rpcPayload = {
+      ...validDirectory,
+      people: [
+        {
+          ...validDirectory.people[1],
+          supervisor_role: "supervisor",
+        },
+        {
+          person_type: "supervisor",
+          person_id: trainingSupervisorId,
+          display_name: "Training Supervisor",
+          display_name_ar: "مدرب الفروع",
+          person_code: "TS-01",
+          phone_number: "+966501112233",
+          email: "trainer@example.invalid",
+          country_code: "SA",
+          iqama_number: null,
+          iqama_expiry_date: null,
+          branches: [
+            { id: ids.branch, name: "Al Takhassusi", name_ar: null, code: "TAK" },
+            { id: secondBranchId, name: "Al Olaya", name_ar: "العليا", code: "OLY" },
+          ],
+          status: "active",
+          joined_at: "2026-09-01T08:00:00+00:00",
+          new_until: "2026-10-01T08:00:00+00:00",
+          is_new: false,
+          supervisor_role: "training_supervisor",
+        },
+      ],
+      people_total: 2,
+    };
+    const response = await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/people?month=2026-09`, { headers: authHeaders });
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.json() as { people: Array<Record<string, unknown>> };
+    assert.equal(body.people.length, 2);
+    assert.equal(body.people[0]?.supervisor_role, "supervisor");
+    assert.equal(body.people[1]?.supervisor_role, "training_supervisor");
+    assert.equal(body.people[1]?.person_type, "supervisor");
+    assert.equal(Array.isArray(body.people[1]?.branches), true);
+    assert.equal((body.people[1]?.branches as unknown[]).length, 2);
   });
 
   it("rejects lowercase or malformed Supervisor country codes and malformed string evaluation scores", async () => {
