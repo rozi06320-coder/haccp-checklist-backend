@@ -1305,6 +1305,13 @@ const existingSupervisorGrantBodySchema = existingUserGrantBodySchema.extend({
 });
 const reactivateAccessBodySchema = z.object({ active: z.literal(true) }).strict();
 const reactivateSupervisorAccessBodySchema = reactivateAccessBodySchema.extend({ branch_id: z.uuid() }).strict();
+const supervisorOperationalRecoveryBodySchema = z.object({
+  branch_ids: z.array(z.uuid()).min(1).max(50),
+  historical_assignment_ids: z.array(z.uuid()).max(100),
+}).strict();
+const supervisorClassificationBodySchema = z.object({
+  classification: z.enum(["supervisor", "training_supervisor"]),
+}).strict();
 const supervisorDemotionBodySchema = z.object({
   destination_branch_id: z.uuid(),
   destination_team_id: z.uuid(),
@@ -6745,6 +6752,71 @@ export function createApp(
         else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Supervisor access cannot be restored to that branch."));
         else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
         else next(new HttpError(503, "service_unavailable", "Supervisors are unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/supervisors/:userId/restore-operational-access",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        const body = supervisorOperationalRecoveryBodySchema.safeParse(request.body);
+        if (!organizationId.success || !userId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.restoreSupervisorOperationalAccessForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Supervisor recovery is unavailable.");
+        }
+        const recovery = await dependencies.managementAdmin.restoreSupervisorOperationalAccessForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+          branchIds: body.data.branch_ids,
+          historicalAssignmentIds: body.data.historical_assignment_ids,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ recovery });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "The recovery request is invalid."));
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Supervisor recovery could not be completed."));
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Supervisor recovery is unavailable."));
+      }
+    },
+  );
+  app.patch(
+    "/api/v1/internal-admin/organizations/:organizationId/supervisors/:userId/classification",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const userId = z.uuid().safeParse(request.params.userId);
+        const body = supervisorClassificationBodySchema.safeParse(request.body);
+        if (!organizationId.success || !userId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!dependencies.managementAdmin.setSupervisorClassificationForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Supervisor classification is unavailable.");
+        }
+        const classification = await dependencies.managementAdmin.setSupervisorClassificationForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          userId: userId.data,
+          classification: body.data.classification,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ classification });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "The classification is invalid."));
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Supervisor classification could not be changed."));
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Supervisor classification is unavailable."));
       }
     },
   );

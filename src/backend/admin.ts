@@ -75,9 +75,23 @@ const supervisorDemotionResultSchema = z.object({
     closed_backup_assignment_id: z.string().uuid().nullable(),
   }).strict()).max(1),
 }).strict();
+const supervisorOperationalRecoverySchema = z.object({
+  organization_id: z.string().uuid(),
+  user_id: z.string().uuid(),
+  classification: z.literal("training_supervisor"),
+  branch_count: z.number().int().nonnegative(),
+  restored_assignment_count: z.number().int().nonnegative(),
+}).strict();
+const supervisorClassificationSchema = z.object({
+  organization_id: z.string().uuid(),
+  user_id: z.string().uuid(),
+  classification: z.enum(["supervisor", "training_supervisor"]),
+}).strict();
 
 export type InternalAdminSupervisorDemotionEligibility = z.infer<typeof supervisorDemotionEligibilitySchema>;
 export type InternalAdminSupervisorDemotionResult = z.infer<typeof supervisorDemotionResultSchema>;
+export type InternalAdminSupervisorOperationalRecovery = z.infer<typeof supervisorOperationalRecoverySchema>;
+export type InternalAdminSupervisorClassification = z.infer<typeof supervisorClassificationSchema>;
 
 export type ProvisionedUser = { id: string };
 export type CreateAuthUserInput = {
@@ -200,6 +214,7 @@ export type InternalAdminSupervisor = {
     active: boolean;
   }>;
   active: boolean;
+  classification?: "supervisor" | "training_supervisor";
   disabled: boolean;
   must_change_password: boolean;
   created_at: string;
@@ -530,6 +545,19 @@ export type ManagementAdmin = {
     userId: string;
     branchId: string;
   }): Promise<void>;
+  restoreSupervisorOperationalAccessForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    userId: string;
+    branchIds: string[];
+    historicalAssignmentIds: string[];
+  }): Promise<InternalAdminSupervisorOperationalRecovery>;
+  setSupervisorClassificationForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    userId: string;
+    classification: "supervisor" | "training_supervisor";
+  }): Promise<InternalAdminSupervisorClassification>;
   getSupervisorDemotionEligibilityForInternalAdmin?(input: {
     actorUserId: string;
     organizationId: string;
@@ -1130,7 +1158,7 @@ export function createManagementAdmin(
       if (!rows.success) throw new AdminOperationError();
     },
     async listSupervisorsForInternalAdmin(actorUserId, organizationId) {
-      const { data, error } = await admin.rpc("list_internal_admin_supervisors", {
+      const { data, error } = await admin.rpc("list_internal_admin_supervisors_v2", {
         actor_user_id: actorUserId,
         target_organization_id: organizationId,
       });
@@ -1165,6 +1193,7 @@ export function createManagementAdmin(
           active: z.boolean(),
         }).strict()).max(100).optional(),
         active: z.boolean(),
+        classification: z.enum(["supervisor", "training_supervisor"]),
         disabled: z.boolean(),
         must_change_password: z.boolean(),
         created_at: z.string(),
@@ -1290,6 +1319,41 @@ export function createManagementAdmin(
         updated_at: z.string(),
       }).strict()).length(1).safeParse(data);
       if (!rows.success) throw new AdminOperationError();
+    },
+    async restoreSupervisorOperationalAccessForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("restore_internal_admin_supervisor_operational_access", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_user_id: input.userId,
+        target_branch_ids: input.branchIds,
+        historical_assignment_ids: input.historicalAssignmentIds,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "22023") throw new AdminInputError();
+        if (["23505", "23514", "40001"].includes(error.code)) throw new AdminConflictError();
+        throw new AdminOperationError();
+      }
+      const parsed = supervisorOperationalRecoverySchema.safeParse(data);
+      if (!parsed.success) throw new AdminOperationError();
+      return parsed.data;
+    },
+    async setSupervisorClassificationForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("set_internal_admin_supervisor_classification", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_user_id: input.userId,
+        target_classification: input.classification,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "22023") throw new AdminInputError();
+        if (["23505", "23514", "40001"].includes(error.code)) throw new AdminConflictError();
+        throw new AdminOperationError();
+      }
+      const parsed = supervisorClassificationSchema.safeParse(data);
+      if (!parsed.success) throw new AdminOperationError();
+      return parsed.data;
     },
     async getSupervisorDemotionEligibilityForInternalAdmin(input) {
       const { data, error } = await admin.rpc("get_internal_admin_supervisor_demotion_eligibility", {

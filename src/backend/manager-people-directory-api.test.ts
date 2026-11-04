@@ -75,6 +75,7 @@ const validDirectory = {
       joined_at: "2026-07-01T08:00:00+00:00",
       new_until: "2026-08-01T08:00:00+00:00",
       is_new: false,
+      supervisor_role: "supervisor",
     },
   ],
   people_total: 2,
@@ -184,7 +185,7 @@ describe("Manager unified people directory API", () => {
     assert.equal("staff_id" in body.people[1], false);
     assert.deepEqual({ total: body.people_total, limit: body.people_limit, truncated: body.people_truncated }, { total: 2, limit: 1000, truncated: false });
     assert.deepEqual(rpcRequests.at(-1), {
-      path: "/rest/v1/rpc/list_managed_people_directory",
+      path: "/rest/v1/rpc/list_managed_people_directory_v2",
       body: {
         actor_user_id: ids.manager,
         target_organization_id: ids.organization,

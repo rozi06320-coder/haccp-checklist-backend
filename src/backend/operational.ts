@@ -3042,7 +3042,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         display_name_ar: optionalStaffText,
         branches: z.array(branch).min(1),
         status: z.enum(["active", "disabled", "password_change_required"]),
-        supervisor_role: z.enum(["supervisor", "training_supervisor"]).optional(),
+        supervisor_role: z.enum(["supervisor", "training_supervisor"]),
       }).strict();
       const trainingSupervisor = z.object({
         person_type: z.literal("training_supervisor"),
@@ -3052,7 +3052,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         display_name_ar: optionalStaffText,
         branches: z.array(branch).min(1),
         status: z.enum(["active", "disabled", "password_change_required"]),
-        supervisor_role: z.enum(["supervisor", "training_supervisor"]).optional(),
+        supervisor_role: z.enum(["supervisor", "training_supervisor"]),
       }).strict();
       const result = z.object({
         people: z.array(z.discriminatedUnion("person_type", [staff, supervisor, trainingSupervisor])).max(1000),
@@ -3087,7 +3087,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         if (value.people_truncated !== (value.people_total > value.people_limit)) {
           context.addIssue({ code: "custom", path: ["people_truncated"], message: "Invalid people truncation state." });
         }
-      }).parse(await rpcObject("list_managed_people_directory", {
+      }).parse(await rpcObject("list_managed_people_directory_v2", {
         actor_user_id: input.actorUserId,
         target_organization_id: input.organizationId,
         branch_filter: input.branchId ?? null,
