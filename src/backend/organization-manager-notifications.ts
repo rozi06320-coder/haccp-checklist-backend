@@ -34,6 +34,8 @@ const projectionNotificationSchema = z.object({
   organization_id: uuid,
   category: z.enum(["sales_tracking_missing", "maintenance_issue", "incomplete_branch_tasks"]),
   branch_id: uuid.nullable(),
+  branch_name: z.string().nullable().optional(),
+  branch_name_ar: z.string().nullable().optional(),
   business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
   source_type: z.string().nullable(),
   source_id: uuid.nullable(),
@@ -69,6 +71,7 @@ export class ManagerNotificationConflictError extends Error {}
 export class ManagerNotificationInputError extends Error {}
 export class ManagerNotificationRateLimitError extends Error {}
 export class ManagerNotificationUnavailableError extends Error {}
+export class ManagerNotificationRpcNotFoundError extends Error {}
 
 export type OrganizationManagerNotificationService = {
   getPublicKey(input: { actorUserId: string; organizationId: string }): Promise<string | null>;
@@ -88,6 +91,9 @@ export type OrganizationManagerNotificationService = {
   listNotificationProjectionCursor?(input: {
     actorUserId: string; organizationId: string; cursor?: string | null; limit: number;
   }): Promise<unknown>;
+  getNotificationDetail?(input: {
+    actorUserId: string; organizationId: string; notificationId: string;
+  }): Promise<{ notification: unknown }>;
   markRead(input: {
     actorUserId: string; organizationId: string; notificationId: string; clientIp: string;
   }): Promise<unknown>;
@@ -95,7 +101,17 @@ export type OrganizationManagerNotificationService = {
 
 const authOptions = { autoRefreshToken: false, detectSessionInUrl: false, persistSession: false } as const;
 
+function isMissingRpcError(error: RpcError): boolean {
+  if (error.code === "42883" || error.code === "PGRST202") return true;
+  if (typeof error.message === "string") {
+    const msg = error.message.toLowerCase();
+    return msg.includes("could not find the function") || msg.includes("does not exist");
+  }
+  return false;
+}
+
 function mappedError(error: RpcError): Error {
+  if (isMissingRpcError(error)) return new ManagerNotificationRpcNotFoundError(error.message);
   if (error.code === "42501") return new ManagerNotificationAccessError();
   if (error.code === "23505") return new ManagerNotificationConflictError();
   if (error.code === "22023" || error.code === "23514") return new ManagerNotificationInputError();
@@ -121,7 +137,14 @@ export function createOrganizationManagerNotificationService(
 
   async function rpc(name: string, args: Record<string, unknown>) {
     let result: Awaited<ReturnType<ManagerNotificationRpcClient["rpc"]>>;
-    try { result = await client.rpc(name, args); } catch { throw new ManagerNotificationUnavailableError(); }
+    try {
+      result = await client.rpc(name, args);
+    } catch (err: unknown) {
+      if (err && typeof err === "object" && isMissingRpcError(err as RpcError)) {
+        throw new ManagerNotificationRpcNotFoundError((err as RpcError).message);
+      }
+      throw new ManagerNotificationUnavailableError();
+    }
     if (result.error) throw mappedError(result.error);
     return result.data;
   }
@@ -187,29 +210,76 @@ export function createOrganizationManagerNotificationService(
         p_before: input.before ?? null,
         p_limit: input.limit,
       }) ?? []);
+      const normalized = rows.map((row) => {
+        const branchName = row.branch_name !== undefined ? row.branch_name : (typeof row.category_context?.branch_name === "string" ? row.category_context.branch_name : undefined);
+        const branchNameAr = row.branch_name_ar !== undefined ? row.branch_name_ar : (typeof row.category_context?.branch_name_ar === "string" ? row.category_context.branch_name_ar : undefined);
+        return {
+          ...row,
+          ...(branchName !== undefined ? { branch_name: branchName } : {}),
+          ...(branchNameAr !== undefined ? { branch_name_ar: branchNameAr } : {}),
+        };
+      });
       const unreadCount = projectionCountSchema.parse(await rpc("count_organization_manager_notification_projection", {
         p_actor_user_id: input.actorUserId,
         p_organization_id: input.organizationId,
       }));
-      return { notifications: rows, unread_count: unreadCount };
+      return { notifications: normalized, unread_count: unreadCount };
     },
     async listNotificationProjectionCursor(input) {
       const cursor = decodeProjectionCursor(input.cursor, input.organizationId);
-      const rows = z.array(projectionNotificationSchema).parse(await rpc("list_organization_manager_notification_projection_cursor", {
+      const args = {
         p_actor_user_id: input.actorUserId,
         p_organization_id: input.organizationId,
         p_before_created_at: cursor.createdAt,
         p_before_id: cursor.id,
         p_limit: input.limit,
-      }) ?? []);
+      };
+      let rawData: unknown = null;
+      try {
+        rawData = await rpc("list_organization_manager_notification_projection_cursor_v2", args);
+      } catch (error) {
+        if (error instanceof ManagerNotificationRpcNotFoundError) {
+          rawData = await rpc("list_organization_manager_notification_projection_cursor", args);
+        } else {
+          throw error;
+        }
+      }
+      const rows = z.array(projectionNotificationSchema).parse(rawData ?? []);
+      const normalized = rows.map((row) => {
+        const branchName = row.branch_name !== undefined ? row.branch_name : (typeof row.category_context?.branch_name === "string" ? row.category_context.branch_name : undefined);
+        const branchNameAr = row.branch_name_ar !== undefined ? row.branch_name_ar : (typeof row.category_context?.branch_name_ar === "string" ? row.category_context.branch_name_ar : undefined);
+        return {
+          ...row,
+          ...(branchName !== undefined ? { branch_name: branchName } : {}),
+          ...(branchNameAr !== undefined ? { branch_name_ar: branchNameAr } : {}),
+        };
+      });
       const unreadCount = projectionCountSchema.parse(await rpc("count_organization_manager_notification_projection", {
         p_actor_user_id: input.actorUserId,
         p_organization_id: input.organizationId,
       }));
       return {
-        notifications: rows,
+        notifications: normalized,
         unread_count: unreadCount,
         next_cursor: rows.length === input.limit && rows.length > 0 ? encodeProjectionCursor(input.organizationId, rows[rows.length - 1]!) : null,
+      };
+    },
+    async getNotificationDetail(input: { actorUserId: string; organizationId: string; notificationId: string }) {
+      const rows = z.array(projectionNotificationSchema).parse(await rpc("get_organization_manager_notification_detail", {
+        p_actor_user_id: input.actorUserId,
+        p_organization_id: input.organizationId,
+        p_notification_id: input.notificationId,
+      }) ?? []);
+      if (!rows[0]) throw new ManagerNotificationAccessError();
+      const row = rows[0];
+      const branchName = row.branch_name !== undefined ? row.branch_name : (typeof row.category_context?.branch_name === "string" ? row.category_context.branch_name : null);
+      const branchNameAr = row.branch_name_ar !== undefined ? row.branch_name_ar : (typeof row.category_context?.branch_name_ar === "string" ? row.category_context.branch_name_ar : null);
+      return {
+        notification: {
+          ...row,
+          branch_name: branchName,
+          branch_name_ar: branchNameAr,
+        },
       };
     },
     async markRead(input) {

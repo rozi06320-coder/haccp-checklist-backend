@@ -782,6 +782,8 @@ const managerNotificationProjectionSchema = z.object({
   organization_id: z.uuid(),
   category: z.enum(["sales_tracking_missing", "maintenance_issue", "incomplete_branch_tasks"]),
   branch_id: z.uuid().nullable(),
+  branch_name: z.string().nullable().optional(),
+  branch_name_ar: z.string().nullable().optional(),
   business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(),
   source_type: z.string().nullable(),
   source_id: z.uuid().nullable(),
@@ -790,6 +792,9 @@ const managerNotificationProjectionSchema = z.object({
   category_context: z.record(z.string(), z.unknown()),
   read_at: z.string().nullable(),
   created_at: z.string(),
+}).strict();
+const managerNotificationDetailResponseSchema = z.object({
+  notification: managerNotificationProjectionSchema,
 }).strict();
 const managerNotificationProjectionResponseSchema = z.object({
   notifications: z.array(managerNotificationProjectionSchema).max(100),
@@ -8950,6 +8955,23 @@ export function createApp(
           actorUserId:auth.userId,organizationId:organizationId.data,cursor:query.data.cursor??null,limit:query.data.limit,
         }));
         if(result.notifications.some(item=>item.organization_id!==organizationId.data))throw new HttpError(503,"service_unavailable","Notifications are temporarily unavailable.");
+        response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
+      }catch(error){next(error instanceof HttpError?error:managerNotificationError(error));}
+    });
+
+  app.get("/api/v1/management/organizations/:organizationId/notifications/:notificationId/detail", protectedRateLimit, authenticate,
+    async(request,response,next)=>{
+      try{
+        const organizationId=organizationIdSchema.safeParse(request.params.organizationId);
+        const notificationId=z.uuid().safeParse(request.params.notificationId);
+        if(!organizationId.success||!notificationId.success)throw new HttpError(400,"bad_request","The request is invalid.");
+        const auth=requireAuthContext(request),context=await loadActiveUser(request);
+        if(context.must_change_password||!context.managed_organizations.some(item=>item.id===organizationId.data))throw new HttpError(403,"forbidden","Access is denied.");
+        if(!dependencies.organizationManagerNotifications?.getNotificationDetail)throw new HttpError(503,"service_unavailable","Notifications are temporarily unavailable.");
+        const result=managerNotificationDetailResponseSchema.parse(await dependencies.organizationManagerNotifications.getNotificationDetail({
+          actorUserId:auth.userId,organizationId:organizationId.data,notificationId:notificationId.data,
+        }));
+        if(result.notification.organization_id!==organizationId.data)throw new HttpError(503,"service_unavailable","Notifications are temporarily unavailable.");
         response.setHeader("Cache-Control","private, no-store");response.status(200).json(result);
       }catch(error){next(error instanceof HttpError?error:managerNotificationError(error));}
     });

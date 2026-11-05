@@ -72,6 +72,45 @@ describe("Organization Manager notification API", () => {
     async listNotificationProjectionCursor() {
       return { notifications: [], unread_count: 0, next_cursor: null };
     },
+    async getNotificationDetail(input) {
+      if (input.notificationId === ids.notification && input.organizationId === ids.organization && input.actorUserId === ids.manager) {
+        return {
+          notification: {
+            id: ids.notification,
+            organization_id: ids.organization,
+            category: "incomplete_branch_tasks",
+            branch_id: ids.branch,
+            branch_name: "Test Branch",
+            branch_name_ar: "فرع تجريبي",
+            business_date: "2026-11-04",
+            source_type: "daily_business_report",
+            source_id: null,
+            legacy_notification_id: null,
+            occurrence_key: "incomplete:test",
+            category_context: {
+              schema_version: "1",
+              category: "incomplete_branch_tasks",
+              scope: "branch",
+              branch_name: "Test Branch",
+              branch_name_ar: "فرع تجريبي",
+              incomplete_modules: ["cold_storage"],
+              modules_detail: [
+                {
+                  module_key: "cold_storage",
+                  module_name: "Cold Storage",
+                  module_name_ar: "التخزين البارد",
+                  state: "incomplete",
+                  missing_slots: ["10:00", "15:00"],
+                },
+              ],
+            },
+            read_at: null,
+            created_at: "2026-11-05T04:00:00.000Z",
+          },
+        };
+      }
+      throw new (await import("./organization-manager-notifications")).ManagerNotificationAccessError();
+    },
     async markRead() {
       return { notification: { id: ids.notification, read_at: "2026-10-21T10:01:00.000Z" } };
     },
@@ -144,5 +183,33 @@ describe("Organization Manager notification API", () => {
     });
     assert.equal(read.status, 200);
     assert.equal((await read.json() as { notification: { id: string } }).notification.id, ids.notification);
+  });
+
+  it("fetches enriched notification detail with strict authorization", async () => {
+    const detail = await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/notifications/${ids.notification}/detail`, {
+      headers: bearer("manager"),
+    });
+    assert.equal(detail.status, 200);
+    const body = await detail.json() as { notification: { id: string; branch_name: string; category: string } };
+    assert.equal(body.notification.id, ids.notification);
+    assert.equal(body.notification.branch_name, "Test Branch");
+    assert.equal(body.notification.category, "incomplete_branch_tasks");
+
+    // Rejects unauthorized access
+    const crossOrg = await fetch(`${baseUrl}/api/v1/management/organizations/${ids.otherOrganization}/notifications/${ids.notification}/detail`, {
+      headers: bearer("manager"),
+    });
+    assert.equal(crossOrg.status, 403);
+
+    const nonManager = await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/notifications/${ids.notification}/detail`, {
+      headers: bearer("other"),
+    });
+    assert.equal(nonManager.status, 403);
+
+    // Rejects unknown notification id
+    const notFound = await fetch(`${baseUrl}/api/v1/management/organizations/${ids.organization}/notifications/52000000-0000-4000-8000-000000000099/detail`, {
+      headers: bearer("manager"),
+    });
+    assert.equal(notFound.status, 403);
   });
 });
