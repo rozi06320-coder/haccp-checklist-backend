@@ -1607,6 +1607,11 @@ const inventoryItemsBodySchema=z.object({
 const inventoryItemUsageDeleteBodySchema=z.object({
   expected_usage:inventoryUsageValueSchema.refine(value=>Object.keys(value).length<=31),
 }).strict();
+const inventoryItemUsageEditBodySchema=z.object({
+  expected_report_updated_at:z.iso.datetime({offset:true}),
+  expected_usage:inventoryUsageValueSchema.refine(value=>Object.keys(value).length<=31),
+  new_usage:inventoryUsageValueSchema.refine(value=>Object.keys(value).length<=31),
+}).strict();
 const inventoryBeefProductionFieldLabelsBodySchema=z.object({
   russian_label:z.string().max(120).nullable().optional(),
   australian_label:z.string().max(120).nullable().optional(),
@@ -2460,6 +2465,13 @@ function inventoryBeefProductionRowCreateError(error:unknown){
  if(error instanceof ChecklistAccessError)return new HttpError(403,"forbidden","Access is denied.");
  if(error instanceof ChecklistNotFoundError)return new HttpError(404,"not_found","The Inventory Items scope was not found.");
  return new HttpError(500,"service_unavailable","Unable to create Beef Production right now.");
+}
+
+function inventoryItemUsageEditError(error:unknown){
+ if(error instanceof ChecklistConflictError)return new HttpError(409,"conflict","This Item Usage entry changed or the month is already closed. Refresh and try again.");
+ if(error instanceof ChecklistInputError)return new HttpError(422,"unprocessable_entity","The Item Usage values are invalid.");
+ if(error instanceof ChecklistAccessError||error instanceof ChecklistNotFoundError)return new HttpError(403,"forbidden","Access is denied.");
+ return new HttpError(503,"service_unavailable","Unable to update Item Usage right now.");
 }
 
 function catalogError(error:unknown){
@@ -9751,6 +9763,15 @@ export function createApp(
     const current=inventoryItemsCurrentSchema.parse(await dependencies.checklistPersistence.deleteInventoryItemUsageItem({actorUserId:auth.userId,branchId:branch.data,itemUsageId:itemUsageId.data,expectedUsage:body.data.expected_usage}));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+  app.patch("/api/v1/supervisor/branches/:branchId/inventory-items/item-usage/:itemUsageId",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId),itemUsageId=z.uuid().safeParse(request.params.itemUsageId),key=idempotencySchema.safeParse(request.header("Idempotency-Key")),body=inventoryItemUsageEditBodySchema.safeParse(request.body);
+    if(!branch.success||!itemUsageId.success||!key.success||!body.success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.updateInventoryItemUsageEntry)throw new HttpError(403,"forbidden","Access is denied.");
+    const current=inventoryItemsCurrentSchema.parse(await dependencies.checklistPersistence.updateInventoryItemUsageEntry({actorUserId:auth.userId,branchId:branch.data,itemUsageId:itemUsageId.data,expectedReportUpdatedAt:body.data.expected_report_updated_at,expectedUsage:body.data.expected_usage,newUsage:body.data.new_usage,idempotencyKey:key.data}));
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json({current});
+  }catch(error){next(error instanceof HttpError?error:inventoryItemUsageEditError(error));}});
 
   app.get("/api/v1/supervisor/branches/:branchId/catalog",protectedRateLimit,authenticate,async(request,response,next)=>{try{
     const branch=branchIdSchema.safeParse(request.params.branchId);

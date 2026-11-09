@@ -302,6 +302,7 @@ export type ChecklistPersistence = {
   saveInventoryItemsDraft?(input:{actorUserId:string;branchId:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
   submitInventoryItems?(input:{actorUserId:string;branchId:string;idempotencyKey:string;payload:InventoryItemsDraftPayload}):Promise<unknown>;
   deleteInventoryItemUsageItem?(input:{actorUserId:string;branchId:string;itemUsageId:string;expectedUsage:Record<string,string|number>}):Promise<unknown>;
+  updateInventoryItemUsageEntry?(input:{actorUserId:string;branchId:string;itemUsageId:string;expectedReportUpdatedAt:string;expectedUsage:Record<string,string|number>;newUsage:Record<string,string|number>;idempotencyKey:string}):Promise<unknown>;
   listBranchCatalog?(actorUserId:string,branchId:string):Promise<unknown>;
   createBranchCatalogProduct?(input:{actorUserId:string;branchId:string;payload:BranchCatalogProductInput}):Promise<unknown>;
   archiveBranchCatalogProduct?(input:{actorUserId:string;branchId:string;productId:string;expectedUpdatedAt:string}):Promise<unknown>;
@@ -1206,6 +1207,9 @@ export function createChecklistPersistence(
   },
   async deleteInventoryItemUsageItem(input){
    return inventoryItemsCurrent.parse(await rpc("delete_inventory_item_usage_item",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_item_usage_id:input.itemUsageId,expected_usage:input.expectedUsage}));
+  },
+  async updateInventoryItemUsageEntry(input){
+   return inventoryItemsCurrent.parse(await rpc("update_inventory_item_usage_entry",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,target_item_usage_id:input.itemUsageId,expected_report_updated_at:input.expectedReportUpdatedAt,expected_usage:input.expectedUsage,new_usage:input.newUsage,idempotency_key:input.idempotencyKey}));
   },
   listBranchCatalog:(actorUserId,branchId)=>rpc("list_branch_catalog",{actor_user_id:actorUserId,target_branch_id:branchId}),
   createBranchCatalogProduct:(input)=>rpc("create_branch_catalog_product",{actor_user_id:input.actorUserId,target_branch_id:input.branchId,payload:{name:input.payload.name,inventory_behavior:input.payload.inventoryBehavior,unit:input.payload.unit??null,recipe_rows:input.payload.recipeRows??[]}}),
