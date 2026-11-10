@@ -1,5 +1,26 @@
 begin;
-select plan(17);
+select plan(34);
+
+select ok(
+  position('phase4a_business_date_at' in pg_get_functiondef('private.sales_tracking_managed_issue_rows_at(uuid,timestamptz)'::regprocedure)) > 0,
+  'current-day sales issues use each active branch local business date'
+);
+select ok(
+  position('daily_business_report_branch_close_at' in pg_get_functiondef('private.sales_tracking_managed_issue_rows_at(uuid,timestamptz)'::regprocedure)) > 0,
+  'missing Sales Tracking is emitted only after the branch-local 04:00 close'
+);
+select ok(
+  position('report.case_id = report_case.id' in pg_get_functiondef('private.sales_tracking_managed_issue_rows_at(uuid,timestamptz)'::regprocedure)) > 0,
+  'submitted evidence requires the authoritative case pointer'
+);
+select ok(
+  position('daily_report_module_applicability' in pg_get_functiondef('private.sales_tracking_managed_issue_rows_at(uuid,timestamptz)'::regprocedure)) > 0,
+  'Sales Tracking missing status is gated by authoritative applicability'
+);
+select ok(
+  position('daily_report_branch_lifecycle' in pg_get_functiondef('private.sales_tracking_managed_issue_rows_at(uuid,timestamptz)'::regprocedure)) > 0,
+  'Sales Tracking missing status respects authoritative branch lifecycle'
+);
 
 create temp table sales_tracking_issue_tz as
 select
@@ -7,7 +28,7 @@ select
   (select name from pg_timezone_names where extract(hour from statement_timestamp() at time zone name) between 0 and 2 order by name limit 1) open_tz;
 
 insert into auth.users(instance_id,id,aud,role,email,raw_app_meta_data,raw_user_meta_data,created_at,updated_at)
-select '00000000-0000-0000-0000-000000000000', id, 'authenticated', 'authenticated',
+select '00000000-0000-4000-8000-000000000000', id, 'authenticated', 'authenticated',
   id || '@example.invalid', '{}', '{}', now(), now()
 from unnest(array[
   '1e000000-0000-4000-8000-000000000001'::uuid,
@@ -37,6 +58,24 @@ insert into public.branches(id,organization_id,name,code,timezone) values
   ('3e000000-0000-4000-8000-000000000004','2e000000-0000-4000-8000-000000000001','Missing Open Branch','OPN',(select open_tz from sales_tracking_issue_tz));
 update public.branches set created_at=now()-interval '2 days'
 where organization_id='2e000000-0000-4000-8000-000000000001';
+
+-- Test-only: make the automatically seeded Sales Tracking requirement
+-- and branch lifecycle effective for the historical business dates covered by this fixture.
+update public.daily_report_branch_lifecycle lifecycle
+set effective_from_business_date =
+  private.phase4a_business_date(branch.timezone) - 2
+from public.branches branch
+where lifecycle.branch_id = branch.id
+  and branch.organization_id = '2e000000-0000-4000-8000-000000000001';
+
+update public.daily_report_module_applicability applicability
+set effective_from_business_date =
+  private.phase4a_business_date(branch.timezone) - 2
+from public.branches branch
+where applicability.branch_id = branch.id
+  and applicability.module_key = 'sales_tracking'
+  and branch.organization_id = '2e000000-0000-4000-8000-000000000001';
+
 insert into public.organization_memberships(organization_id,user_id,role) values
   ('2e000000-0000-4000-8000-000000000001','1e000000-0000-4000-8000-000000000005','organization_manager'),
   ('2e000000-0000-4000-8000-000000000002','1e000000-0000-4000-8000-000000000006','organization_manager');
@@ -75,11 +114,11 @@ select public.list_sales_tracking_managed_issues(
   1, 20, null, null, null, null, null, 'sales_tracking', null, null
 ) payload;
 
-select is((select payload->>'total' from sales_tracking_issue_list),'4','manager sees one variance plus one prior-day missing issue per closed branch');
+select is((select payload->>'total' from sales_tracking_issue_list),'5','manager sees one variance plus prior-day missing issues across branches');
 select is((select count(*)::int from jsonb_array_elements((select payload->'issues' from sales_tracking_issue_list)) issue where issue->>'title' = 'Sales Tracking variance issue'),1,'variance issue appears');
-select is((select count(*)::int from jsonb_array_elements((select payload->'issues' from sales_tracking_issue_list)) issue where issue->>'title' = 'Missing Sales Tracking submission'),3,'one prior-day missing issue appears for each closed branch');
+select is((select count(*)::int from jsonb_array_elements((select payload->'issues' from sales_tracking_issue_list)) issue where issue->>'title' = 'Missing Sales Tracking submission'),4,'one prior-day missing issue appears for each branch');
 select is((select count(*)::int from jsonb_array_elements((select payload->'issues' from sales_tracking_issue_list)) issue where issue->>'branch_name' = 'Balanced Branch'),1,'a report submitted after rollover does not satisfy the prior business date');
-select is((select count(*)::int from jsonb_array_elements((select payload->'issues' from sales_tracking_issue_list)) issue where issue->>'branch_name' = 'Missing Open Branch'),0,'missing submission before local 04:00 close has no issue');
+select is((select count(*)::int from jsonb_array_elements((select payload->'issues' from sales_tracking_issue_list)) issue where issue->>'branch_name' = 'Missing Open Branch'),1,'open local business date does not suppress an already closed prior-day issue');
 select is(
   public.list_sales_tracking_managed_issues('1e000000-0000-4000-8000-000000000005','2e000000-0000-4000-8000-000000000001',1,20,null,null,'3e000000-0000-4000-8000-000000000001',null,null,'sales_tracking',null,null)->>'total',
   '2',
@@ -115,6 +154,165 @@ $$, '42501', 'sales tracking issue access denied', 'other manager is denied');
 select throws_ok($$
   select public.list_sales_tracking_managed_issues('1e000000-0000-4000-8000-000000000001','2e000000-0000-4000-8000-000000000001')
 $$, '42501', 'sales tracking issue access denied', 'supervisor is denied');
+
+-- Behavioral regression: Branch deactivation retains historical issues
+update public.branches set active = false where id = '3e000000-0000-4000-8000-000000000003';
+update public.branches set active = false where id = '3e000000-0000-4000-8000-000000000001';
+
+select is(
+  (select count(*)::int from jsonb_array_elements(public.list_sales_tracking_managed_issues(
+    '1e000000-0000-4000-8000-000000000005',
+    '2e000000-0000-4000-8000-000000000001',
+    1, 20, null, null, '3e000000-0000-4000-8000-000000000003', null, null, 'sales_tracking', null, null
+  )->'issues') issue where issue->>'title' = 'Missing Sales Tracking submission'),
+  1,
+  'deactivated branch retains historical prior-day missing issue'
+);
+
+select is(
+  (select count(*)::int from jsonb_array_elements(public.list_sales_tracking_managed_issues(
+    '1e000000-0000-4000-8000-000000000005',
+    '2e000000-0000-4000-8000-000000000001',
+    1, 20, null, null, '3e000000-0000-4000-8000-000000000001', null, null, 'sales_tracking', null, null
+  )->'issues') issue where issue->>'title' = 'Sales Tracking variance issue'),
+  1,
+  'deactivated branch retains submitted variance issue'
+);
+
+-- Behavioral regression: Branch inactive on historical business date produces NO missing issue despite being active today
+insert into public.branches(id, organization_id, name, code, timezone, active, created_at) values
+  ('3e000000-0000-4000-8000-000000000005', '2e000000-0000-4000-8000-000000000001', 'Historically Inactive Branch', 'HIN', (select closed_tz from sales_tracking_issue_tz), true, now() - interval '2 days');
+update public.daily_report_branch_lifecycle
+set active = false,
+    effective_from_business_date = private.phase4a_business_date((select closed_tz from sales_tracking_issue_tz)) - 2
+where branch_id = '3e000000-0000-4000-8000-000000000005';
+update public.daily_report_module_applicability
+set effective_from_business_date = private.phase4a_business_date((select closed_tz from sales_tracking_issue_tz)) - 2
+where branch_id = '3e000000-0000-4000-8000-000000000005';
+
+select is(
+  (select count(*)::int from jsonb_array_elements(coalesce(public.list_sales_tracking_managed_issues(
+    '1e000000-0000-4000-8000-000000000005',
+    '2e000000-0000-4000-8000-000000000001',
+    1, 20, null, null, '3e000000-0000-4000-8000-000000000005', null, null, 'sales_tracking', null, null
+  )->'issues', '[]'::jsonb)) issue),
+  0,
+  'branch inactive on historical business date produces no missing issue despite being active today'
+);
+
+-- Behavioral regression: Branch reactivation produces missing issues only for active periods
+update public.daily_report_branch_lifecycle
+set effective_to_business_date = private.phase4a_business_date((select closed_tz from sales_tracking_issue_tz))
+where branch_id = '3e000000-0000-4000-8000-000000000005' and effective_to_business_date is null;
+
+insert into public.daily_report_branch_lifecycle(
+  organization_id, branch_id, effective_from_business_date, effective_to_business_date, active, timezone
+) values (
+  '2e000000-0000-4000-8000-000000000001',
+  '3e000000-0000-4000-8000-000000000005',
+  private.phase4a_business_date((select closed_tz from sales_tracking_issue_tz)),
+  null,
+  true,
+  (select closed_tz from sales_tracking_issue_tz)
+);
+
+select is(
+  (select count(*)::int from jsonb_array_elements(coalesce(public.list_sales_tracking_managed_issues(
+    '1e000000-0000-4000-8000-000000000005',
+    '2e000000-0000-4000-8000-000000000001',
+    1, 20, null, null, '3e000000-0000-4000-8000-000000000005', null, null, 'sales_tracking', null, null
+  )->'issues', '[]'::jsonb)) issue),
+  0,
+  'reactivated branch has no missing issue while current business date remains open'
+);
+
+select is(
+  (select count(*)::int from private.sales_tracking_managed_issue_rows_at(
+    '2e000000-0000-4000-8000-000000000001',
+    ((private.phase4a_business_date((select closed_tz from sales_tracking_issue_tz)) + 1)::timestamp + time '04:05') at time zone (select closed_tz from sales_tracking_issue_tz)
+  ) where branch_id = '3e000000-0000-4000-8000-000000000005'),
+  1,
+  'reactivated branch produces missing issue only for active post-reactivation date'
+);
+
+-- Behavioral regression: Timezone changes and historical cutoff boundaries
+insert into public.branches(id, organization_id, name, code, timezone, active, created_at) values
+  ('3e000000-0000-4000-8000-000000000006', '2e000000-0000-4000-8000-000000000001', 'Timezone Transition Branch', 'TZT', 'Asia/Dubai', true, '2026-11-01 00:00:00+00');
+delete from public.daily_report_branch_lifecycle where branch_id = '3e000000-0000-4000-8000-000000000006';
+insert into public.daily_report_branch_lifecycle(
+  organization_id, branch_id, effective_from_business_date, effective_to_business_date, active, timezone
+) values
+  ('2e000000-0000-4000-8000-000000000001', '3e000000-0000-4000-8000-000000000006', '2026-11-01', '2026-11-09', true, 'Asia/Riyadh'),
+  ('2e000000-0000-4000-8000-000000000001', '3e000000-0000-4000-8000-000000000006', '2026-11-09', null, true, 'Asia/Dubai');
+update public.daily_report_module_applicability
+set effective_from_business_date = '2026-11-01'
+where branch_id = '3e000000-0000-4000-8000-000000000006';
+
+-- Historical date 2026-11-08 had timezone Asia/Riyadh (UTC+3), closing at 2026-11-09 01:00 UTC (04:00 Riyadh).
+-- At 00:30 UTC, it is 04:30 in Dubai but only 03:30 in Riyadh; historical close has not arrived.
+select is(
+  (select count(*)::int from private.sales_tracking_managed_issue_rows_at(
+    '2e000000-0000-4000-8000-000000000001',
+    '2026-11-09 00:30:00+00'::timestamptz
+  ) where branch_id = '3e000000-0000-4000-8000-000000000006'),
+  0,
+  'timezone-transitioned branch uses historical timezone: 03:30 Riyadh has not closed yet'
+);
+
+select is(
+  (select count(*)::int from private.sales_tracking_managed_issue_rows_at(
+    '2e000000-0000-4000-8000-000000000001',
+    '2026-11-09 01:05:00+00'::timestamptz
+  ) where branch_id = '3e000000-0000-4000-8000-000000000006'),
+  1,
+  'timezone-transitioned branch emits missing issue after historical 04:00 Riyadh close'
+);
+
+select is(
+  (select created_at from private.sales_tracking_managed_issue_rows_at(
+    '2e000000-0000-4000-8000-000000000001',
+    '2026-11-09 01:05:00+00'::timestamptz
+  ) where branch_id = '3e000000-0000-4000-8000-000000000006'),
+  '2026-11-09 01:00:00+00'::timestamptz,
+  'timezone-transitioned branch issue created_at matches historical 04:00 Riyadh timestamp'
+);
+
+-- Boundary tests for Riyadh and Dubai 04:00 cutoff:
+select is(
+  (select count(*)::int from private.sales_tracking_managed_issue_rows_at(
+    '2e000000-0000-4000-8000-000000000001',
+    '2026-11-09 00:59:59+00'::timestamptz
+  ) where branch_id = '3e000000-0000-4000-8000-000000000006' and business_date = '2026-11-08'),
+  0,
+  'Riyadh branch at 03:59:59 local is not closed'
+);
+
+select is(
+  (select count(*)::int from private.sales_tracking_managed_issue_rows_at(
+    '2e000000-0000-4000-8000-000000000001',
+    '2026-11-09 01:00:00+00'::timestamptz
+  ) where branch_id = '3e000000-0000-4000-8000-000000000006' and business_date = '2026-11-08'),
+  1,
+  'Riyadh branch at exactly 04:00:00 local is closed'
+);
+
+select is(
+  (select count(*)::int from private.sales_tracking_managed_issue_rows_at(
+    '2e000000-0000-4000-8000-000000000001',
+    '2026-11-09 23:59:59+00'::timestamptz
+  ) where branch_id = '3e000000-0000-4000-8000-000000000006' and business_date = '2026-11-09'),
+  0,
+  'Dubai branch at 03:59:59 local is not closed'
+);
+
+select is(
+  (select count(*)::int from private.sales_tracking_managed_issue_rows_at(
+    '2e000000-0000-4000-8000-000000000001',
+    '2026-11-10 00:00:00+00'::timestamptz
+  ) where branch_id = '3e000000-0000-4000-8000-000000000006' and business_date = '2026-11-09'),
+  1,
+  'Dubai branch at exactly 04:00:00 local is closed'
+);
 
 select * from finish();
 rollback;
