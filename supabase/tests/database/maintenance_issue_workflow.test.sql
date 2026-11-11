@@ -106,7 +106,7 @@ select ok(not has_function_privilege('authenticated','public.create_maintenance_
 set local role service_role;
 select lives_ok($$select * from public.create_maintenance_purchase_log(
  '1c000000-0000-4000-8000-000000000002',(select issue_id from maintenance_issue_test_ids),
- jsonb_build_object('item_name','  Replacement seal  ','quantity','2','unit','meter','amount','35.50','vendor_name','  Parts Shop  ','purchase_date','2026-08-10','notes','  Urgent  ')
+ jsonb_build_object('item_name','  Replacement seal  ','category','spare_parts','quantity','2','unit','meter','amount','35.50','vendor_name','  Parts Shop  ','purchase_date','2026-08-10','notes','  Urgent  ')
 )$$,'maintenance user creates purchase for authorized issue');
 reset role;
 create temp table maintenance_purchase_test_ids as select id as purchase_id from public.maintenance_purchase_logs where maintenance_issue_id=(select issue_id from maintenance_issue_test_ids) order by created_at desc limit 1;
@@ -119,7 +119,7 @@ select lives_ok($$select * from public.create_maintenance_purchase_log(
  '1c000000-0000-4000-8000-000000000002',(select issue_id from maintenance_issue_test_ids),
  jsonb_build_object(
   'purchase_id','6c000000-0000-4000-8000-000000000001',
-  'item_name','Pump','quantity','1','unit','pcs','amount','12','vendor_name','Parts Shop','purchase_date','2026-08-10',
+  'item_name','Pump','category','kitchen_equipment','quantity','1','unit','pcs','amount','12','vendor_name','Parts Shop','purchase_date','2026-08-10',
   'attachments',jsonb_build_array(
     jsonb_build_object('id','7c000000-0000-4000-8000-000000000001','storage_path','maintenance/'||(select issue_id from maintenance_issue_test_ids)::text||'/purchases/6c000000-0000-4000-8000-000000000001/receipt-one.pdf','original_filename','إيصال.pdf','mime_type','application/pdf','size_bytes',1024),
     jsonb_build_object('id','7c000000-0000-4000-8000-000000000002','storage_path','maintenance/'||(select issue_id from maintenance_issue_test_ids)::text||'/purchases/6c000000-0000-4000-8000-000000000001/photo-two.png','original_filename','photo two.png','mime_type','image/png','size_bytes',2048),

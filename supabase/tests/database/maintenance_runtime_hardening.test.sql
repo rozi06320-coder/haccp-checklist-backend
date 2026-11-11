@@ -39,7 +39,7 @@ select ok((select bool_and(coalesce(array_to_string(proconfig,','),'') like '%se
  'public.list_maintenance_purchase_logs(uuid,uuid)'::regprocedure,
  'public.create_maintenance_purchase_log(uuid,uuid,jsonb)'::regprocedure,
  'public.reimburse_maintenance_purchase_log(uuid,uuid,text)'::regprocedure,
- 'public.list_managed_maintenance_purchases(uuid,uuid,uuid,text,text,text,date,date)'::regprocedure
+ 'public.list_managed_maintenance_purchases(uuid,uuid,uuid,text,text,text,date,date,text)'::regprocedure
 ])),'affected SECURITY DEFINER functions use empty search_path');
 
 set local role service_role;
