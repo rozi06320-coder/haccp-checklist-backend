@@ -87,11 +87,40 @@ const supervisorClassificationSchema = z.object({
   user_id: z.string().uuid(),
   classification: z.enum(["supervisor", "training_supervisor"]),
 }).strict();
+const trainingQuestionOptionSchema = z.object({
+  id: z.string().uuid().optional(),
+  option_key: z.string().regex(/^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$/).max(40),
+  position: z.number().int().positive(),
+  label_i18n: z.record(z.string(), z.string()),
+  created_at: z.string().optional(),
+  updated_at: z.string().optional(),
+}).strict();
+const trainingQuestionSchema = z.object({
+  id: z.string().uuid(), organization_id: z.string().uuid(), course_version_id: z.string().uuid(), lesson_id: z.string().uuid(),
+  stable_key: z.string().regex(/^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$/).max(120), position: z.number().int().positive(),
+  prompt_i18n: z.record(z.string(), z.string()), explanation_i18n: z.record(z.string(), z.string()), correct_option_key: z.string(),
+  revision: z.number().int().nonnegative(), created_at: z.string(), updated_at: z.string(), options: z.array(trainingQuestionOptionSchema).min(2).max(20),
+}).strict();
+const trainingQuestionInputSchema = z.object({
+  organizationId: z.string().uuid(), courseId: z.string().uuid(), courseVersionId: z.string().uuid(), lessonId: z.string().uuid(),
+  questionId: z.string().uuid().optional(), expectedRevision: z.number().int().nonnegative().optional(), actionKey: z.string().uuid(),
+  stableKey: z.string().regex(/^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$/).max(120).optional(), position: z.number().int().positive().optional(),
+  promptI18n: z.record(z.string(), z.string()).optional(), explanationI18n: z.record(z.string(), z.string()).optional(),
+  correctOptionKey: z.string().regex(/^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$/).max(40), options: z.array(trainingQuestionOptionSchema.omit({id:true,created_at:true,updated_at:true})).min(2).max(20),
+}).strict().superRefine((value, ctx) => {
+  const keys = value.options.map((option) => option.option_key);
+  const positions = value.options.map((option) => option.position);
+  if (new Set(keys).size !== keys.length) ctx.addIssue({ code: "custom", path: ["options"], message: "Duplicate option key." });
+  if (new Set(positions).size !== positions.length) ctx.addIssue({ code: "custom", path: ["options"], message: "Duplicate option position." });
+  if (!keys.includes(value.correctOptionKey)) ctx.addIssue({ code: "custom", path: ["correctOptionKey"], message: "Correct option must exist." });
+});
 
 export type InternalAdminSupervisorDemotionEligibility = z.infer<typeof supervisorDemotionEligibilitySchema>;
 export type InternalAdminSupervisorDemotionResult = z.infer<typeof supervisorDemotionResultSchema>;
 export type InternalAdminSupervisorOperationalRecovery = z.infer<typeof supervisorOperationalRecoverySchema>;
 export type InternalAdminSupervisorClassification = z.infer<typeof supervisorClassificationSchema>;
+export type InternalAdminTrainingQuestion = z.infer<typeof trainingQuestionSchema>;
+export type InternalAdminTrainingQuestionInput = z.infer<typeof trainingQuestionInputSchema>;
 
 export type ProvisionedUser = { id: string };
 export type CreateAuthUserInput = {
@@ -558,6 +587,11 @@ export type ManagementAdmin = {
     userId: string;
     classification: "supervisor" | "training_supervisor";
   }): Promise<InternalAdminSupervisorClassification>;
+  listTrainingQuestionDraftsForInternalAdmin?(input: { actorUserId: string; organizationId: string; courseId: string; courseVersionId: string; lessonId: string }): Promise<InternalAdminTrainingQuestion[]>;
+  createTrainingQuestionDraftForInternalAdmin?(input: InternalAdminTrainingQuestionInput & { actorUserId: string }): Promise<InternalAdminTrainingQuestion>;
+  updateTrainingQuestionDraftForInternalAdmin?(input: InternalAdminTrainingQuestionInput & { actorUserId: string; questionId: string; expectedRevision: number }): Promise<InternalAdminTrainingQuestion>;
+  deleteTrainingQuestionDraftForInternalAdmin?(input: { actorUserId: string; organizationId: string; courseId: string; courseVersionId: string; lessonId: string; questionId: string; expectedRevision: number; actionKey: string }): Promise<{ deleted: true; id: string; revision: number }>;
+  replaceTrainingQuestionOptionsForInternalAdmin?(input: { actorUserId: string; organizationId: string; courseId: string; courseVersionId: string; lessonId: string; questionId: string; expectedRevision: number; actionKey: string; options: InternalAdminTrainingQuestionInput["options"]; correctOptionKey: string }): Promise<InternalAdminTrainingQuestion>;
   getSupervisorDemotionEligibilityForInternalAdmin?(input: {
     actorUserId: string;
     organizationId: string;
@@ -1862,6 +1896,124 @@ export function createManagementAdmin(
       }).strict()).max(500).safeParse(data);
       if (!rows.success) throw new AdminOperationError();
       return rows.data;
+    },
+    async listTrainingQuestionDraftsForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("list_internal_admin_training_question_drafts", {
+        actor_user_id: input.actorUserId, target_organization_id: input.organizationId,
+        target_course_id: input.courseId, target_course_version_id: input.courseVersionId, target_lesson_id: input.lessonId,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        throw new AdminOperationError();
+      }
+      const rows = z.array(trainingQuestionSchema).safeParse(data);
+      if (!rows.success) throw new AdminOperationError();
+      return rows.data;
+    },
+    async createTrainingQuestionDraftForInternalAdmin(input) {
+      const parsed = trainingQuestionInputSchema.parse({
+        organizationId: input.organizationId,
+        courseId: input.courseId,
+        courseVersionId: input.courseVersionId,
+        lessonId: input.lessonId,
+        actionKey: input.actionKey,
+        stableKey: input.stableKey,
+        position: input.position,
+        promptI18n: input.promptI18n,
+        explanationI18n: input.explanationI18n,
+        correctOptionKey: input.correctOptionKey,
+        options: input.options,
+      });
+      const requestHash = createHmac("sha256", "training-question-authoring").update(JSON.stringify({ ...parsed, actorUserId: undefined })).digest("hex");
+      const { data, error } = await admin.rpc("create_internal_admin_training_question_draft", {
+        actor_user_id: input.actorUserId, target_organization_id: parsed.organizationId, target_course_id: parsed.courseId,
+        target_course_version_id: parsed.courseVersionId, target_lesson_id: parsed.lessonId, action_key: parsed.actionKey,
+        request_hash: requestHash, stable_key: parsed.stableKey, p_position: parsed.position, prompt_i18n: parsed.promptI18n,
+        explanation_i18n: parsed.explanationI18n, correct_option_key: parsed.correctOptionKey, options: parsed.options,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "22023") throw new AdminInputError();
+        if (["23505", "23514", "40001"].includes(error.code)) throw new AdminConflictError();
+        throw new AdminOperationError();
+      }
+      const result = trainingQuestionSchema.safeParse(data);
+      if (!result.success) throw new AdminOperationError();
+      return result.data;
+    },
+    async updateTrainingQuestionDraftForInternalAdmin(input) {
+      const parsed = trainingQuestionInputSchema.parse({
+        organizationId: input.organizationId,
+        courseId: input.courseId,
+        courseVersionId: input.courseVersionId,
+        lessonId: input.lessonId,
+        questionId: input.questionId,
+        expectedRevision: input.expectedRevision,
+        actionKey: input.actionKey,
+        stableKey: input.stableKey,
+        position: input.position,
+        promptI18n: input.promptI18n,
+        explanationI18n: input.explanationI18n,
+        correctOptionKey: input.correctOptionKey,
+        options: input.options,
+      });
+      const requestHash = createHmac("sha256", "training-question-authoring").update(JSON.stringify({ ...parsed, actorUserId: undefined })).digest("hex");
+      const { data, error } = await admin.rpc("update_internal_admin_training_question_draft", {
+        actor_user_id: input.actorUserId, target_organization_id: parsed.organizationId, target_course_id: parsed.courseId,
+        target_course_version_id: parsed.courseVersionId, target_lesson_id: parsed.lessonId, target_question_id: input.questionId,
+        expected_revision: input.expectedRevision, action_key: parsed.actionKey, request_hash: requestHash, stable_key: parsed.stableKey,
+        p_position: parsed.position, prompt_i18n: parsed.promptI18n, explanation_i18n: parsed.explanationI18n,
+        correct_option_key: parsed.correctOptionKey, options: parsed.options,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "22023") throw new AdminInputError();
+        if (["23505", "23514", "40001"].includes(error.code)) throw new AdminConflictError();
+        throw new AdminOperationError();
+      }
+      const result = trainingQuestionSchema.safeParse(data);
+      if (!result.success) throw new AdminOperationError();
+      return result.data;
+    },
+    async deleteTrainingQuestionDraftForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("delete_internal_admin_training_question_draft", {
+        actor_user_id: input.actorUserId, target_organization_id: input.organizationId, target_course_id: input.courseId,
+        target_course_version_id: input.courseVersionId, target_lesson_id: input.lessonId, target_question_id: input.questionId,
+        expected_revision: input.expectedRevision, action_key: input.actionKey,
+        request_hash: createHmac("sha256", "training-question-authoring").update(JSON.stringify({ ...input, actorUserId: undefined })).digest("hex"),
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "22023") throw new AdminInputError();
+        if (["23505", "23514", "40001"].includes(error.code)) throw new AdminConflictError();
+        throw new AdminOperationError();
+      }
+      const result = z.object({ deleted: z.literal(true), id: z.string().uuid(), revision: z.number().int().nonnegative() }).safeParse(data);
+      if (!result.success) throw new AdminOperationError();
+      return result.data;
+    },
+    async replaceTrainingQuestionOptionsForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("replace_internal_admin_training_question_options", {
+        actor_user_id: input.actorUserId, target_organization_id: input.organizationId, target_course_id: input.courseId,
+        target_course_version_id: input.courseVersionId, target_lesson_id: input.lessonId, target_question_id: input.questionId,
+        expected_revision: input.expectedRevision, action_key: input.actionKey,
+        request_hash: createHmac("sha256", "training-question-authoring").update(JSON.stringify({ ...input, actorUserId: undefined })).digest("hex"),
+        correct_option_key: input.correctOptionKey, options: input.options,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "22023") throw new AdminInputError();
+        if (["23505", "23514", "40001"].includes(error.code)) throw new AdminConflictError();
+        throw new AdminOperationError();
+      }
+      const result = trainingQuestionSchema.safeParse(data);
+      if (!result.success) throw new AdminOperationError();
+      return result.data;
     },
     async updateTrainingAccountForInternalAdmin(input) {
       const { error } = await admin.rpc("update_internal_admin_training_account", {

@@ -67,6 +67,28 @@ import {
 } from "./organization-manager-notifications";
 
 const organizationIdSchema = z.uuid();
+const trainingQuestionOptionBodySchema = z.object({
+  option_key: z.string().regex(/^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$/).max(40),
+  position: z.number().int().positive(),
+  label_i18n: z.record(z.string(), z.string()),
+}).strict();
+const trainingQuestionBodySchema = z.object({
+  stable_key: z.string().regex(/^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$/).max(120),
+  position: z.number().int().positive(),
+  prompt_i18n: z.record(z.string(), z.string()),
+  explanation_i18n: z.record(z.string(), z.string()),
+  correct_option_key: z.string().regex(/^[a-z0-9]+(?:[a-z0-9_-]*[a-z0-9])?$/).max(40),
+  options: z.array(trainingQuestionOptionBodySchema).min(2).max(20),
+}).strict().superRefine((value, ctx) => {
+  const keys = value.options.map((option) => option.option_key);
+  const positions = value.options.map((option) => option.position);
+  if (new Set(keys).size !== keys.length) ctx.addIssue({ code: "custom", path: ["options"], message: "Duplicate option key." });
+  if (new Set(positions).size !== positions.length) ctx.addIssue({ code: "custom", path: ["options"], message: "Duplicate option position." });
+  if (!keys.includes(value.correct_option_key)) ctx.addIssue({ code: "custom", path: ["correct_option_key"], message: "Correct option must exist." });
+});
+const trainingQuestionRouteParamsSchema = z.object({ organizationId: z.uuid(), courseId: z.uuid(), courseVersionId: z.uuid(), lessonId: z.uuid() }).strict();
+const trainingQuestionIdParamsSchema = trainingQuestionRouteParamsSchema.extend({ questionId: z.uuid() });
+const trainingQuestionRevisionSchema = z.object({ expected_revision: z.number().int().nonnegative() }).strict();
 const managerPasswordResetStepUpBodySchema = z.object({
   current_password: z.string().min(8).max(1024),
 }).strict();
@@ -2671,6 +2693,13 @@ function trainingPublicationError(error:unknown){
  if(error instanceof TrainingPublicationNotFoundError)return new HttpError(404,"not_found","The requested Training publication record was not found.");
  if(error instanceof TrainingPublicationUnavailableError)return new HttpError(503,"service_unavailable","Training publication is temporarily unavailable.");
  return new HttpError(503,"service_unavailable","Training publication is temporarily unavailable.");
+}
+function trainingQuestionAuthoringError(error: unknown) {
+  if (error instanceof AdminInputError) return new HttpError(422, "unprocessable_entity", "The question draft is invalid.");
+  if (error instanceof AdminConflictError) return new HttpError(409, "conflict", "The question draft changed or conflicts with another edit.");
+  if (error instanceof AdminNotFoundError) return new HttpError(404, "not_found", "The requested question draft was not found.");
+  if (error instanceof AdminAccessError) return new HttpError(403, "forbidden", "Access is denied.");
+  return new HttpError(503, "service_unavailable", "Question authoring is temporarily unavailable.");
 }
 
 function operationalPurchaseError(error: unknown) {
@@ -10604,6 +10633,93 @@ export function createApp(
     }
     response.setHeader("Cache-Control","private, no-store");response.json(phase4aIssueDetailSchema.parse(issueDetailWithSourceMetadata(detail)));
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+  app.get("/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:courseVersionId/quiz-lessons/:lessonId/questions", protectedRateLimit, authenticate, async (request, response, next) => {
+    try {
+      const params = trainingQuestionRouteParamsSchema.safeParse(request.params);
+      if (!params.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+      const auth = requireAuthContext(request);
+      await requireInternalAdmin(request);
+      const method = dependencies.managementAdmin.listTrainingQuestionDraftsForInternalAdmin;
+      if (!method) throw new HttpError(503, "service_unavailable", "Question authoring is temporarily unavailable.");
+      const questions = await method({ actorUserId: auth.userId, organizationId: params.data.organizationId, courseId: params.data.courseId, courseVersionId: params.data.courseVersionId, lessonId: params.data.lessonId });
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(200).json({ questions });
+    } catch (error) { next(error instanceof HttpError ? error : trainingQuestionAuthoringError(error)); }
+  });
+  app.post("/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:courseVersionId/quiz-lessons/:lessonId/questions", protectedRateLimit, authenticate, async (request, response, next) => {
+    try {
+      const params = trainingQuestionRouteParamsSchema.safeParse(request.params);
+      const body = trainingQuestionBodySchema.safeParse(request.body);
+      const actionKey = z.uuid().safeParse(request.header("Idempotency-Key"));
+      if (!params.success || !body.success || !actionKey.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+      const auth = requireAuthContext(request);
+      await requireInternalAdmin(request);
+      const method = dependencies.managementAdmin.createTrainingQuestionDraftForInternalAdmin;
+      if (!method) throw new HttpError(503, "service_unavailable", "Question authoring is temporarily unavailable.");
+      const question = await method({
+        actorUserId: auth.userId,
+        organizationId: params.data.organizationId,
+        courseId: params.data.courseId,
+        courseVersionId: params.data.courseVersionId,
+        lessonId: params.data.lessonId,
+        actionKey: actionKey.data,
+        stableKey: body.data.stable_key,
+        position: body.data.position,
+        promptI18n: body.data.prompt_i18n,
+        explanationI18n: body.data.explanation_i18n,
+        correctOptionKey: body.data.correct_option_key,
+        options: body.data.options,
+      });
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(201).json({ question });
+    } catch (error) { next(error instanceof HttpError ? error : trainingQuestionAuthoringError(error)); }
+  });
+  app.patch("/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:courseVersionId/quiz-lessons/:lessonId/questions/:questionId", protectedRateLimit, authenticate, async (request, response, next) => {
+    try {
+      const params = trainingQuestionIdParamsSchema.safeParse(request.params);
+      const body = trainingQuestionBodySchema.merge(trainingQuestionRevisionSchema).safeParse(request.body);
+      const actionKey = z.uuid().safeParse(request.header("Idempotency-Key"));
+      if (!params.success || !body.success || !actionKey.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+      const auth = requireAuthContext(request);
+      await requireInternalAdmin(request);
+      const method = dependencies.managementAdmin.updateTrainingQuestionDraftForInternalAdmin;
+      if (!method) throw new HttpError(503, "service_unavailable", "Question authoring is temporarily unavailable.");
+      const question = await method({ actorUserId: auth.userId, organizationId: params.data.organizationId, courseId: params.data.courseId, courseVersionId: params.data.courseVersionId, lessonId: params.data.lessonId, questionId: params.data.questionId, actionKey: actionKey.data, expectedRevision: body.data.expected_revision, stableKey: body.data.stable_key, position: body.data.position, promptI18n: body.data.prompt_i18n, explanationI18n: body.data.explanation_i18n, correctOptionKey: body.data.correct_option_key, options: body.data.options });
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(200).json({ question });
+    } catch (error) { next(error instanceof HttpError ? error : trainingQuestionAuthoringError(error)); }
+  });
+  app.delete("/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:courseVersionId/quiz-lessons/:lessonId/questions/:questionId", protectedRateLimit, authenticate, async (request, response, next) => {
+    try {
+      const params = trainingQuestionIdParamsSchema.safeParse(request.params);
+      const body = trainingQuestionRevisionSchema.safeParse(request.body);
+      const actionKey = z.uuid().safeParse(request.header("Idempotency-Key"));
+      if (!params.success || !body.success || !actionKey.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+      const auth = requireAuthContext(request);
+      await requireInternalAdmin(request);
+      const method = dependencies.managementAdmin.deleteTrainingQuestionDraftForInternalAdmin;
+      if (!method) throw new HttpError(503, "service_unavailable", "Question authoring is temporarily unavailable.");
+      const result = await method({ actorUserId: auth.userId, organizationId: params.data.organizationId, courseId: params.data.courseId, courseVersionId: params.data.courseVersionId, lessonId: params.data.lessonId, questionId: params.data.questionId, actionKey: actionKey.data, expectedRevision: body.data.expected_revision });
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(200).json(result);
+    } catch (error) { next(error instanceof HttpError ? error : trainingQuestionAuthoringError(error)); }
+  });
+  app.put("/api/v1/internal-admin/organizations/:organizationId/training/courses/:courseId/versions/:courseVersionId/quiz-lessons/:lessonId/questions/:questionId/options", protectedRateLimit, authenticate, async (request, response, next) => {
+    try {
+      const params = trainingQuestionIdParamsSchema.safeParse(request.params);
+      const body = z.object({ expected_revision: z.number().int().nonnegative(), correct_option_key: z.string(), options: z.array(trainingQuestionOptionBodySchema).min(2).max(20) }).strict().safeParse(request.body);
+      const actionKey = z.uuid().safeParse(request.header("Idempotency-Key"));
+      if (!params.success || !body.success || !actionKey.success || !emptyQuerySchema.safeParse(request.query).success) throw new HttpError(400, "bad_request", "The request is invalid.");
+      const auth = requireAuthContext(request);
+      await requireInternalAdmin(request);
+      const method = dependencies.managementAdmin.replaceTrainingQuestionOptionsForInternalAdmin;
+      if (!method) throw new HttpError(503, "service_unavailable", "Question authoring is temporarily unavailable.");
+      const question = await method({ actorUserId: auth.userId, organizationId: params.data.organizationId, courseId: params.data.courseId, courseVersionId: params.data.courseVersionId, lessonId: params.data.lessonId, questionId: params.data.questionId, actionKey: actionKey.data, expectedRevision: body.data.expected_revision, correctOptionKey: body.data.correct_option_key, options: body.data.options });
+      response.setHeader("Cache-Control", "private, no-store");
+      response.status(200).json({ question });
+    } catch (error) { next(error instanceof HttpError ? error : trainingQuestionAuthoringError(error)); }
+  });
 
   app.use(notFoundHandler);
   app.use(errorHandler);
