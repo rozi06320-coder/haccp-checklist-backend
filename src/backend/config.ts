@@ -46,6 +46,7 @@ const environmentSchema = z
     TRAINING_LEARNER_AUTH_ENABLED: disabledByDefaultFlag,
     TRAINING_DB_CURRICULUM_ENABLED: disabledByDefaultFlag,
     TRAINING_EMPLOYEE_DRAFT_PREVIEW_ENABLED: disabledByDefaultFlag,
+    TRAINING_SUPERVISOR_QUIZ_PREVIEW_ENABLED: disabledByDefaultFlag,
     TRAINING_LEARNER_ALLOWED_ORIGIN: z.url().transform((value) => new URL(value).origin).optional(),
     TRAINING_PUBLICATION_SIGNING_PRIVATE_KEY_BASE64: z.string().min(1).optional(),
     TRAINING_PUBLICATION_AUDIENCE: z.string().regex(/^[a-z0-9][a-z0-9._:/-]{2,127}$/).optional(),
@@ -131,6 +132,7 @@ export type BackendConfig = {
   trainingLearnerAuthEnabled?: boolean;
   trainingDbCurriculumEnabled?: boolean;
   trainingEmployeeDraftPreviewEnabled?: boolean;
+  trainingSupervisorQuizPreviewEnabled?: boolean;
   trainingLearnerAllowedOrigin?: string;
   trainingPublicationSigningPrivateKey?: string;
   trainingPublicationAudience?: string;
@@ -182,6 +184,7 @@ export function loadBackendConfig(
     trainingLearnerAuthEnabled: result.data.TRAINING_LEARNER_AUTH_ENABLED,
     trainingDbCurriculumEnabled: result.data.TRAINING_DB_CURRICULUM_ENABLED,
     trainingEmployeeDraftPreviewEnabled: result.data.TRAINING_EMPLOYEE_DRAFT_PREVIEW_ENABLED,
+    trainingSupervisorQuizPreviewEnabled: result.data.TRAINING_SUPERVISOR_QUIZ_PREVIEW_ENABLED,
     trainingLearnerAllowedOrigin: result.data.TRAINING_LEARNER_ALLOWED_ORIGIN,
     trainingPublicationSigningPrivateKey: result.data.TRAINING_PUBLICATION_SIGNING_PRIVATE_KEY_BASE64
       ? Buffer.from(result.data.TRAINING_PUBLICATION_SIGNING_PRIVATE_KEY_BASE64,"base64").toString("utf8")

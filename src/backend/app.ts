@@ -33,6 +33,7 @@ import { MAX_TRAINING_MEDIA_SOURCE_BYTES, TrainingMediaAccessError, TrainingMedi
 import {TrainingPublicationAccessError,TrainingPublicationConflictError,TrainingPublicationInputError,TrainingPublicationNotFoundError,TrainingPublicationUnavailableError} from "./training-publication";
 import { TrainingProgressAccessError, TrainingProgressConflictError, TrainingProgressNotFoundError, TrainingProgressUnavailableError } from "./training-progress";
 import {getTrainingEmployeePreviewDiagnostic,TrainingEmployeePreviewAccessError,TrainingEmployeePreviewConflictError,TrainingEmployeePreviewNotFoundError,TrainingEmployeePreviewUnavailableError,type TrainingEmployeePreviewFailureStage} from "./training-employee-preview";
+import {TrainingSupervisorQuizPreviewAccessError,TrainingSupervisorQuizPreviewNotFoundError,TrainingSupervisorQuizPreviewUnavailableError,TrainingSupervisorQuizPreviewAnswerKeyLeakError} from "./training-supervisor-quiz-preview";
 import type { UserContext } from "./user-context";
 import { validateDailyAuditGrant } from "./daily-audit-grant";
 import { decodeUploadFilename } from "../lib/internal-api/upload-filename";
@@ -7185,6 +7186,74 @@ export function createApp(
         if (error instanceof HttpError) next(error);
         else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
         else next(new HttpError(503, "service_unavailable", "Training Supervisor access is temporarily unavailable."));
+      }
+    },
+  );
+  app.get(
+    "/api/v1/training-supervisor/preview/baladiyah/questions",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        if (!emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+
+        // Credential version must be provided — same pattern as /training-supervisor/context.
+        const headerVersion = request.headers["x-credential-version"];
+        let credentialVersion: string | null = null;
+        if (typeof headerVersion === "string" && headerVersion.trim() !== "") {
+          const parsed = z.string().uuid().safeParse(headerVersion.trim());
+          if (!parsed.success) {
+            throw new HttpError(400, "bad_request", "Invalid credential version header.");
+          }
+          credentialVersion = parsed.data;
+        }
+        if (!credentialVersion) {
+          throw new HttpError(403, "forbidden", "Credential version is required.");
+        }
+
+        // Accept locale from Accept-Language header; fall back to English.
+        const validLocales = ["en", "ar", "id", "hi", "fil"] as const;
+        type SupportedLocale = typeof validLocales[number];
+        const rawLocale = typeof request.headers["accept-language"] === "string"
+          ? request.headers["accept-language"].split(",", 1)[0]!.split("-", 1)[0]!.trim().toLowerCase()
+          : "en";
+        const locale: SupportedLocale = (validLocales as readonly string[]).includes(rawLocale)
+          ? rawLocale as SupportedLocale
+          : "en";
+
+        const service = dependencies.trainingSupervisorQuizPreviewService;
+        if (!service) {
+          throw new HttpError(503, "service_unavailable", "Training Supervisor quiz preview is temporarily unavailable.");
+        }
+
+        const questions = await service.getQuizPreview(auth.userId, credentialVersion, locale);
+        if (questions.length !== 27) {
+          throw new TrainingSupervisorQuizPreviewUnavailableError({ failureStage: "response_parse", safeCategory: "contract_conflict" });
+        }
+
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({
+          questions,
+          question_count: questions.length,
+          pass_threshold_bps: 8000,
+          minimum_correct_count: 22,
+        });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof TrainingSupervisorQuizPreviewAccessError) {
+          next(new HttpError(403, "forbidden", "Access is denied."));
+        } else if (error instanceof TrainingSupervisorQuizPreviewNotFoundError) {
+          next(new HttpError(404, "not_found", "Quiz preview is unavailable."));
+        } else if (error instanceof TrainingSupervisorQuizPreviewAnswerKeyLeakError) {
+          // This must never reach the client. Log it as a critical internal failure.
+          console.error("TRAINING_SUPERVISOR_QUIZ_PREVIEW_SECURITY", { kind: "answer_key_leak" });
+          next(new HttpError(503, "service_unavailable", "Training Supervisor quiz preview is temporarily unavailable."));
+        } else if (error instanceof TrainingSupervisorQuizPreviewUnavailableError) {
+          next(new HttpError(503, "service_unavailable", "Training Supervisor quiz preview is temporarily unavailable."));
+        } else {
+          next(new HttpError(503, "service_unavailable", "Training Supervisor quiz preview is temporarily unavailable."));
+        }
       }
     },
   );

@@ -33,6 +33,7 @@ import { createTrainingCredentialAdmin, type TrainingCredentialAdmin } from "./t
 import { createTrainingProgressService, type TrainingProgressService } from "./training-progress";
 import {createTrainingEmployeePreviewService,type TrainingEmployeePreviewService} from "./training-employee-preview";
 import {createTrainingPublicationService,type TrainingPublicationService} from "./training-publication";
+import {createTrainingSupervisorQuizPreviewService,type TrainingSupervisorQuizPreviewService} from "./training-supervisor-quiz-preview";
 import {
   createOrganizationManagerPasswordResetService,
   type OrganizationManagerPasswordResetService,
@@ -99,6 +100,7 @@ export type BackendDependencies = {
   trainingProgressService?: TrainingProgressService;
   trainingEmployeePreviewService?: TrainingEmployeePreviewService;
   trainingPublicationService?: TrainingPublicationService;
+  trainingSupervisorQuizPreviewService?: TrainingSupervisorQuizPreviewService;
   dailyBusinessReportService?: DailyBusinessReportService;
   now?: () => Date;
 };
@@ -201,6 +203,9 @@ export function createDefaultDependencies(
       audience:config.trainingPublicationAudience,
       keyId:config.trainingPublicationSigningKeyId,
     }),
+    trainingSupervisorQuizPreviewService: config.trainingSupervisorQuizPreviewEnabled
+      ? createTrainingSupervisorQuizPreviewService(config.supabase.url, config.supabase.secretKey)
+      : undefined,
     now: () => new Date(),
     authVerifier: createSupabaseClaimsAuthVerifier(authClient),
     async checkReadiness() {
