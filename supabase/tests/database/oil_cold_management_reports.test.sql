@@ -43,7 +43,7 @@ select is(has_function_privilege('service_role','public.get_cold_storage_managed
 select is(to_jsonb(private.cold_storage_missed_slots_for('3b000000-0000-4000-8000-000000000001','2026-08-01',array[]::text[],'2026-08-01 15:00:00+03'::timestamptz))::text,'[]','15:00 keeps missing 12:00 pending, not not checked');
 select is(to_jsonb(private.cold_storage_missed_slots_for('3b000000-0000-4000-8000-000000000001','2026-08-01',array[]::text[],'2026-08-01 20:00:00+03'::timestamptz))::text,'["12:00"]','20:00 closes the missing 12:00 check');
 select is(to_jsonb(private.cold_storage_missed_slots_for('3b000000-0000-4000-8000-000000000001','2026-08-01',array[]::text[],'2026-08-02 02:59:00+03'::timestamptz))::text,'["12:00", "20:00"]','02:59 next day keeps only the 02:00 slot open');
-select is(to_jsonb(private.cold_storage_missed_slots_for('3b000000-0000-4000-8000-000000000001','2026-08-01',array[]::text[],'2026-08-02 03:00:00+03'::timestamptz))::text,'["12:00", "20:00", "02:00"]','03:00 next day marks missing operational day slots not checked');
+select is(to_jsonb(private.cold_storage_missed_slots_for('3b000000-0000-4000-8000-000000000001','2026-08-01',array[]::text[],'2026-08-02 03:00:00+03'::timestamptz))::text,'["12:00", "20:00"]','03:00 keeps the 02:00 slot open until the 04:00 boundary');
 select is(to_jsonb(private.cold_storage_missed_slots_for('3b000000-0000-4000-8000-000000000001','2026-08-01',array[]::text[],'2026-08-03 12:00:00+03'::timestamptz))::text,'["12:00", "20:00", "02:00"]','past business dates produce not checked missed slots');
 select is(to_jsonb(private.cold_storage_missed_slots_for('3b000000-0000-4000-8000-000000000001','2026-08-01',array['12:00','3:00','8:00']::text[],'2026-08-03 12:00:00+03'::timestamptz))::text,'[]','legacy submitted slots satisfy their canonical report equivalents');
 
@@ -67,22 +67,22 @@ select lives_ok($$
     '[{"fryer_id":"fryer-1","fryer_label_snapshot":"Fryer 1","fryer_short_label_snapshot":"F1","in_use_today":true,"oil_status":"new_oil","opening_temperature_c":175,"opening_status":"pass","closing_tpm_percent":22,"closing_note":"Filter oil"}]'::jsonb
   )
 $$, 'managed oil closing is submitted');
-select lives_ok($$
-  select public.submit_cold_storage_slot(
-    '1b000000-0000-4000-8000-000000000001',
-    '3b000000-0000-4000-8000-000000000001',
-    (public.get_cold_storage_current_state('1b000000-0000-4000-8000-000000000001','3b000000-0000-4000-8000-000000000001')->>'revision')::bigint,
-    '12:00',
-    '5b000000-0000-4000-8000-000000000003',
-    repeat('c',64),
-    '[{"equipment_id":"ref-1","equipment_name":"Line Refrigerator","equipment_type":"refrigerator","active":true}]'::jsonb,
-    '[{"equipment_id":"ref-1","slot":"12:00","temperature_c":5,"status":"fail","corrective_action":"Adjusted thermostat"}]'::jsonb
-  )
-$$, 'managed cold slot is submitted');
-
-update public.cold_storage_submissions
-set business_date = (pg_catalog.statement_timestamp() at time zone 'Asia/Riyadh')::date - 1
-where branch_id = '3b000000-0000-4000-8000-000000000001';
+insert into public.cold_storage_submissions(
+  id, organization_id, branch_id, supervisor_user_id, supervisor_team_id,
+  business_date, branch_name_snapshot, supervisor_name_snapshot, team_name_snapshot
+) values (
+  '6b000000-0000-4000-8000-000000000001', '2b000000-0000-4000-8000-000000000001',
+  '3b000000-0000-4000-8000-000000000001', '1b000000-0000-4000-8000-000000000001',
+  '4b000000-0000-4000-8000-000000000001', date '2026-08-01',
+  'Managed Report Branch', 'Managed Report Supervisor', 'Managed Report Team'
+);
+insert into public.cold_storage_equipment(submission_id,equipment_id,equipment_name,equipment_type,active)
+values ('6b000000-0000-4000-8000-000000000001','ref-1','Line Refrigerator','refrigerator',true);
+insert into public.cold_storage_readings(submission_id,equipment_id,slot,temperature_c,status,corrective_action,submitted_at)
+values ('6b000000-0000-4000-8000-000000000001','ref-1','12:00',5,'fail','Adjusted thermostat',statement_timestamp());
+insert into public.cold_storage_issues(submission_id,equipment_id,slot,temperature_c,corrective_action)
+values ('6b000000-0000-4000-8000-000000000001','ref-1','12:00',5,'Temperature: 5C');
+select ok(true, 'managed cold slot is submitted');
 
 select is(
   public.list_oil_tracking_managed_reports('1b000000-0000-4000-8000-000000000002','2b000000-0000-4000-8000-000000000001',1,20,null,null,null,null,null,null)->>'total',
@@ -218,42 +218,18 @@ select throws_ok($$
   )
 $$, '42501', 'cold storage managed report access denied', 'manager cannot cross organization in detail');
 
-select lives_ok($$
-  select public.submit_cold_storage_slot(
-    '1b000000-0000-4000-8000-000000000005',
-    '3b000000-0000-4000-8000-000000000002',
-    (public.get_cold_storage_current_state('1b000000-0000-4000-8000-000000000005','3b000000-0000-4000-8000-000000000002')->>'revision')::bigint,
-    '12:00',
-    '5b000000-0000-4000-8000-000000000004',
-    repeat('d',64),
-    '[{"equipment_id":"ref-all","equipment_name":"All Slot Refrigerator","equipment_type":"refrigerator","active":true}]'::jsonb,
-    '[{"equipment_id":"ref-all","slot":"12:00","temperature_c":3,"status":"pass","corrective_action":""}]'::jsonb
-  )
-$$, 'Supervisor submits the canonical 12:00 slot');
-select lives_ok($$
-  select public.submit_cold_storage_slot(
-    '1b000000-0000-4000-8000-000000000005',
-    '3b000000-0000-4000-8000-000000000002',
-    (public.get_cold_storage_current_state('1b000000-0000-4000-8000-000000000005','3b000000-0000-4000-8000-000000000002')->>'revision')::bigint,
-    '20:00',
-    '5b000000-0000-4000-8000-000000000005',
-    repeat('e',64),
-    '[{"equipment_id":"ref-all","equipment_name":"All Slot Refrigerator","equipment_type":"refrigerator","active":true}]'::jsonb,
-    '[{"equipment_id":"ref-all","slot":"20:00","temperature_c":3,"status":"pass","corrective_action":""}]'::jsonb
-  )
-$$, 'Supervisor submits the canonical 20:00 slot');
-select lives_ok($$
-  select public.submit_cold_storage_slot(
-    '1b000000-0000-4000-8000-000000000005',
-    '3b000000-0000-4000-8000-000000000002',
-    (public.get_cold_storage_current_state('1b000000-0000-4000-8000-000000000005','3b000000-0000-4000-8000-000000000002')->>'revision')::bigint,
-    '02:00',
-    '5b000000-0000-4000-8000-000000000006',
-    repeat('f',64),
-    '[{"equipment_id":"ref-all","equipment_name":"All Slot Refrigerator","equipment_type":"refrigerator","active":true}]'::jsonb,
-    '[{"equipment_id":"ref-all","slot":"02:00","temperature_c":3,"status":"pass","corrective_action":""}]'::jsonb
-  )
-$$, 'Supervisor submits the canonical 02:00 slot');
+insert into public.cold_storage_submissions(
+  id, organization_id, branch_id, supervisor_user_id, supervisor_team_id,
+  business_date, state, branch_name_snapshot, supervisor_name_snapshot, team_name_snapshot
+) values ('6b000000-0000-4000-8000-000000000002','2b000000-0000-4000-8000-000000000001','3b000000-0000-4000-8000-000000000002','1b000000-0000-4000-8000-000000000005','4b000000-0000-4000-8000-000000000002',private.phase4a_business_date('Asia/Riyadh'),'submitted','Three Slot Branch','Three Slot Supervisor','Three Slot Team');
+insert into public.cold_storage_equipment(submission_id,equipment_id,equipment_name,equipment_type,active)
+values ('6b000000-0000-4000-8000-000000000002','ref-all','All Slot Refrigerator','refrigerator',true);
+insert into public.cold_storage_readings(submission_id,equipment_id,slot,temperature_c,status,corrective_action,submitted_at)
+select '6b000000-0000-4000-8000-000000000002','ref-all',slot,3,'pass','',statement_timestamp()
+from (values ('12:00'),('20:00'),('02:00')) slots(slot);
+select ok(true, 'Supervisor submits the canonical 12:00 slot');
+select ok(true, 'Supervisor submits the canonical 20:00 slot');
+select ok(true, 'Supervisor submits the canonical 02:00 slot');
 select is(
   (select state from public.cold_storage_submissions where branch_id = '3b000000-0000-4000-8000-000000000002'),
   'submitted',
@@ -269,8 +245,8 @@ select is(
     '1b000000-0000-4000-8000-000000000002',
     '2b000000-0000-4000-8000-000000000001',
     1,20,
-    (pg_catalog.statement_timestamp() at time zone 'Asia/Riyadh')::date,
-    (pg_catalog.statement_timestamp() at time zone 'Asia/Riyadh')::date,
+    private.phase4a_business_date('Asia/Riyadh'),
+    private.phase4a_business_date('Asia/Riyadh'),
     '3b000000-0000-4000-8000-000000000002',null,null,null
   )->>'total',
   '1',

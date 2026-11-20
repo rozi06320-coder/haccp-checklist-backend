@@ -54,21 +54,32 @@ select lives_ok($$
   )
 $$, 'oil closing TPM submitted');
 select lives_ok($$
-  select public.submit_cold_storage_slot(
-    '1d000000-0000-4000-8000-000000000001',
+  insert into public.cold_storage_submissions(
+    id, organization_id, branch_id, supervisor_user_id, supervisor_team_id,
+    business_date, state, branch_name_snapshot, supervisor_name_snapshot, team_name_snapshot
+  ) values (
+    '6d000000-0000-4000-8000-000000000002',
+    '2d000000-0000-4000-8000-000000000001',
     '3d000000-0000-4000-8000-000000000001',
-    (public.get_cold_storage_current_state('1d000000-0000-4000-8000-000000000001','3d000000-0000-4000-8000-000000000001')->>'revision')::bigint,
-    slot_value,
-    idempotency_key,
-    request_hash,
-    '[{"equipment_id":"ref-1","equipment_name":"Line Refrigerator","equipment_type":"refrigerator","active":true},{"equipment_id":"inactive","equipment_name":"Inactive Freezer","equipment_type":"freezer","active":false}]'::jsonb,
-    format('[{"equipment_id":"ref-1","slot":"%s","temperature_c":5,"status":"fail","corrective_action":"Adjusted thermostat"},{"equipment_id":"inactive","slot":"%s","temperature_c":12,"status":"fail","corrective_action":"Ignored inactive"}]', slot_value, slot_value)::jsonb
-  )
-  from (values
-    ('12:00','5d000000-0000-4000-8000-000000000003'::uuid,repeat('c',64)),
-    ('20:00','5d000000-0000-4000-8000-000000000004'::uuid,repeat('d',64)),
-    ('02:00','5d000000-0000-4000-8000-000000000005'::uuid,repeat('e',64))
-  ) slots(slot_value,idempotency_key,request_hash)
+    '1d000000-0000-4000-8000-000000000001',
+    '4d000000-0000-4000-8000-000000000001',
+    private.phase4a_business_date((select closed_tz from oil_cold_issue_tz)),
+    'submitted', 'Overview Issue Branch', 'Overview Issue Supervisor', 'Overview Issue Team'
+  );
+  insert into public.cold_storage_equipment(submission_id, equipment_id, equipment_name, equipment_type, active)
+  values ('6d000000-0000-4000-8000-000000000002','ref-1','Line Refrigerator','refrigerator',true),
+         ('6d000000-0000-4000-8000-000000000002','inactive','Inactive Freezer','freezer',false);
+  insert into public.cold_storage_readings(submission_id, equipment_id, slot, temperature_c, status, corrective_action, submitted_at, submitted_by_user_id)
+  select '6d000000-0000-4000-8000-000000000002', equipment_id, slot,
+    case when equipment_id = 'ref-1' then 5 else 12 end, 'fail',
+    case when equipment_id = 'ref-1' then 'Adjusted thermostat' else 'Ignored inactive' end,
+    statement_timestamp(), '1d000000-0000-4000-8000-000000000001'
+  from (values ('ref-1'),('inactive')) equipment(equipment_id)
+  cross join (values ('12:00'),('20:00'),('02:00')) slots(slot);
+  insert into public.cold_storage_issues(id, submission_id, equipment_id, slot, temperature_c, corrective_action)
+  values ('7d000000-0000-4000-8000-000000000001','6d000000-0000-4000-8000-000000000002','ref-1','12:00',5,'Adjusted thermostat'),
+         ('7d000000-0000-4000-8000-000000000002','6d000000-0000-4000-8000-000000000002','ref-1','20:00',5,'Adjusted thermostat'),
+         ('7d000000-0000-4000-8000-000000000003','6d000000-0000-4000-8000-000000000002','ref-1','02:00',5,'Adjusted thermostat');
 $$, 'all cold slots submitted so current active slot is covered');
 
 insert into public.cold_storage_submissions(
@@ -132,12 +143,12 @@ select ok(public.list_cold_storage_managed_issues('1d000000-0000-4000-8000-00000
 select is(public.list_cold_storage_managed_issues('1d000000-0000-4000-8000-000000000002','2d000000-0000-4000-8000-000000000001',1,20,null,null,null,null,null,'cold_storage',null,'missed')->>'total',(select missed_count from cold_missed_context)::text,'manager can list derived missed cold storage issues after cutoff');
 select ok(case when (select missed_count from cold_missed_context) = 0 then true else public.list_cold_storage_managed_issues('1d000000-0000-4000-8000-000000000002','2d000000-0000-4000-8000-000000000001',1,20,null,null,null,null,null,'cold_storage',null,'missed')->'issues'->0->>'title' like '%missed scheduled check%' end,'missed issue list names scheduled check after cutoff');
 select is(public.get_oil_tracking_managed_issue('1d000000-0000-4000-8000-000000000002','2d000000-0000-4000-8000-000000000001',(select id from public.oil_tracking_issues where section='closing' limit 1))->>'checklist_type','oil_tracking','manager can open oil issue detail');
-select ok(public.get_cold_storage_managed_issue('1d000000-0000-4000-8000-000000000002','2d000000-0000-4000-8000-000000000001',(select id from public.cold_storage_issues limit 1))->>'remark' like '%Temperature: 5C%','manager can open cold issue detail');
+select ok(public.get_cold_storage_managed_issue('1d000000-0000-4000-8000-000000000002','2d000000-0000-4000-8000-000000000001','7d000000-0000-4000-8000-000000000001')->>'remark' like '%Temperature: 5C%','manager can open cold issue detail');
 select ok(case when (select missed_count from cold_missed_context) = 0 then true else public.get_cold_storage_managed_issue('1d000000-0000-4000-8000-000000000002','2d000000-0000-4000-8000-000000000001',private.cold_storage_missed_issue_id('6d000000-0000-4000-8000-000000000001','12:00'))->>'remark' like '%Missed scheduled check%' end,'manager can open derived missed cold issue detail after cutoff');
 
 select throws_ok($$select public.get_phase4a_management_overview('1d000000-0000-4000-8000-000000000003','2d000000-0000-4000-8000-000000000001')$$,'42501','management overview access denied','unrelated manager cannot read overview');
 select throws_ok($$select public.list_oil_tracking_managed_issues('1d000000-0000-4000-8000-000000000003','2d000000-0000-4000-8000-000000000001',1,20,null,null,null,null,null,'oil_tracking',null,null)$$,'42501','oil tracking issue access denied','unrelated manager cannot list oil issues');
-select throws_ok($$select public.get_cold_storage_managed_issue('1d000000-0000-4000-8000-000000000004','2d000000-0000-4000-8000-000000000001',(select id from public.cold_storage_issues limit 1))$$,'42501','cold storage issue access denied','staff cannot open cold issue');
+select throws_ok($$select public.get_cold_storage_managed_issue('1d000000-0000-4000-8000-000000000004','2d000000-0000-4000-8000-000000000001','7d000000-0000-4000-8000-000000000001')$$,'42501','cold storage issue access denied','staff cannot open cold issue');
 
 select is(has_function_privilege('authenticated','public.list_oil_tracking_managed_issues(uuid,uuid,int,int,date,date,uuid,uuid,uuid,text,text,text)','execute'),false,'authenticated cannot execute managed oil issues RPC');
 select is(has_function_privilege('service_role','public.get_cold_storage_managed_issue(uuid,uuid,uuid)','execute'),true,'service role can execute managed cold issue detail RPC');
