@@ -60,6 +60,15 @@ import {
   ManagerPasswordResetUnavailableError,
 } from "./organization-manager-password-reset";
 import {
+  BranchSupervisorPasswordResetAccessError,
+  BranchSupervisorPasswordResetConflictError,
+  BranchSupervisorPasswordResetRateLimitError,
+  BranchSupervisorPasswordResetReauthenticationError,
+  BranchSupervisorPasswordResetReplayError,
+  BranchSupervisorPasswordResetSessionRevokedError,
+  BranchSupervisorPasswordResetUnavailableError,
+} from "./branch-supervisor-password-reset";
+import {
   ManagerNotificationAccessError,
   ManagerNotificationConflictError,
   ManagerNotificationInputError,
@@ -94,6 +103,8 @@ const managerPasswordResetStepUpBodySchema = z.object({
   current_password: z.string().min(8).max(1024),
 }).strict();
 const managerPasswordResetStepUpGrantSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+const supervisorPasswordResetStepUpBodySchema = z.object({ current_password: z.string().min(8).max(1024) }).strict();
+const supervisorPasswordResetStepUpGrantSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 const branchIdSchema = z.uuid();
 const staffIdSchema = z.uuid();
 const operationalRoleSchema = z.enum(["kitchen", "dispatcher", "production", "front_of_house", "cleaner", "cashier"]);
@@ -5303,6 +5314,90 @@ export function createApp(
         } else {
           next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
         }
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/supervisors/:supervisorId/reset-password/step-up",
+    protectedRateLimit,
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const supervisorId = z.uuid().safeParse(request.params.supervisorId);
+        const body = supervisorPasswordResetStepUpBodySchema.safeParse(request.body);
+        const query = emptyQuerySchema.safeParse(request.query);
+        if (!organizationId.success || !supervisorId.success || !body.success || !query.success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!auth.sessionId || !z.uuid().safeParse(auth.sessionId).success) {
+          throw new HttpError(401, "unauthorized", "Authentication is required.");
+        }
+        const service = dependencies.branchSupervisorPasswordReset;
+        if (!service) throw new HttpError(503, "service_unavailable", "Password reset is unavailable.");
+        const result = await service.authorize({
+          actorUserId: auth.userId,
+          actorEmail: auth.email,
+          actorSessionId: auth.sessionId,
+          organizationId: organizationId.data,
+          supervisorId: supervisorId.data,
+          currentPassword: body.data.current_password,
+          clientIp: request.ip ?? request.socket.remoteAddress ?? "unavailable",
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ step_up_grant: result.authorization, expires_at: result.expiresAt });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof BranchSupervisorPasswordResetReauthenticationError) next(new HttpError(403, "forbidden", "Password reauthentication failed."));
+        else if (error instanceof BranchSupervisorPasswordResetSessionRevokedError) next(new HttpError(401, "unauthorized", "Authentication is required."));
+        else if (error instanceof BranchSupervisorPasswordResetAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof BranchSupervisorPasswordResetRateLimitError) next(new HttpError(429, "rate_limited", "Unable to reset the password."));
+        else if (error instanceof BranchSupervisorPasswordResetUnavailableError) next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
+        else next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/supervisors/:supervisorId/reset-password",
+    protectedRateLimit,
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const supervisorId = z.uuid().safeParse(request.params.supervisorId);
+        const body = emptyQuerySchema.safeParse(request.body ?? {});
+        const query = emptyQuerySchema.safeParse(request.query);
+        const idempotencyKey = z.uuid().safeParse(request.header("Idempotency-Key"));
+        const stepUpGrant = supervisorPasswordResetStepUpGrantSchema.safeParse(request.header("X-Password-Reset-Step-Up"));
+        if (!organizationId.success || !supervisorId.success || !body.success || !query.success || !idempotencyKey.success || !stepUpGrant.success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!auth.sessionId || !z.uuid().safeParse(auth.sessionId).success) throw new HttpError(401, "unauthorized", "Authentication is required.");
+        const service = dependencies.branchSupervisorPasswordReset;
+        if (!service) throw new HttpError(503, "service_unavailable", "Password reset is unavailable.");
+        const result = await service.reset({
+          actorUserId: auth.userId,
+          actorSessionId: auth.sessionId,
+          organizationId: organizationId.data,
+          supervisorId: supervisorId.data,
+          idempotencyKey: idempotencyKey.data,
+          authorization: stepUpGrant.data,
+          clientIp: request.ip ?? request.socket.remoteAddress ?? "unavailable",
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ temporary_password: result.temporaryPassword, must_change_password: true });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof BranchSupervisorPasswordResetSessionRevokedError) next(new HttpError(401, "unauthorized", "Authentication is required."));
+        else if (error instanceof BranchSupervisorPasswordResetAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof BranchSupervisorPasswordResetConflictError || error instanceof BranchSupervisorPasswordResetReplayError) next(new HttpError(409, "conflict", "The password reset cannot be repeated."));
+        else if (error instanceof BranchSupervisorPasswordResetRateLimitError) next(new HttpError(429, "rate_limited", "Unable to reset the password."));
+        else if (error instanceof BranchSupervisorPasswordResetUnavailableError) next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
+        else next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
       }
     },
   );
