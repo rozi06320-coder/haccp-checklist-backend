@@ -5338,7 +5338,7 @@ export function createApp(
         }
         const service = dependencies.branchSupervisorPasswordReset;
         if (!service) {
-          emitBranchSupervisorPasswordResetDiagnostic({ requestId: request.id, stage: "dependency_initialization", category: "unavailable", status: 503, durationMs: 0 });
+          emitBranchSupervisorPasswordResetDiagnostic({ requestId: request.id, stage: "dependency_initialization", category: "unavailable", status: 503, errorCode: null, errorHttpStatus: null, durationMs: 0 });
           throw new HttpError(503, "service_unavailable", "Password reset is unavailable.");
         }
         const result = await service.authorize({
@@ -5361,7 +5361,7 @@ export function createApp(
         else if (error instanceof BranchSupervisorPasswordResetRateLimitError) next(new HttpError(429, "rate_limited", "Unable to reset the password."));
         else if (error instanceof BranchSupervisorPasswordResetUnavailableError) next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
         else {
-          emitBranchSupervisorPasswordResetDiagnostic({ requestId: request.id, stage: "unexpected_error", category: "unexpected", status: 503, durationMs: 0 });
+          emitBranchSupervisorPasswordResetDiagnostic({ requestId: request.id, stage: "unexpected_error", category: "unexpected", status: 503, errorCode: null, errorHttpStatus: null, durationMs: 0 });
           next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
         }
       }

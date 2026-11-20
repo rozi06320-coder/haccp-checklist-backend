@@ -40,6 +40,8 @@ export type BranchSupervisorPasswordResetDiagnostic = {
   stage: BranchSupervisorPasswordResetDiagnosticStage;
   category: "unavailable" | "session_revoked" | "access_denied" | "rate_limited" | "reauthentication_failed" | "unexpected";
   status: 401 | 403 | 429 | 503;
+  errorCode: string | null;
+  errorHttpStatus: number | null;
   durationMs: number;
 };
 
@@ -77,6 +79,7 @@ export type BranchSupervisorPasswordResetService = {
 };
 
 type RpcError = { code?: string; message?: string; status?: number };
+const mappedRpcErrorMetadata = new WeakMap<object, RpcError>();
 type ResetRpcClient = {
   rpc(name: string, args: Record<string, unknown>): Promise<{ data: unknown; error: RpcError | null }>;
   auth: { admin: { updateUserById(userId: string, attributes: { password: string }): Promise<{ error: RpcError | null }> } };
@@ -105,6 +108,27 @@ function mapRpcError(error: RpcError) {
   if (error.code === "P0001" && error.message?.includes("step-up required")) return new BranchSupervisorPasswordResetReplayError();
   if (error.code === "55000" || error.code === "23505") return new BranchSupervisorPasswordResetConflictError();
   return new BranchSupervisorPasswordResetUnavailableError();
+}
+
+function mapRpcErrorWithMetadata(error: RpcError) {
+  const mapped = mapRpcError(error);
+  mappedRpcErrorMetadata.set(mapped, error);
+  return mapped;
+}
+
+function diagnosticRpcMetadata(error: unknown) {
+  if (!error || (typeof error !== "object" && typeof error !== "function")) {
+    return { errorCode: null, errorHttpStatus: null };
+  }
+  const source = mappedRpcErrorMetadata.get(error);
+  const code = typeof source?.code === "string" && (/^[0-9A-Z]{5}$/u.test(source.code) || /^PGRST[0-9]{3}$/u.test(source.code))
+    ? source.code
+    : null;
+  const errorHttpStatus = typeof source?.status === "number"
+    && Number.isInteger(source.status) && source.status >= 400 && source.status <= 599
+    ? source.status
+    : null;
+  return { errorCode: code, errorHttpStatus };
 }
 
 function authFailureIsDefinitive(error: RpcError): boolean {
@@ -155,7 +179,7 @@ export function createBranchSupervisorPasswordResetService(
   async function rpc(name: string, args: Record<string, unknown>) {
     let result: Awaited<ReturnType<ResetRpcClient["rpc"]>>;
     try { result = await client.rpc(name, args); } catch { throw new BranchSupervisorPasswordResetUnavailableError(); }
-    if (result.error) throw mapRpcError(result.error);
+    if (result.error) throw mapRpcErrorWithMetadata(result.error);
     return result.data;
   }
 
@@ -226,7 +250,8 @@ export function createBranchSupervisorPasswordResetService(
                 : error instanceof BranchSupervisorPasswordResetUnavailableError
                   ? "unavailable"
                   : "unexpected";
-        emitDiagnostic({ requestId, stage, category, status, durationMs: Math.max(0, now() - startedAt) });
+        const { errorCode, errorHttpStatus } = diagnosticRpcMetadata(error);
+        emitDiagnostic({ requestId, stage, category, status, errorCode, errorHttpStatus, durationMs: Math.max(0, now() - startedAt) });
       };
 
       try {

@@ -63,7 +63,7 @@ test("records live-session RPC failures without sensitive fields", async () => {
   await assert.rejects(() => service.authorize(input), BranchSupervisorPasswordResetUnavailableError);
   assert.equal(diagnostics[0]?.stage, "live_session_rpc");
   assert.equal(diagnostics[0]?.status, 503);
-  assert.equal(JSON.stringify(diagnostics), JSON.stringify(diagnostics.map(({ requestId, stage, category, status, durationMs }) => ({ requestId, stage, category, status, durationMs }))));
+  assert.equal(JSON.stringify(diagnostics), JSON.stringify(diagnostics.map(({ requestId, stage, category, status, errorCode, errorHttpStatus, durationMs }) => ({ requestId, stage, category, status, errorCode, errorHttpStatus, durationMs }))));
 });
 
 test("route diagnostics cover dependency and unexpected-error boundaries", () => {
@@ -77,10 +77,28 @@ test("records rate-limit RPC failures and preserves the service error", async ()
   const diagnostics: BranchSupervisorPasswordResetDiagnostic[] = [];
   const service = serviceFor(async () => {
     calls += 1;
-    return calls === 1 ? { data: true, error: null } : { data: null, error: { status: 503 } };
+    return calls === 1 ? { data: true, error: null } : { data: null, error: { code: "PGRST202", status: 503, message: "do-not-log" } };
   }, successfulPasswordClient, diagnostics);
   await assert.rejects(() => service.authorize(input), BranchSupervisorPasswordResetUnavailableError);
   assert.equal(diagnostics[0]?.stage, "rate_limit_rpc");
+  assert.equal(diagnostics[0]?.errorCode, "PGRST202");
+  assert.equal(diagnostics[0]?.errorHttpStatus, 503);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /do-not-log/);
+});
+
+test("normalizes unsafe RPC codes and statuses without leaking raw errors", async () => {
+  let calls = 0;
+  const diagnostics: BranchSupervisorPasswordResetDiagnostic[] = [];
+  const service = serviceFor(async () => {
+    calls += 1;
+    return calls === 1
+      ? { data: true, error: null }
+      : { data: null, error: { code: "secret-code\\n", status: 999, message: "sensitive" } };
+  }, successfulPasswordClient, diagnostics);
+  await assert.rejects(() => service.authorize(input), BranchSupervisorPasswordResetUnavailableError);
+  assert.equal(diagnostics[0]?.errorCode, null);
+  assert.equal(diagnostics[0]?.errorHttpStatus, null);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /secret-code|sensitive/);
 });
 
 test("records Auth reauthentication failures", async () => {
