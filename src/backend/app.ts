@@ -67,6 +67,7 @@ import {
   BranchSupervisorPasswordResetReplayError,
   BranchSupervisorPasswordResetSessionRevokedError,
   BranchSupervisorPasswordResetUnavailableError,
+  emitBranchSupervisorPasswordResetDiagnostic,
 } from "./branch-supervisor-password-reset";
 import {
   ManagerNotificationAccessError,
@@ -5336,7 +5337,10 @@ export function createApp(
           throw new HttpError(401, "unauthorized", "Authentication is required.");
         }
         const service = dependencies.branchSupervisorPasswordReset;
-        if (!service) throw new HttpError(503, "service_unavailable", "Password reset is unavailable.");
+        if (!service) {
+          emitBranchSupervisorPasswordResetDiagnostic({ requestId: request.id, stage: "dependency_initialization", category: "unavailable", status: 503, durationMs: 0 });
+          throw new HttpError(503, "service_unavailable", "Password reset is unavailable.");
+        }
         const result = await service.authorize({
           actorUserId: auth.userId,
           actorEmail: auth.email,
@@ -5345,6 +5349,7 @@ export function createApp(
           supervisorId: supervisorId.data,
           currentPassword: body.data.current_password,
           clientIp: request.ip ?? request.socket.remoteAddress ?? "unavailable",
+          requestId: request.id,
         });
         response.setHeader("Cache-Control", "private, no-store");
         response.status(200).json({ step_up_grant: result.authorization, expires_at: result.expiresAt });
@@ -5355,7 +5360,10 @@ export function createApp(
         else if (error instanceof BranchSupervisorPasswordResetAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
         else if (error instanceof BranchSupervisorPasswordResetRateLimitError) next(new HttpError(429, "rate_limited", "Unable to reset the password."));
         else if (error instanceof BranchSupervisorPasswordResetUnavailableError) next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
-        else next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
+        else {
+          emitBranchSupervisorPasswordResetDiagnostic({ requestId: request.id, stage: "unexpected_error", category: "unexpected", status: 503, durationMs: 0 });
+          next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
+        }
       }
     },
   );

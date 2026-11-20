@@ -26,6 +26,33 @@ export class BranchSupervisorPasswordResetRateLimitError extends Error {}
 export class BranchSupervisorPasswordResetSessionRevokedError extends Error {}
 export class BranchSupervisorPasswordResetUnavailableError extends Error {}
 
+export type BranchSupervisorPasswordResetDiagnosticStage =
+  | "dependency_initialization"
+  | "live_session_rpc"
+  | "rate_limit_rpc"
+  | "auth_reauthentication"
+  | "auth_sign_out"
+  | "step_up_issue_rpc"
+  | "unexpected_error";
+
+export type BranchSupervisorPasswordResetDiagnostic = {
+  requestId: string;
+  stage: BranchSupervisorPasswordResetDiagnosticStage;
+  category: "unavailable" | "session_revoked" | "access_denied" | "rate_limited" | "reauthentication_failed" | "unexpected";
+  status: 401 | 403 | 429 | 503;
+  durationMs: number;
+};
+
+export function emitBranchSupervisorPasswordResetDiagnostic(
+  diagnostic: BranchSupervisorPasswordResetDiagnostic,
+) {
+  try {
+    console.warn(`BRANCH_SUPERVISOR_PASSWORD_RESET_BACKEND_DIAGNOSTIC ${JSON.stringify(diagnostic)}`);
+  } catch {
+    // Diagnostics must never affect authentication or reset behavior.
+  }
+}
+
 export type BranchSupervisorPasswordResetService = {
   validateProtectedSession(input: { actorUserId: string; actorSessionId: string }): Promise<"active" | "revoked" | "not_applicable">;
   authorize(input: {
@@ -36,6 +63,7 @@ export type BranchSupervisorPasswordResetService = {
     supervisorId: string;
     currentPassword: string;
     clientIp: string;
+    requestId?: string;
   }): Promise<{ authorization: string; expiresAt: string }>;
   reset(input: {
     actorUserId: string;
@@ -95,6 +123,8 @@ export function createBranchSupervisorPasswordResetService(
     generateAuthorization?: () => string;
     client?: ResetRpcClient;
     passwordClient?: PasswordVerificationClient;
+    emitDiagnostic?: (diagnostic: BranchSupervisorPasswordResetDiagnostic) => void;
+    now?: () => number;
   } = {},
 ): BranchSupervisorPasswordResetService {
   const authTimeoutMs = options.authTimeoutMs ?? 10_000;
@@ -112,6 +142,8 @@ export function createBranchSupervisorPasswordResetService(
   ) as unknown as PasswordVerificationClient;
   const generatePassword = options.generatePassword ?? generateTemporaryPassword;
   const generateAuthorization = options.generateAuthorization ?? (() => randomBytes(32).toString("base64url"));
+  const emitDiagnostic = options.emitDiagnostic ?? emitBranchSupervisorPasswordResetDiagnostic;
+  const now = options.now ?? (() => Date.now());
 
   function clientAddressHash(clientIp: string) {
     return createHmac("sha256", rateLimitHmacKey)
@@ -176,8 +208,41 @@ export function createBranchSupervisorPasswordResetService(
     },
 
     async authorize(input) {
-      await requireLiveSession(input.actorUserId, input.actorSessionId);
-      await consumeRateLimit({ ...input, phase: "step_up" });
+      const startedAt = now();
+      const requestId = input.requestId ?? "unavailable";
+      const report = (
+        stage: BranchSupervisorPasswordResetDiagnosticStage,
+        error: unknown,
+        status: 401 | 403 | 429 | 503,
+      ) => {
+        const category = error instanceof BranchSupervisorPasswordResetSessionRevokedError
+          ? "session_revoked"
+          : error instanceof BranchSupervisorPasswordResetAccessError
+            ? "access_denied"
+            : error instanceof BranchSupervisorPasswordResetRateLimitError
+              ? "rate_limited"
+              : error instanceof BranchSupervisorPasswordResetReauthenticationError
+                ? "reauthentication_failed"
+                : error instanceof BranchSupervisorPasswordResetUnavailableError
+                  ? "unavailable"
+                  : "unexpected";
+        emitDiagnostic({ requestId, stage, category, status, durationMs: Math.max(0, now() - startedAt) });
+      };
+
+      try {
+        await requireLiveSession(input.actorUserId, input.actorSessionId);
+      } catch (error) {
+        report("live_session_rpc", error, error instanceof BranchSupervisorPasswordResetSessionRevokedError ? 401 : 503);
+        throw error;
+      }
+      try {
+        await consumeRateLimit({ ...input, phase: "step_up" });
+      } catch (error) {
+        report("rate_limit_rpc", error, error instanceof BranchSupervisorPasswordResetRateLimitError ? 429 : 503);
+        throw error;
+      }
+
+      let signOutFailed = false;
       try {
         // Supabase clients retain an in-memory Auth session even with
         // persistence disabled. A fresh client prevents concurrent step-up
@@ -188,7 +253,12 @@ export function createBranchSupervisorPasswordResetService(
         });
         if (result.data.session) {
           const signedOut = await passwordClient.auth.signOut({ scope: "local" });
-          if (signedOut.error) throw new BranchSupervisorPasswordResetUnavailableError();
+          if (signedOut.error) {
+            signOutFailed = true;
+            const error = new BranchSupervisorPasswordResetUnavailableError();
+            report("auth_sign_out", error, 503);
+            throw error;
+          }
         }
         if (result.error || result.data.user?.id !== input.actorUserId
           || !result.data.session?.access_token) {
@@ -199,19 +269,39 @@ export function createBranchSupervisorPasswordResetService(
       } catch (error) {
         if (error instanceof BranchSupervisorPasswordResetRateLimitError
           || error instanceof BranchSupervisorPasswordResetReauthenticationError
-          || error instanceof BranchSupervisorPasswordResetUnavailableError) throw error;
-        throw new BranchSupervisorPasswordResetUnavailableError();
+          || error instanceof BranchSupervisorPasswordResetUnavailableError) {
+          if (!signOutFailed) {
+            report("auth_reauthentication", error,
+              error instanceof BranchSupervisorPasswordResetRateLimitError
+                ? 429
+                : error instanceof BranchSupervisorPasswordResetReauthenticationError ? 403 : 503);
+          }
+          throw error;
+        }
+        const unavailable = new BranchSupervisorPasswordResetUnavailableError();
+        report("auth_reauthentication", unavailable, 503);
+        throw unavailable;
       }
 
       const authorization = generateAuthorization();
-      const issued = stepUpResultSchema.safeParse(await rpc("issue_branch_supervisor_password_reset_step_up", {
-        p_actor_user_id: input.actorUserId,
-        p_actor_session_id: input.actorSessionId,
-        p_organization_id: input.organizationId,
-        p_target_user_id: input.supervisorId,
-        p_grant_secret_hash: sha256(authorization),
-      }));
-      if (!issued.success) throw new BranchSupervisorPasswordResetUnavailableError();
+      let issued;
+      try {
+        issued = stepUpResultSchema.safeParse(await rpc("issue_branch_supervisor_password_reset_step_up", {
+          p_actor_user_id: input.actorUserId,
+          p_actor_session_id: input.actorSessionId,
+          p_organization_id: input.organizationId,
+          p_target_user_id: input.supervisorId,
+          p_grant_secret_hash: sha256(authorization),
+        }));
+      } catch (error) {
+        report("step_up_issue_rpc", error, error instanceof BranchSupervisorPasswordResetAccessError ? 403 : 503);
+        throw error;
+      }
+      if (!issued.success) {
+        const unavailable = new BranchSupervisorPasswordResetUnavailableError();
+        report("step_up_issue_rpc", unavailable, 503);
+        throw unavailable;
+      }
       return { authorization, expiresAt: issued.data.expires_at };
     },
 
