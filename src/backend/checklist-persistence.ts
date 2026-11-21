@@ -213,7 +213,7 @@ function extractPostgresAndPostgrestCodes(code: unknown): { postgresCode: string
 }
 
 function throwProductSalesRpcError(code:string|undefined):never{
- if(code==="40001"||code==="23505")throw new ChecklistConflictError(code);
+ if(code==="40001"||code==="PT409"||code==="23505")throw new ChecklistConflictError(code);
  if(code==="22023"||code==="22004")throw new ChecklistInputError();
  if(code==="42501")throw new ChecklistAccessError();
  if(code==="P0002")throw new ChecklistNotFoundError();
@@ -221,14 +221,14 @@ function throwProductSalesRpcError(code:string|undefined):never{
 }
 
 function throwDailyWasteRpcError(code:string|undefined):never{
- if(code==="40001"||code==="23505")throw new ChecklistConflictError(code);
+ if(code==="40001"||code==="PT409"||code==="23505")throw new ChecklistConflictError(code);
  if(code==="22023"||code==="22004")throw new ChecklistInputError();
  if(code==="42501")throw new ChecklistAccessError();
  throw new Error("Checklist persistence unavailable.");
 }
 
 function throwDailyInventoryRpcError(code:string|undefined):never{
- if(code==="40001"||code==="23505")throw new ChecklistConflictError(code);
+ if(code==="40001"||code==="PT409"||code==="23505")throw new ChecklistConflictError(code);
  if(code==="22023"||code==="22004")throw new ChecklistInputError();
  if(code==="42501")throw new ChecklistAccessError();
  throw new Error("Checklist persistence unavailable.");
@@ -1238,7 +1238,7 @@ export function createChecklistPersistence(
    }
    if(result.error){
     const code=result.error.code;
-    const isKnownClientError=code==="23505"||code==="23514"||code==="40001"||code==="55000"||code==="22023"||code==="42501"||code==="P0002";
+    const isKnownClientError=code==="23505"||code==="23514"||code==="40001"||code==="PT409"||code==="55000"||code==="22023"||code==="42501"||code==="P0002";
     if(!isKnownClientError){
      const {postgresCode,postgrestCode}=extractPostgresAndPostgrestCodes(code);
      logCatalogRecipeSaveError({

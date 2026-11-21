@@ -56,7 +56,7 @@ export function createTrainingCredentialAdmin(url: string, secretKey: string): T
       if (result.error.code === "42501") throw new AdminAccessError();
       if (result.error.code === "P0002") throw new AdminNotFoundError();
       if (result.error.code === "22023") throw new AdminInputError();
-      if (["23505", "23514", "40001"].includes(result.error.code)) throw new AdminConflictError();
+      if (["23505", "23514", "40001", "PT409"].includes(result.error.code)) throw new AdminConflictError();
       throw new AdminOperationError();
     }
     if (!Array.isArray(result.data)) throw new AdminOperationError();

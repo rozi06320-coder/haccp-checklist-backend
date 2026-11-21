@@ -1281,7 +1281,7 @@ export function createManagementAdmin(
         if (error?.code === "42501") throw new AdminAccessError();
         if (error?.code === "P0002") throw new AdminNotFoundError();
         if (error?.code === "22023") throw new AdminInputError();
-        if (error?.code === "40001" || error?.code === "23505" || error?.code === "23514") throw new AdminConflictError();
+        if (error?.code === "40001" || error?.code === "PT409" || error?.code === "23505" || error?.code === "23514") throw new AdminConflictError();
         throw new AdminOperationError();
       }
       const rows = z.array(z.object({
@@ -1342,7 +1342,7 @@ export function createManagementAdmin(
         if (error.code === "42501") throw new AdminAccessError();
         if (error.code === "P0002") throw new AdminNotFoundError();
         if (error.code === "22023") throw new AdminInputError();
-        if (error.code === "23505" || error.code === "23514" || error.code === "40001") throw new AdminConflictError();
+        if (error.code === "23505" || error.code === "23514" || error.code === "40001" || error.code === "PT409") throw new AdminConflictError();
         throw new AdminOperationError();
       }
       const rows = z.array(z.object({
@@ -1365,7 +1365,7 @@ export function createManagementAdmin(
       if (error) {
         if (error.code === "42501") throw new AdminAccessError();
         if (error.code === "22023") throw new AdminInputError();
-        if (["23505", "23514", "40001"].includes(error.code)) throw new AdminConflictError();
+        if (["23505", "23514", "40001", "PT409"].includes(error.code)) throw new AdminConflictError();
         throw new AdminOperationError();
       }
       const parsed = supervisorOperationalRecoverySchema.safeParse(data);
@@ -1382,7 +1382,7 @@ export function createManagementAdmin(
       if (error) {
         if (error.code === "42501") throw new AdminAccessError();
         if (error.code === "22023") throw new AdminInputError();
-        if (["23505", "23514", "40001"].includes(error.code)) throw new AdminConflictError();
+        if (["23505", "23514", "40001", "PT409"].includes(error.code)) throw new AdminConflictError();
         throw new AdminOperationError();
       }
       const parsed = supervisorClassificationSchema.safeParse(data);
@@ -1420,7 +1420,7 @@ export function createManagementAdmin(
         if (error.code === "42501") throw new AdminAccessError();
         if (error.code === "P0002") throw new AdminNotFoundError();
         if (error.code === "22023") throw new AdminInputError();
-        if (["23505", "23514", "40001"].includes(error.code)) throw new AdminConflictError();
+        if (["23505", "23514", "40001", "PT409"].includes(error.code)) throw new AdminConflictError();
         throw new AdminOperationError();
       }
       const parsed = supervisorDemotionResultSchema.safeParse(data);
@@ -1580,7 +1580,7 @@ export function createManagementAdmin(
       });
       if (error) {
         if (error.code === "42501") throw new AdminAccessError();
-        if (error.code === "40001" || error.code === "23505" || error.code === "23514" || error.code === "22023") throw new AdminConflictError();
+        if (error.code === "40001" || error.code === "PT409" || error.code === "23505" || error.code === "23514" || error.code === "22023") throw new AdminConflictError();
         throw new AdminOperationError();
       }
       const rows = z.array(internalAdminOperationalTeamPrimarySupervisorChangeSchema).length(1).safeParse(data);
@@ -1936,7 +1936,7 @@ export function createManagementAdmin(
         if (error.code === "42501") throw new AdminAccessError();
         if (error.code === "P0002") throw new AdminNotFoundError();
         if (error.code === "22023") throw new AdminInputError();
-        if (["23505", "23514", "40001"].includes(error.code)) throw new AdminConflictError();
+        if (["23505", "23514", "40001", "PT409"].includes(error.code)) throw new AdminConflictError();
         throw new AdminOperationError();
       }
       const result = trainingQuestionSchema.safeParse(data);
@@ -1971,7 +1971,7 @@ export function createManagementAdmin(
         if (error.code === "42501") throw new AdminAccessError();
         if (error.code === "P0002") throw new AdminNotFoundError();
         if (error.code === "22023") throw new AdminInputError();
-        if (["23505", "23514", "40001"].includes(error.code)) throw new AdminConflictError();
+        if (["23505", "23514", "40001", "PT409"].includes(error.code)) throw new AdminConflictError();
         throw new AdminOperationError();
       }
       const result = trainingQuestionSchema.safeParse(data);
@@ -1989,7 +1989,7 @@ export function createManagementAdmin(
         if (error.code === "42501") throw new AdminAccessError();
         if (error.code === "P0002") throw new AdminNotFoundError();
         if (error.code === "22023") throw new AdminInputError();
-        if (["23505", "23514", "40001"].includes(error.code)) throw new AdminConflictError();
+        if (["23505", "23514", "40001", "PT409"].includes(error.code)) throw new AdminConflictError();
         throw new AdminOperationError();
       }
       const result = z.object({ deleted: z.literal(true), id: z.string().uuid(), revision: z.number().int().nonnegative() }).safeParse(data);
@@ -2008,7 +2008,7 @@ export function createManagementAdmin(
         if (error.code === "42501") throw new AdminAccessError();
         if (error.code === "P0002") throw new AdminNotFoundError();
         if (error.code === "22023") throw new AdminInputError();
-        if (["23505", "23514", "40001"].includes(error.code)) throw new AdminConflictError();
+        if (["23505", "23514", "40001", "PT409"].includes(error.code)) throw new AdminConflictError();
         throw new AdminOperationError();
       }
       const result = trainingQuestionSchema.safeParse(data);

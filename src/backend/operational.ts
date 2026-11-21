@@ -1066,7 +1066,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       }
       if (result.error.code === "23514" && /annual evaluation incomplete/i.test(result.error.message)) throw new OperationalInputError();
       if (result.error.code === "23514" && /destination team hygiene already submitted/i.test(result.error.message)) throw new OperationalHygieneSubmittedError();
-      if (["23505", "23514", "40001", "55000"].includes(result.error.code)) {
+      if (["23505", "23514", "40001", "PT409", "55000"].includes(result.error.code)) {
         throw new OperationalConflictError();
       }
       if (result.error.code === "22023") throw new OperationalInputError();
@@ -1084,7 +1084,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       if (result.error.code === "23505" && /equipment[_ ]code/i.test(result.error.message)) throw new OperationalDuplicateColdStorageEquipmentCodeError();
       if (result.error.code === "23514" && /(?:annual|monthly) evaluation incomplete/i.test(result.error.message)) throw new OperationalInputError();
       if (result.error.code === "23514" && /destination team hygiene already submitted/i.test(result.error.message)) throw new OperationalHygieneSubmittedError();
-      if (["23505", "23514", "40001", "55000"].includes(result.error.code)) throw new OperationalConflictError();
+      if (["23505", "23514", "40001", "PT409", "55000"].includes(result.error.code)) throw new OperationalConflictError();
       if (result.error.code === "22023") throw new OperationalInputError();
       if (result.error.code === "42501") throw new OperationalAccessError();
       throw new AdminOperationError();
@@ -3132,7 +3132,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         target_branch_id: input.branchId,
       });
       if (result.error) {
-        if (["23505", "23514", "40001", "55000"].includes(result.error.code)) {
+        if (["23505", "23514", "40001", "PT409", "55000"].includes(result.error.code)) {
           throw new SupervisorPromotionConflictDiagnosticError(
             result.error.code ?? null,
             supervisorPromotionConstraint(result.error.message, result.error.details),
