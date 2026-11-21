@@ -41,7 +41,7 @@ export function createTrainingPublicationServiceFromClient(client:RpcClient,sign
   async function rpc(name:string,args:Record<string,unknown>){const result=await client.rpc(name,args);if(result.error){
     if(result.error.code==="42501")throw new TrainingPublicationAccessError();
     if(result.error.code==="22023")throw new TrainingPublicationInputError();
-    if(result.error.code==="40001"||result.error.code==="55000"||result.error.code==="23505")throw new TrainingPublicationConflictError();
+    if(result.error.code==="40001"||result.error.code==="PT409"||result.error.code==="55000"||result.error.code==="23505")throw new TrainingPublicationConflictError();
     if(result.error.code==="P0002")throw new TrainingPublicationNotFoundError();
     throw new TrainingPublicationUnavailableError();
   }return result.data;}
