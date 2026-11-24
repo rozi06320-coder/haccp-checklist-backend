@@ -171,6 +171,26 @@ const supervisorOwnedTeamRow = z.object({
   assignment_role: z.literal("primary"),
   can_write: z.boolean(),
 }).strict();
+const supervisorTeamOnboardingStateRow = z.object({
+  branch_id: uuid,
+  onboarding_choice: z.literal("waiting_for_transfer"),
+  selected_at: z.string(),
+}).strict();
+function formatSupervisorOwnedTeam(row: z.infer<typeof supervisorOwnedTeamRow>) {
+  return {
+    team: {
+      id: row.team_id,
+      organization_id: row.organization_id,
+      branch_id: row.branch_id,
+      name: row.team_name,
+      active: row.active,
+      legacy_supervisor_team_id: row.legacy_supervisor_team_id,
+      supervisor_user_id: row.supervisor_user_id,
+      assignment_role: row.assignment_role,
+      can_write: row.can_write,
+    },
+  };
+}
 const staffTransferDestinationRow = z.object({
   branch_id: uuid,
   branch_name: z.string(),
@@ -632,6 +652,9 @@ export function canonicalizeMaintenancePurchasePayload(input:{issueId?:string|nu
 
 export type OperationalRole = z.infer<typeof role>;
 export class OperationalConflictError extends Error {}
+export class OperationalTeamAlreadyAssignedError extends OperationalConflictError {}
+export class OperationalTeamNameConflictError extends OperationalConflictError {}
+export class OperationalIdempotencyConflictError extends OperationalConflictError {}
 export class OperationalDuplicateStaffCodeError extends Error {}
 export class OperationalDuplicateColdStorageEquipmentCodeError extends Error {}
 export class OperationalAccessError extends Error {}
@@ -702,7 +725,31 @@ export type OperationalAdmin = {
   }): Promise<unknown>;
   getBranchTimezone(actorUserId: string, branchId: string): Promise<string>;
   getSupervisorTeam(actorUserId: string, branchId: string, date: string): Promise<unknown>;
+  getSupervisorTeamOnboardingState?(input: {
+    actorUserId: string;
+    branchIds: string[];
+  }): Promise<{
+    states: Array<{
+      branch_id: string;
+      onboarding_choice: "waiting_for_transfer";
+      selected_at: string;
+    }>;
+  }>;
+  setSupervisorTeamOnboardingWaiting?(input: {
+    actorUserId: string;
+    branchId: string;
+  }): Promise<{
+    branch_id: string;
+    onboarding_choice: "waiting_for_transfer";
+    selected_at: string;
+  }>;
   createSupervisorOwnedOperationalTeam?(input: { actorUserId: string; branchId: string; name: string }): Promise<unknown>;
+  createSupervisorOwnedOperationalTeamV2?(input: {
+    actorUserId: string;
+    branchId: string;
+    name: string;
+    idempotencyKey?: string | null;
+  }): Promise<unknown>;
   createStaff(input: { actorUserId: string; branchId: string; operationalTeamId: string; displayName: string; companyName: string; staffCode?: string | null; countryCode?: string | null; iqamaNumber?: string | null; iqamaExpiryDate?: string | null; phoneNumber?: string | null; email?: string | null; roles: OperationalRole[] }): Promise<unknown>;
   createStaffImportPreview?(input: { actorUserId: string; branchId: string; operationalTeamId: string; rows: Array<{ row_number: number; staff_code: string | null; display_name: string; primary_role: OperationalRole; secondary_role: OperationalRole | null; country_code: string | null; company_name: string | null; iqama_number: string | null; iqama_expiry_date: string | null; phone_number: string | null; email: string | null }> }): Promise<{ preview_token: string; duplicate_rows: Array<{ row_number: number; error_code: string }> }>;
   confirmStaffImport?(input: { actorUserId: string; branchId: string; operationalTeamId: string; previewToken: string }): Promise<{ imported_count: number }>;
@@ -1053,26 +1100,44 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       });
     };
   }
+  function throwMappedRpcError(error: { code?: string | null; message?: string | null }): never {
+    if (error.code === "23505" && /employee code/i.test(error.message ?? "")) {
+      throw new OperationalDuplicateStaffCodeError();
+    }
+    if (error.code === "23505" && /equipment[_ ]code/i.test(error.message ?? "")) {
+      throw new OperationalDuplicateColdStorageEquipmentCodeError();
+    }
+    if (error.code === "23505" && /employee team already assigned|employee team primary supervisor conflict/i.test(error.message ?? "")) {
+      throw new OperationalTeamAlreadyAssignedError();
+    }
+    if (error.code === "23505" && /employee team already exists/i.test(error.message ?? "")) {
+      throw new OperationalTeamNameConflictError();
+    }
+    if (error.code === "23505" && /employee team idempotency conflict/i.test(error.message ?? "")) {
+      throw new OperationalIdempotencyConflictError();
+    }
+    if (error.code === "23514" && /(?:annual|monthly) evaluation incomplete/i.test(error.message ?? "")) {
+      throw new OperationalInputError();
+    }
+    if (error.code === "23514" && /destination team hygiene already submitted/i.test(error.message ?? "")) {
+      throw new OperationalHygieneSubmittedError();
+    }
+    if (error.code && ["23505", "23514", "40001", "PT409", "55000"].includes(error.code)) {
+      throw new OperationalConflictError();
+    }
+    if (error.code === "22023") throw new OperationalInputError();
+    if (error.code === "42501") throw new OperationalAccessError();
+    if (error.code === "PGRST202" || /could not find the function|schema cache/i.test(error.message ?? "")) {
+      throw new RpcSignatureMissingError();
+    }
+    throw new AdminOperationError();
+  }
   async function rpc(name: string, input: Record<string, unknown>, options?: { onError?: (error: { code?: string | null; message?: string | null }) => void }) {
     const result = await client.rpc(name, input);
     if (result.error) {
       if (name === "create_supervisor_cold_storage_equipment") emitCreateColdStorageEquipmentDiagnostic(result.error);
       options?.onError?.({ code: result.error.code, message: result.error.message });
-      if (result.error.code === "23505" && /employee code/i.test(result.error.message)) {
-        throw new OperationalDuplicateStaffCodeError();
-      }
-      if (result.error.code === "23505" && /equipment[_ ]code/i.test(result.error.message)) {
-        throw new OperationalDuplicateColdStorageEquipmentCodeError();
-      }
-      if (result.error.code === "23514" && /annual evaluation incomplete/i.test(result.error.message)) throw new OperationalInputError();
-      if (result.error.code === "23514" && /destination team hygiene already submitted/i.test(result.error.message)) throw new OperationalHygieneSubmittedError();
-      if (["23505", "23514", "40001", "55000"].includes(result.error.code)) {
-        throw new OperationalConflictError();
-      }
-      if (result.error.code === "22023") throw new OperationalInputError();
-      if (result.error.code === "42501") throw new OperationalAccessError();
-      if (result.error.code === "PGRST202" || /could not find the function|schema cache/i.test(result.error.message)) throw new RpcSignatureMissingError();
-      throw new AdminOperationError();
+      throwMappedRpcError(result.error);
     }
     if (!Array.isArray(result.data)) throw new AdminOperationError();
     return result.data;
@@ -1080,14 +1145,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
   async function rpcObject(name: string, input: Record<string, unknown>, options?: { allowNullable?: boolean }) {
     const result = await client.rpc(name, input);
     if (result.error) {
-      if (result.error.code === "23505" && /employee code/i.test(result.error.message)) throw new OperationalDuplicateStaffCodeError();
-      if (result.error.code === "23505" && /equipment[_ ]code/i.test(result.error.message)) throw new OperationalDuplicateColdStorageEquipmentCodeError();
-      if (result.error.code === "23514" && /(?:annual|monthly) evaluation incomplete/i.test(result.error.message)) throw new OperationalInputError();
-      if (result.error.code === "23514" && /destination team hygiene already submitted/i.test(result.error.message)) throw new OperationalHygieneSubmittedError();
-      if (["23505", "23514", "40001", "55000"].includes(result.error.code)) throw new OperationalConflictError();
-      if (result.error.code === "22023") throw new OperationalInputError();
-      if (result.error.code === "42501") throw new OperationalAccessError();
-      throw new AdminOperationError();
+      throwMappedRpcError(result.error);
     }
     if (options?.allowNullable && (result.data === null || result.data === undefined)) {
       return null;
@@ -2006,26 +2064,35 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
       }
       return { teams: [...teams.values()] };
     },
+    async getSupervisorTeamOnboardingState(input) {
+      const rows = z.array(supervisorTeamOnboardingStateRow).parse(await rpc("get_supervisor_team_onboarding_state", {
+        p_actor_user_id: input.actorUserId,
+        p_branch_ids: input.branchIds,
+      }));
+      return { states: rows };
+    },
+    async setSupervisorTeamOnboardingWaiting(input) {
+      return supervisorTeamOnboardingStateRow.parse(await rpcObject("set_supervisor_team_onboarding_waiting", {
+        p_actor_user_id: input.actorUserId,
+        p_branch_id: input.branchId,
+      }));
+    },
     async createSupervisorOwnedOperationalTeam(input) {
       const rows = z.array(supervisorOwnedTeamRow).length(1).parse(await rpc("create_supervisor_owned_operational_team", {
         p_actor_user_id: input.actorUserId,
         p_branch_id: input.branchId,
         p_team_name: input.name,
       }));
-      const row = rows[0];
-      return {
-        team: {
-          id: row.team_id,
-          organization_id: row.organization_id,
-          branch_id: row.branch_id,
-          name: row.team_name,
-          active: row.active,
-          legacy_supervisor_team_id: row.legacy_supervisor_team_id,
-          supervisor_user_id: row.supervisor_user_id,
-          assignment_role: row.assignment_role,
-          can_write: row.can_write,
-        },
-      };
+      return formatSupervisorOwnedTeam(rows[0]);
+    },
+    async createSupervisorOwnedOperationalTeamV2(input) {
+      const rows = z.array(supervisorOwnedTeamRow).length(1).parse(await rpc("create_supervisor_owned_operational_team_v2", {
+        p_actor_user_id: input.actorUserId,
+        p_branch_id: input.branchId,
+        p_team_name: input.name,
+        p_idempotency_key: input.idempotencyKey ?? null,
+      }));
+      return formatSupervisorOwnedTeam(rows[0]);
     },
     async createStaff(input) {
       const rows = z.array(mutationRow).length(1).parse(await rpc("create_operational_team_staff", {
@@ -3132,7 +3199,7 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         target_branch_id: input.branchId,
       });
       if (result.error) {
-        if (["23505", "23514", "40001", "55000"].includes(result.error.code)) {
+        if (["23505", "23514", "40001", "PT409", "55000"].includes(result.error.code)) {
           throw new SupervisorPromotionConflictDiagnosticError(
             result.error.code ?? null,
             supervisorPromotionConstraint(result.error.message, result.error.details),
