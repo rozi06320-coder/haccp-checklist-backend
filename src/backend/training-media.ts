@@ -146,7 +146,7 @@ export function createTrainingMediaServiceFromClient(client:Client):TrainingMedi
   async function rpc(name:string,args:Record<string,unknown>){const result=await client.rpc(name,args);if(result.error){
     if(result.error.code==="42501")throw new TrainingMediaAccessError();
     if(result.error.code==="22023")throw new TrainingMediaInputError();
-    if(result.error.code==="23505"||result.error.code==="40001"||result.error.code==="55000")throw new TrainingMediaConflictError();
+    if(result.error.code==="23505"||result.error.code==="40001"||result.error.code==="PT409"||result.error.code==="55000")throw new TrainingMediaConflictError();
     if(result.error.code==="P0002")throw new TrainingMediaNotFoundError();
     throw new TrainingMediaUnavailableError();}return result.data;}
   const args=(scope:Omit<Scope,"requestId">)=>({actor_user_id:scope.actorUserId,target_organization_id:scope.organizationId,target_course_id:scope.courseId,target_course_version_id:scope.courseVersionId});

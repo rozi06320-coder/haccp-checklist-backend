@@ -60,6 +60,16 @@ import {
   ManagerPasswordResetUnavailableError,
 } from "./organization-manager-password-reset";
 import {
+  BranchSupervisorPasswordResetAccessError,
+  BranchSupervisorPasswordResetConflictError,
+  BranchSupervisorPasswordResetRateLimitError,
+  BranchSupervisorPasswordResetReauthenticationError,
+  BranchSupervisorPasswordResetReplayError,
+  BranchSupervisorPasswordResetSessionRevokedError,
+  BranchSupervisorPasswordResetUnavailableError,
+  emitBranchSupervisorPasswordResetDiagnostic,
+} from "./branch-supervisor-password-reset";
+import {
   ManagerNotificationAccessError,
   ManagerNotificationConflictError,
   ManagerNotificationInputError,
@@ -94,6 +104,8 @@ const managerPasswordResetStepUpBodySchema = z.object({
   current_password: z.string().min(8).max(1024),
 }).strict();
 const managerPasswordResetStepUpGrantSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+const supervisorPasswordResetStepUpBodySchema = z.object({ current_password: z.string().min(8).max(1024) }).strict();
+const supervisorPasswordResetStepUpGrantSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 const branchIdSchema = z.uuid();
 const staffIdSchema = z.uuid();
 const operationalRoleSchema = z.enum(["kitchen", "dispatcher", "production", "front_of_house", "cleaner", "cashier"]);
@@ -2949,7 +2961,19 @@ function requestRateDiagnostic(request: Request, response: Response, next: NextF
   }
 
   const startedAt = performance.now();
+  const managementList = request.path.endsWith("/reports") ? "reports" : request.path.endsWith("/issues") ? "issues" : null;
+  let lifecycleLogged = false;
+  const logLifecycle = (outcome: "finished" | "aborted") => {
+    if (!managementList || lifecycleLogged) return;
+    lifecycleLogged = true;
+    try {
+      console.info(`MANAGEMENT_LIST_REQUEST_DIAGNOSTIC ${JSON.stringify({ requestId: request.id, route: normalizedRequestRoute(request), status: response.statusCode, durationMs: Math.round((performance.now() - startedAt) * 100) / 100, outcome })}`);
+    } catch {
+      // Diagnostics must never affect a request.
+    }
+  };
   response.once("finish", () => {
+    logLifecycle("finished");
     const event = {
       timestamp: new Date().toISOString(),
       route: normalizedRequestRoute(request),
@@ -2961,7 +2985,53 @@ function requestRateDiagnostic(request: Request, response: Response, next: NextF
     };
     console.info(`API_ROUTE_RATE_DIAGNOSTIC ${JSON.stringify(event)}`);
   });
+  response.once("close", () => {
+    if (!response.writableFinished) logLifecycle("aborted");
+  });
   next();
+}
+
+type ManagementListKind = "reports" | "issues";
+type ManagementListSource = "base" | "oil_tracking" | "cold_storage" | "daily_audit" | "financial_closing" | "sales_tracking";
+
+function managementListErrorCategory(error: unknown): string {
+  if (error instanceof ChecklistAccessError) return "access_denied";
+  if (error instanceof ChecklistInputError) return "invalid_input";
+  if (error instanceof ChecklistConflictError) return "conflict";
+  if (error instanceof HttpError) return "http_error";
+  return "upstream_error";
+}
+
+function logManagementListSourceDiagnostic(event: {
+  requestId: string;
+  list: ManagementListKind;
+  source: ManagementListSource;
+  outcome: "success" | "failure";
+  durationMs: number;
+  category: string;
+}) {
+  try {
+    console.info(`MANAGEMENT_LIST_SOURCE_DIAGNOSTIC ${JSON.stringify(event)}`);
+  } catch {
+    // Diagnostics must never affect the response.
+  }
+}
+
+async function runManagementListSource<T>(input: {
+  requestId: string;
+  list: ManagementListKind;
+  source: ManagementListSource;
+  load: () => Promise<T>;
+}): Promise<T> {
+  const startedAt = performance.now();
+  try {
+    const result = await input.load();
+    logManagementListSourceDiagnostic({ requestId: input.requestId, list: input.list, source: input.source, outcome: "success", durationMs: Math.round((performance.now() - startedAt) * 100) / 100, category: "none" });
+    return result;
+  } catch (error) {
+    logManagementListSourceDiagnostic({ requestId: input.requestId, list: input.list, source: input.source, outcome: "failure", durationMs: Math.round((performance.now() - startedAt) * 100) / 100, category: managementListErrorCategory(error) });
+    throw error;
+  }
 }
 
 async function loadActiveUser(request: Request): Promise<UserContext> {
@@ -5310,6 +5380,97 @@ export function createApp(
         } else {
           next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
         }
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/supervisors/:supervisorId/reset-password/step-up",
+    protectedRateLimit,
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const supervisorId = z.uuid().safeParse(request.params.supervisorId);
+        const body = supervisorPasswordResetStepUpBodySchema.safeParse(request.body);
+        const query = emptyQuerySchema.safeParse(request.query);
+        if (!organizationId.success || !supervisorId.success || !body.success || !query.success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!auth.sessionId || !z.uuid().safeParse(auth.sessionId).success) {
+          throw new HttpError(401, "unauthorized", "Authentication is required.");
+        }
+        const service = dependencies.branchSupervisorPasswordReset;
+        if (!service) {
+          emitBranchSupervisorPasswordResetDiagnostic({ requestId: request.id, stage: "dependency_initialization", category: "unavailable", status: 503, errorCode: null, errorHttpStatus: null, durationMs: 0 });
+          throw new HttpError(503, "service_unavailable", "Password reset is unavailable.");
+        }
+        const result = await service.authorize({
+          actorUserId: auth.userId,
+          actorEmail: auth.email,
+          actorSessionId: auth.sessionId,
+          organizationId: organizationId.data,
+          supervisorId: supervisorId.data,
+          currentPassword: body.data.current_password,
+          clientIp: request.ip ?? request.socket.remoteAddress ?? "unavailable",
+          requestId: request.id,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ step_up_grant: result.authorization, expires_at: result.expiresAt });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof BranchSupervisorPasswordResetReauthenticationError) next(new HttpError(403, "forbidden", "Password reauthentication failed."));
+        else if (error instanceof BranchSupervisorPasswordResetSessionRevokedError) next(new HttpError(401, "unauthorized", "Authentication is required."));
+        else if (error instanceof BranchSupervisorPasswordResetAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof BranchSupervisorPasswordResetRateLimitError) next(new HttpError(429, "rate_limited", "Unable to reset the password."));
+        else if (error instanceof BranchSupervisorPasswordResetUnavailableError) next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
+        else {
+          emitBranchSupervisorPasswordResetDiagnostic({ requestId: request.id, stage: "unexpected_error", category: "unexpected", status: 503, errorCode: null, errorHttpStatus: null, durationMs: 0 });
+          next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
+        }
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/supervisors/:supervisorId/reset-password",
+    protectedRateLimit,
+    authenticate,
+    async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const supervisorId = z.uuid().safeParse(request.params.supervisorId);
+        const body = emptyQuerySchema.safeParse(request.body ?? {});
+        const query = emptyQuerySchema.safeParse(request.query);
+        const idempotencyKey = z.uuid().safeParse(request.header("Idempotency-Key"));
+        const stepUpGrant = supervisorPasswordResetStepUpGrantSchema.safeParse(request.header("X-Password-Reset-Step-Up"));
+        if (!organizationId.success || !supervisorId.success || !body.success || !query.success || !idempotencyKey.success || !stepUpGrant.success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        if (!auth.sessionId || !z.uuid().safeParse(auth.sessionId).success) throw new HttpError(401, "unauthorized", "Authentication is required.");
+        const service = dependencies.branchSupervisorPasswordReset;
+        if (!service) throw new HttpError(503, "service_unavailable", "Password reset is unavailable.");
+        const result = await service.reset({
+          actorUserId: auth.userId,
+          actorSessionId: auth.sessionId,
+          organizationId: organizationId.data,
+          supervisorId: supervisorId.data,
+          idempotencyKey: idempotencyKey.data,
+          authorization: stepUpGrant.data,
+          clientIp: request.ip ?? request.socket.remoteAddress ?? "unavailable",
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ temporary_password: result.temporaryPassword, must_change_password: true });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof BranchSupervisorPasswordResetSessionRevokedError) next(new HttpError(401, "unauthorized", "Authentication is required."));
+        else if (error instanceof BranchSupervisorPasswordResetAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else if (error instanceof BranchSupervisorPasswordResetConflictError || error instanceof BranchSupervisorPasswordResetReplayError) next(new HttpError(409, "conflict", "The password reset cannot be repeated."));
+        else if (error instanceof BranchSupervisorPasswordResetRateLimitError) next(new HttpError(429, "rate_limited", "Unable to reset the password."));
+        else if (error instanceof BranchSupervisorPasswordResetUnavailableError) next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
+        else next(new HttpError(503, "service_unavailable", "Password reset is unavailable."));
       }
     },
   );
@@ -10675,44 +10836,44 @@ export function createApp(
   }catch(error){next(error instanceof HttpError?error:dailyWasteError(error));}});
 
   app.get("/api/v1/management/organizations/:organizationId/reports",protectedRateLimit,authenticate,async(request,response,next)=>{try{
-    const org=organizationIdSchema.safeParse(request.params.organizationId),q=managerReportQuerySchema.safeParse(request.query);if(!org.success||!q.success)throw new HttpError(400,"bad_request","The request is invalid.");const auth=requireAuthContext(request),context=await loadActiveUser(request);const allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);if(context.must_change_password||!allowed||!dependencies.checklistPersistence)throw new HttpError(403,"forbidden","Access is denied.");
+    const org=organizationIdSchema.safeParse(request.params.organizationId),q=managerReportQuerySchema.safeParse(request.query);if(!org.success||!q.success)throw new HttpError(400,"bad_request","The request is invalid.");const auth=requireAuthContext(request),context=await loadActiveUser(request);const allowed=await auth.userContext.hasOrganizationManagerAccess(auth.userId,org.data);const persistence=dependencies.checklistPersistence;if(context.must_change_password||!allowed||!persistence)throw new HttpError(403,"forbidden","Access is denied.");
     const reportArgs={actor_user_id:auth.userId,target_organization_id:org.data,requested_page:q.data.page,requested_page_size:q.data.page_size,date_from:q.data.date_from??null,date_to:q.data.date_to??null,branch_filter:q.data.branch_id??null,supervisor_filter:q.data.supervisor_user_id??null,status_filter:q.data.status??null,search_term:q.data.search??null};
     let list:SupervisorReportList;
 	    if(q.data.checklist_type==="oil_tracking"){
-	      if(!dependencies.checklistPersistence.listManagedOilTrackingReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
-	      list=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedOilTrackingReports(reportArgs));
+	      if(!persistence.listManagedOilTrackingReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+	      list=phase4aListSchema.parse(await persistence.listManagedOilTrackingReports(reportArgs));
 	    }else if(q.data.checklist_type==="cold_storage"){
-	      if(!dependencies.checklistPersistence.listManagedColdStorageReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
-	      list=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedColdStorageReports(reportArgs));
+	      if(!persistence.listManagedColdStorageReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+	      list=phase4aListSchema.parse(await persistence.listManagedColdStorageReports(reportArgs));
 	    }else if(q.data.checklist_type==="daily_audit"){
-	      if(!dependencies.checklistPersistence.listManagedDailyAuditReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
-	      list=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedDailyAuditReports(reportArgs));
+	      if(!persistence.listManagedDailyAuditReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+	      list=phase4aListSchema.parse(await persistence.listManagedDailyAuditReports(reportArgs));
 	    }else if(q.data.checklist_type==="financial_closing"){
-	      if(!dependencies.checklistPersistence.listManagedFinancialClosingReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
-	      list=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedFinancialClosingReports(reportArgs));
+	      if(!persistence.listManagedFinancialClosingReports)throw new HttpError(503,"service_unavailable","The service is unavailable.");
+	      list=phase4aListSchema.parse(await persistence.listManagedFinancialClosingReports(reportArgs));
 	    }else if(q.data.checklist_type){
-	      list=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedReports({...reportArgs,type_filter:q.data.checklist_type}));
+	      list=phase4aListSchema.parse(await persistence.listManagedReports({...reportArgs,type_filter:q.data.checklist_type}));
 	    }else{
 	      const fetchSize=Math.min(50,q.data.page*q.data.page_size);
 	      const mergedArgs={...reportArgs,requested_page:1,requested_page_size:fetchSize};
-	      const base=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedReports({...mergedArgs,type_filter:null}));
-	      let oil=emptySupervisorReportList(1,fetchSize),cold=emptySupervisorReportList(1,fetchSize),dailyAudit=emptySupervisorReportList(1,fetchSize),financialClosing=emptySupervisorReportList(1,fetchSize);
-      if(dependencies.checklistPersistence.listManagedOilTrackingReports){
-        try{oil=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedOilTrackingReports(mergedArgs));}
+      const base=await runManagementListSource({requestId:request.id,list:"reports",source:"base",load:async()=>phase4aListSchema.parse(await persistence.listManagedReports({...mergedArgs,type_filter:null}))});
+      let oil=emptySupervisorReportList(1,fetchSize),cold=emptySupervisorReportList(1,fetchSize),dailyAudit=emptySupervisorReportList(1,fetchSize),financialClosing=emptySupervisorReportList(1,fetchSize);
+      if(persistence.listManagedOilTrackingReports){
+        try{oil=await runManagementListSource({requestId:request.id,list:"reports",source:"oil_tracking",load:async()=>phase4aListSchema.parse(await persistence.listManagedOilTrackingReports!(mergedArgs))});}
         catch(error){if(error instanceof ChecklistAccessError)throw error;}
       }
-      if(dependencies.checklistPersistence.listManagedColdStorageReports){
-        try{cold=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedColdStorageReports(mergedArgs));}
+      if(persistence.listManagedColdStorageReports){
+        try{cold=await runManagementListSource({requestId:request.id,list:"reports",source:"cold_storage",load:async()=>phase4aListSchema.parse(await persistence.listManagedColdStorageReports!(mergedArgs))});}
         catch(error){if(error instanceof ChecklistAccessError)throw error;}
       }
-	      if(dependencies.checklistPersistence.listManagedDailyAuditReports){
-	        try{dailyAudit=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedDailyAuditReports(mergedArgs));}
-	        catch(error){throw error;}
-	      }
-	      if(dependencies.checklistPersistence.listManagedFinancialClosingReports){
-	        try{financialClosing=phase4aListSchema.parse(await dependencies.checklistPersistence.listManagedFinancialClosingReports(mergedArgs));}
-	        catch(error){if(error instanceof ChecklistAccessError||error instanceof HttpError)throw error;}
-	      }
+      if(persistence.listManagedDailyAuditReports){
+        try{dailyAudit=await runManagementListSource({requestId:request.id,list:"reports",source:"daily_audit",load:async()=>phase4aListSchema.parse(await persistence.listManagedDailyAuditReports!(mergedArgs))});}
+        catch(error){throw error;}
+      }
+      if(persistence.listManagedFinancialClosingReports){
+        try{financialClosing=await runManagementListSource({requestId:request.id,list:"reports",source:"financial_closing",load:async()=>phase4aListSchema.parse(await persistence.listManagedFinancialClosingReports!(mergedArgs))});}
+        catch(error){if(error instanceof ChecklistAccessError||error instanceof HttpError)throw error;}
+      }
 	      list=mergeSupervisorReportLists(q.data.page,q.data.page_size,base,oil,cold,dailyAudit,financialClosing);
 	    }
     response.setHeader("Cache-Control","private, no-store");response.json(phase4aListSchema.parse(list));
@@ -10778,14 +10939,14 @@ export function createApp(
 	        throw new HttpError(503,"service_unavailable","The service is unavailable.");
 	      }
 	      const [base,oil,cold,sales]=await Promise.all([
-	        collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
-	          dependencies.checklistPersistence!.listManagedIssues({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:null})),
-	        collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
-	          dependencies.checklistPersistence!.listManagedOilTrackingIssues!({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:"oil_tracking"})),
-	        collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
-	          dependencies.checklistPersistence!.listManagedColdStorageIssues!({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:"cold_storage"})),
-	        collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
-	          dependencies.checklistPersistence!.listManagedSalesTrackingIssues!({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:"sales_tracking"})),
+        runManagementListSource({requestId:request.id,list:"issues",source:"base",load:()=>collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
+          dependencies.checklistPersistence!.listManagedIssues({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:null}))}),
+        runManagementListSource({requestId:request.id,list:"issues",source:"oil_tracking",load:()=>collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
+          dependencies.checklistPersistence!.listManagedOilTrackingIssues!({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:"oil_tracking"}))}),
+        runManagementListSource({requestId:request.id,list:"issues",source:"cold_storage",load:()=>collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
+          dependencies.checklistPersistence!.listManagedColdStorageIssues!({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:"cold_storage"}))}),
+        runManagementListSource({requestId:request.id,list:"issues",source:"sales_tracking",load:()=>collectManagementIssueSourceWindow(requestedWindow,(page,pageSize)=>
+          dependencies.checklistPersistence!.listManagedSalesTrackingIssues!({...issueArgs,requested_page:page,requested_page_size:pageSize,type_filter:"sales_tracking"}))}),
 	      ]);
 	      list=mergeManagementIssueLists(q.data.page,q.data.page_size,base,oil,cold,sales);
 	    }

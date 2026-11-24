@@ -531,3 +531,4 @@ comment on table public.organization_manager_password_reset_events is
   'Immutable, secret-free step-up, reset, and bounded recovery event history.';
 comment on function public.begin_organization_manager_password_reset(uuid,uuid,uuid,uuid,text,text) is
   'Consumes one exact step-up grant and starts or safely replaces a stale unresolved reset under a target lock.';
+

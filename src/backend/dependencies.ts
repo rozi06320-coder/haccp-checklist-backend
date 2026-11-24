@@ -39,6 +39,10 @@ import {
   type OrganizationManagerPasswordResetService,
 } from "./organization-manager-password-reset";
 import {
+  createBranchSupervisorPasswordResetService,
+  type BranchSupervisorPasswordResetService,
+} from "./branch-supervisor-password-reset";
+import {
   createOrganizationManagerNotificationService,
   type OrganizationManagerNotificationService,
 } from "./organization-manager-notifications";
@@ -79,6 +83,7 @@ export type BackendDependencies = {
   createUserContext: UserContextRepositoryFactory;
   passwordChange: PasswordChangeService;
   organizationManagerPasswordReset?: OrganizationManagerPasswordResetService;
+  branchSupervisorPasswordReset?: BranchSupervisorPasswordResetService;
   organizationManagerNotifications?: OrganizationManagerNotificationService;
   organizationManagerPushWorker?: OrganizationManagerPushWorker;
   organizationManagerNotificationProducer?: OrganizationManagerNotificationProducer;
@@ -164,6 +169,12 @@ export function createDefaultDependencies(
       config.supabase.secretKey,
     ),
     organizationManagerPasswordReset: createOrganizationManagerPasswordResetService(
+      config.supabase.url,
+      config.supabase.publishableKey,
+      config.supabase.secretKey,
+      config.dailyAuditGrantSecret,
+    ),
+    branchSupervisorPasswordReset: createBranchSupervisorPasswordResetService(
       config.supabase.url,
       config.supabase.publishableKey,
       config.supabase.secretKey,
