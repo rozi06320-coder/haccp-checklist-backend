@@ -24,7 +24,7 @@ import {
   type BackendDependencies,
 } from "./dependencies";
 import { errorHandler, HttpError, notFoundHandler } from "./errors";
-import { branchLocalDate, canonicalizeMaintenancePurchasePayload, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_PURCHASE_REQUEST_PRODUCT_PHOTO_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalInputError, purchaseInvoiceMime, purchaseRequestProductPhotoMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime, SupervisorPromotionConflictDiagnosticError, type MaintenanceIssuesStageTiming, type MaintenanceIssuesTimingDiagnostics } from "./operational";
+import { branchLocalDate, canonicalizeMaintenancePurchasePayload, MAX_MAINTENANCE_ISSUE_PHOTO_BYTES, MAX_MAINTENANCE_ISSUE_PHOTOS, MAX_MAINTENANCE_PURCHASE_PHOTOS, MAX_PURCHASE_INVOICE_BYTES, MAX_PURCHASE_REQUEST_PRODUCT_PHOTO_BYTES, MAX_SUPPLIER_RECEIVING_PHOTO_BYTES, OperationalAccessError, OperationalAttachmentNotFoundError, OperationalConflictError, OperationalDuplicateColdStorageEquipmentCodeError, OperationalDuplicateStaffCodeError, OperationalHygieneSubmittedError, OperationalIdempotencyConflictError, OperationalInputError, OperationalTeamAlreadyAssignedError, OperationalTeamNameConflictError, purchaseInvoiceMime, purchaseRequestProductPhotoMime, supplierReceivingPhotoMime, maintenanceIssuePhotoMime, maintenancePurchaseReceiptMime, SupervisorPromotionConflictDiagnosticError, type MaintenanceIssuesStageTiming, type MaintenanceIssuesTimingDiagnostics } from "./operational";
 import { CatalogMappedIngredientError, ChecklistAccessError, ChecklistAlreadySubmittedError, ChecklistConflictError, ChecklistInputError, ChecklistNotFoundError, ManagementOverviewUnavailableError, MAX_SALES_TRACKING_PHOTO_BYTES, runWithStorageSignal, SalesTrackingOnlineProviderBreakdownRequiredError, type ColdStorageDraftDiagnosticContext, type ColdStorageDraftDiagnosticEvent, type ColdStorageDraftEventSource } from "./checklist-persistence";
 import { evidenceMimeSchema, EvidenceAccessError, EvidenceConflictError, EvidenceInputError, EvidenceUnavailableError, MAX_EVIDENCE_BYTES } from "./evidence";
 import { BrandingAccessError, BrandingInputError, BrandingUnavailableError, MAX_BRANDING_BYTES } from "./branding";
@@ -171,7 +171,14 @@ const createOperationalStaffBodySchema = z.object({
 });
 const createSupervisorOwnedTeamBodySchema = z.object({
   name: z.string().max(80).transform((value) => value.trim().replace(/\s+/gu, " ")).pipe(z.string().min(1).max(80)),
-});
+  idempotency_key: z.uuid().nullable().optional(),
+}).strict();
+const setSupervisorTeamOnboardingWaitBodySchema = z.object({}).strict().optional();
+const supervisorTeamOnboardingStateResponseSchema = z.object({
+  branch_id: z.uuid(),
+  onboarding_choice: z.literal("waiting_for_transfer").nullable(),
+  selected_at: z.string().nullable(),
+}).strict();
 const supervisorOwnedTeamResponseSchema = z.object({
   team: z.object({
     id: z.uuid(),
@@ -8178,32 +8185,136 @@ export function createApp(
       }
     });
 
+  async function requireSupervisorTeamOnboardingActor(request: Request, branchId: string) {
+    const auth = requireAuthContext(request);
+    let context: UserContext;
+    try {
+      context = await loadActiveUser(request);
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 403) {
+        throw new HttpError(403, "ACCESS_DENIED", "Access is denied.");
+      }
+      throw error;
+    }
+    if (
+      context.disabled
+      || context.must_change_password
+      || context.managed_organizations.length > 0
+      || !context.branches.some((branch) => branch.id === branchId && branch.role === "branch_manager")
+    ) {
+      throw new HttpError(403, "ACCESS_DENIED", "Access is denied.");
+    }
+    return { auth, context };
+  }
+
+  function mapSupervisorTeamOnboardingError(error: unknown, fallbackMessage: string): HttpError {
+    if (error instanceof HttpError) return error;
+    if (error instanceof OperationalTeamAlreadyAssignedError) {
+      return new HttpError(409, "TEAM_ALREADY_ASSIGNED", "An Employee Team is already assigned to this supervisor for this branch.");
+    }
+    if (error instanceof OperationalTeamNameConflictError) {
+      return new HttpError(409, "TEAM_NAME_CONFLICT", "An active Employee Team with this name already exists in this branch.");
+    }
+    if (error instanceof OperationalIdempotencyConflictError) {
+      return new HttpError(409, "IDEMPOTENCY_CONFLICT", "This team creation request conflicts with a previous request using the same idempotency key.");
+    }
+    if (error instanceof OperationalConflictError) {
+      return new HttpError(409, "TEAM_NAME_CONFLICT", "Employee Team request conflicts with current branch state.");
+    }
+    if (error instanceof OperationalInputError) {
+      return new HttpError(422, "INVALID_INPUT", "Enter a valid Employee Team request.");
+    }
+    if (error instanceof OperationalAccessError) {
+      return new HttpError(403, "ACCESS_DENIED", "Access is denied.");
+    }
+    return new HttpError(503, "service_unavailable", fallbackMessage);
+  }
+
+  app.get("/api/v1/supervisor/branches/:branchId/team-onboarding", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const query = emptyQuerySchema.safeParse(request.query);
+        if (!branchId.success || !query.success) {
+          throw new HttpError(400, "INVALID_INPUT", "The request is invalid.");
+        }
+        const { auth } = await requireSupervisorTeamOnboardingActor(request, branchId.data);
+        if (!dependencies.operationalAdmin?.getSupervisorTeamOnboardingState) {
+          throw new HttpError(403, "ACCESS_DENIED", "Access is denied.");
+        }
+        const stateResult = await dependencies.operationalAdmin.getSupervisorTeamOnboardingState({
+          actorUserId: auth.userId,
+          branchIds: [branchId.data],
+        });
+        const match = stateResult.states.find((item) => item.branch_id === branchId.data) ?? null;
+        const payload = supervisorTeamOnboardingStateResponseSchema.parse({
+          branch_id: branchId.data,
+          onboarding_choice: match?.onboarding_choice ?? null,
+          selected_at: match?.selected_at ?? null,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(payload);
+      } catch (error) {
+        next(mapSupervisorTeamOnboardingError(error, "Unable to load Employee Team onboarding state right now."));
+      }
+    });
+
+  app.post("/api/v1/supervisor/branches/:branchId/team-onboarding/wait", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const body = setSupervisorTeamOnboardingWaitBodySchema.safeParse(request.body);
+        if (!branchId.success || !body.success) {
+          throw new HttpError(400, "INVALID_INPUT", "The request is invalid.");
+        }
+        const { auth } = await requireSupervisorTeamOnboardingActor(request, branchId.data);
+        if (!dependencies.operationalAdmin?.setSupervisorTeamOnboardingWaiting) {
+          throw new HttpError(403, "ACCESS_DENIED", "Access is denied.");
+        }
+        const payload = supervisorTeamOnboardingStateResponseSchema.parse(
+          await dependencies.operationalAdmin.setSupervisorTeamOnboardingWaiting({
+            actorUserId: auth.userId,
+            branchId: branchId.data,
+          }),
+        );
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(payload);
+      } catch (error) {
+        next(mapSupervisorTeamOnboardingError(error, "Unable to save Employee Team waiting state right now."));
+      }
+    });
+
   app.post("/api/v1/supervisor/branches/:branchId/operational-teams", protectedRateLimit, authenticate,
     async (request, response, next) => {
       try {
         const branchId = branchIdSchema.safeParse(request.params.branchId);
         const body = createSupervisorOwnedTeamBodySchema.safeParse(request.body);
-        if (!branchId.success || !body.success) throw new HttpError(400, "bad_request", "The request is invalid.");
-        const auth = requireAuthContext(request);
-        const context = await loadActiveUser(request);
-        if (context.must_change_password || context.managed_organizations.length > 0 || !dependencies.operationalAdmin?.createSupervisorOwnedOperationalTeam) {
-          throw new HttpError(403, "forbidden", "Access is denied.");
+        if (!branchId.success || !body.success) {
+          throw new HttpError(400, "INVALID_INPUT", "The request is invalid.");
         }
-        const result = supervisorOwnedTeamResponseSchema.parse(await dependencies.operationalAdmin.createSupervisorOwnedOperationalTeam({
-          actorUserId: auth.userId,
-          branchId: branchId.data,
-          name: body.data.name,
-        }));
+        const { auth } = await requireSupervisorTeamOnboardingActor(request, branchId.data);
+        const createTeamV2 = dependencies.operationalAdmin?.createSupervisorOwnedOperationalTeamV2;
+        const createTeamLegacy = dependencies.operationalAdmin?.createSupervisorOwnedOperationalTeam;
+        if (!createTeamV2 && (!createTeamLegacy || body.data.idempotency_key)) {
+          throw new HttpError(403, "ACCESS_DENIED", "Access is denied.");
+        }
+        const created = createTeamV2
+          ? await createTeamV2({
+            actorUserId: auth.userId,
+            branchId: branchId.data,
+            name: body.data.name,
+            idempotencyKey: body.data.idempotency_key ?? null,
+          })
+          : await createTeamLegacy!({
+            actorUserId: auth.userId,
+            branchId: branchId.data,
+            name: body.data.name,
+          });
+        const result = supervisorOwnedTeamResponseSchema.parse(created);
         response.setHeader("Cache-Control", "private, no-store");
         response.status(201).json(result);
       } catch (error) {
-        next(error instanceof HttpError ? error : error instanceof OperationalConflictError
-          ? new HttpError(409, "conflict", "Employee Team already exists.")
-          : error instanceof OperationalInputError
-          ? new HttpError(422, "bad_request", "Enter a valid Employee Team name.")
-          : error instanceof OperationalAccessError
-          ? new HttpError(403, "forbidden", "Access is denied.")
-          : new HttpError(503, "service_unavailable", "Unable to create Employee Team right now."));
+        next(mapSupervisorTeamOnboardingError(error, "Unable to create Employee Team right now."));
       }
     });
 

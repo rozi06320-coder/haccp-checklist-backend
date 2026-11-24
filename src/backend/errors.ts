@@ -24,7 +24,12 @@ type ErrorCode =
   | "rate_limited"
   | "service_unavailable"
   | "unauthorized"
-  | "unprocessable_entity";
+  | "unprocessable_entity"
+  | "TEAM_ALREADY_ASSIGNED"
+  | "TEAM_NAME_CONFLICT"
+  | "IDEMPOTENCY_CONFLICT"
+  | "ACCESS_DENIED"
+  | "INVALID_INPUT";
 
 export class HttpError extends Error {
   constructor(
