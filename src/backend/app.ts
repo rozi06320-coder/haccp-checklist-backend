@@ -1021,6 +1021,7 @@ const managedPeopleDirectoryQuerySchema=z.object({
   month:monthOnlySchema.optional(),
   search:z.string().trim().max(120).optional().transform(value=>value||undefined),
   code:z.string().trim().max(64).optional().transform(value=>value||undefined),
+  include_supervisor_health_cards:z.enum(["true","false"]).optional().transform(value=>value==="true"),
 }).strict();
 const managedAnnualEvaluationQuerySchema=z.object({evaluation_year:z.coerce.number().int().min(2000).max(2200),branch_id:z.uuid().optional(),subject_type:annualEvaluationSubjectTypeSchema.optional(),subject_id:z.uuid().optional(),state:z.enum(["draft","submitted"]).optional()}).strict().refine(value=>(value.subject_type===undefined)===(value.subject_id===undefined));
 const managedAnnualEvaluationDraftSchema=z.object({branch_id:z.uuid(),evaluation_year:z.number().int().min(2000).max(2200),subject_type:annualEvaluationSubjectTypeSchema,subject_id:z.uuid(),expected_revision:z.number().int().nonnegative(),scores:z.array(annualEvaluationScoreSchema).max(20)}).strict();
@@ -9502,6 +9503,7 @@ export function createApp(
           month:query.data.month??managerInventoryCurrentMonth().slice(0,7),
           search:query.data.search,
           code:query.data.code,
+          ...(query.data.include_supervisor_health_cards?{includeSupervisorHealthCards:true}:{}),
         });
         response.setHeader("Cache-Control","private, no-store");response.json(result);
       } catch(error) {
