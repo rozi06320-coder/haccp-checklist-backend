@@ -1036,7 +1036,7 @@ export type OperationalAdmin = {
     role?: OperationalRole; employmentStatus?: "active" | "inactive"; date?: string;
   }): Promise<unknown>;
   listManagedEmployeeTeam?(input: { actorUserId: string; organizationId: string; branchId?: string; month: string }): Promise<unknown>;
-  listManagedPeopleDirectory?(input: { actorUserId: string; organizationId: string; branchId?: string; month: string; search?: string; code?: string }): Promise<unknown>;
+  listManagedPeopleDirectory?(input: { actorUserId: string; organizationId: string; branchId?: string; month: string; search?: string; code?: string; includeSupervisorHealthCards?: boolean }): Promise<unknown>;
   startManagedOperationalStaffSupervisorTraining?(input:{actorUserId:string;organizationId:string;staffId:string}):Promise<unknown>;
   cancelManagedOperationalStaffSupervisorTraining?(input:{actorUserId:string;organizationId:string;staffId:string}):Promise<unknown>;
   getManagedOperationalStaffSupervisorTrainingPromotionState?(input:{actorUserId:string;organizationId:string;staffId:string}):Promise<unknown>;
@@ -3187,7 +3187,34 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         status: z.enum(["active", "disabled", "password_change_required"]),
         supervisor_role: z.enum(["supervisor", "training_supervisor"]),
       }).strict();
-      const result = z.object({
+      const supervisorHealthCardBranch = z.object({
+        id: uuid, name: z.string(), name_ar: optionalStaffText,
+      }).strict();
+      const supervisorHealthCard = z.object({
+        id: uuid.nullable(),
+        supervisor_user_id: uuid,
+        display_name: z.string(),
+        display_name_ar: optionalStaffText,
+        person_code: optionalStaffText,
+        assignment_role: z.enum(["primary", "backup"]),
+        branch_id: uuid,
+        branch_name: z.string(),
+        branch_name_ar: optionalStaffText,
+        branches: z.array(supervisorHealthCardBranch).min(1),
+        operational_team_ids: z.array(uuid).min(1),
+        team_assignment_roles: z.record(uuid, z.enum(["primary", "backup"])),
+        certificate_number: optionalStaffText,
+        status: healthCardStatus,
+        place_of_issue: optionalStaffText,
+        expiry_date: optionalStaffDate,
+        date_issue: optionalStaffDate,
+        occupation: optionalStaffText,
+        company: optionalStaffText,
+        branch_name_snapshot: optionalStaffText,
+        notes: optionalStaffText,
+        updated_at: z.string().nullable(),
+      }).strict();
+      const baseSchema = z.object({
         people: z.array(z.discriminatedUnion("person_type", [staff, supervisor, trainingSupervisor])).max(1000),
         people_total: z.number().int().nonnegative(),
         people_limit: z.literal(1000),
@@ -3213,22 +3240,36 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
           average_score: managedMonthlyEvaluationAverageScore,
           scores: z.array(monthlyEvaluationScore).max(100), updated_at: z.string(),
         }).strict()),
-      }).strict().superRefine((value, context) => {
+      }).strict();
+      const validateCounts = (
+        value: z.infer<typeof baseSchema>,
+        context: z.RefinementCtx,
+      ) => {
         if (value.people.length !== Math.min(value.people_total, value.people_limit)) {
           context.addIssue({ code: "custom", path: ["people"], message: "Invalid people result count." });
         }
         if (value.people_truncated !== (value.people_total > value.people_limit)) {
           context.addIssue({ code: "custom", path: ["people_truncated"], message: "Invalid people truncation state." });
         }
-      }).parse(await rpcObject("list_managed_people_directory_v2", {
+      };
+      const rpcParams = {
         actor_user_id: input.actorUserId,
         target_organization_id: input.organizationId,
         branch_filter: input.branchId ?? null,
         requested_month: `${input.month}-01`,
         search_term: input.search ?? null,
         code_filter: input.code ?? null,
-      }));
-      return result;
+      };
+      if (input.includeSupervisorHealthCards) {
+        return baseSchema.extend({
+          supervisor_health_cards: z.array(supervisorHealthCard),
+        }).strict().superRefine(validateCounts).parse(
+          await rpcObject("list_managed_people_directory_v3", rpcParams),
+        );
+      }
+      return baseSchema.superRefine(validateCounts).parse(
+        await rpcObject("list_managed_people_directory_v2", rpcParams),
+      );
     },
     async startManagedOperationalStaffSupervisorTraining(input) {
       return rpcObject("start_managed_operational_staff_supervisor_training",{
