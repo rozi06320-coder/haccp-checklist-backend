@@ -287,6 +287,40 @@ const healthCardRow = z.object({
   notes: optionalStaffText,
   updated_at: z.string().nullable(),
 }).strict();
+const supervisorHealthCardListRow = z.object({
+  id: uuid.nullable(),
+  supervisor_user_id: uuid,
+  full_name: optionalStaffText,
+  full_name_ar: optionalStaffText,
+  person_code: optionalStaffText,
+  assignment_role: z.enum(["primary", "backup"]),
+  operational_team_ids: z.array(uuid).min(1),
+  team_assignment_roles: z.record(uuid, z.enum(["primary", "backup"])),
+  certificate_number: optionalStaffText,
+  status: healthCardStatus,
+  place_of_issue: optionalStaffText,
+  expiry_date: optionalStaffDate,
+  date_issue: optionalStaffDate,
+  occupation: optionalStaffText,
+  company: optionalStaffText,
+  branch_name_snapshot: optionalStaffText,
+  notes: optionalStaffText,
+  updated_at: z.string().nullable(),
+}).strict();
+const supervisorHealthCardMutationRow = z.object({
+  id: uuid,
+  supervisor_user_id: uuid,
+  certificate_number: optionalStaffText,
+  status: healthCardStatus,
+  place_of_issue: optionalStaffText,
+  expiry_date: optionalStaffDate,
+  date_issue: optionalStaffDate,
+  occupation: optionalStaffText,
+  company: optionalStaffText,
+  branch_name_snapshot: optionalStaffText,
+  notes: optionalStaffText,
+  updated_at: z.string().nullable(),
+}).strict();
 const monthlyEvaluationBatchRow = z.object({
   id: uuid,
   organization_id: uuid,
@@ -765,6 +799,12 @@ export type OperationalAdmin = {
   listHealthCards(actorUserId: string, branchId: string): Promise<unknown>;
   upsertHealthCard(input: {
     actorUserId: string; branchId: string; staffId: string; certificateNumber?: string | null;
+    status: z.infer<typeof healthCardStatus>; placeOfIssue?: string | null; expiryDate?: string | null;
+    dateIssue?: string | null; occupation?: string | null; company?: string | null; notes?: string | null;
+  }): Promise<unknown>;
+  listSupervisorHealthCards?(actorUserId: string, branchId: string): Promise<unknown>;
+  upsertSupervisorHealthCard?(input: {
+    actorUserId: string; branchId: string; supervisorUserId: string; certificateNumber?: string | null;
     status: z.infer<typeof healthCardStatus>; placeOfIssue?: string | null; expiryDate?: string | null;
     dateIssue?: string | null; occupation?: string | null; company?: string | null; notes?: string | null;
   }): Promise<unknown>;
@@ -2297,6 +2337,32 @@ export function createOperationalAdmin(url: string, secretKey: string): Operatio
         },
       }));
       return { health_card: rows[0] };
+    },
+    async listSupervisorHealthCards(actorUserId, branchId) {
+      return {
+        supervisor_health_cards: z.array(supervisorHealthCardListRow).max(500).parse(await rpc("list_branch_supervisor_health_cards", {
+          actor_user_id: actorUserId,
+          target_branch_id: branchId,
+        })),
+      };
+    },
+    async upsertSupervisorHealthCard(input) {
+      const rows = z.array(supervisorHealthCardMutationRow).length(1).parse(await rpc("upsert_supervisor_health_card", {
+        actor_user_id: input.actorUserId,
+        target_branch_id: input.branchId,
+        target_supervisor_user_id: input.supervisorUserId,
+        payload: {
+          certificate_number: input.certificateNumber ?? null,
+          status: input.status,
+          place_of_issue: input.placeOfIssue ?? null,
+          expiry_date: input.expiryDate ?? null,
+          date_issue: input.dateIssue ?? null,
+          occupation: input.occupation ?? null,
+          company: input.company ?? null,
+          notes: input.notes ?? null,
+        },
+      }));
+      return { supervisor_health_card: rows[0] };
     },
     async listMonthlyEvaluations(actorUserId, branchId, evaluationMonth) {
       return {
