@@ -8700,6 +8700,61 @@ export function createApp(
       }
     });
 
+  app.get("/api/v1/supervisor/branches/:branchId/team/supervisor-health-cards", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const query = emptyQuerySchema.safeParse(request.query);
+        if (!branchId.success || !query.success) throw new HttpError(400, "bad_request", "The request is invalid.");
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (context.must_change_password || !dependencies.operationalAdmin?.listSupervisorHealthCards) {
+          throw new HttpError(403, "forbidden", "Access is denied.");
+        }
+        const result = await dependencies.operationalAdmin.listSupervisorHealthCards(auth.userId, branchId.data);
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json(result);
+      } catch (error) {
+        next(error instanceof HttpError ? error : new HttpError(403, "forbidden", "Access is denied."));
+      }
+    });
+
+  app.put("/api/v1/supervisor/branches/:branchId/team/supervisor-health-cards/:supervisorUserId", protectedRateLimit, authenticate,
+    async (request, response, next) => {
+      try {
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const supervisorUserId = z.uuid().safeParse(request.params.supervisorUserId);
+        const body = healthCardStatusBodySchema.safeParse(request.body);
+        if (!branchId.success || !supervisorUserId.success || !body.success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        const context = await loadActiveUser(request);
+        if (
+          context.must_change_password ||
+          auth.userId !== supervisorUserId.data ||
+          !dependencies.operationalAdmin?.upsertSupervisorHealthCard
+        ) {
+          throw new HttpError(403, "forbidden", "Access is denied.");
+        }
+        response.status(200).json(await dependencies.operationalAdmin.upsertSupervisorHealthCard({
+          actorUserId: auth.userId,
+          branchId: branchId.data,
+          supervisorUserId: supervisorUserId.data,
+          certificateNumber: body.data.certificate_number,
+          status: body.data.status,
+          placeOfIssue: body.data.place_of_issue,
+          expiryDate: body.data.expiry_date,
+          dateIssue: body.data.date_issue,
+          occupation: body.data.occupation,
+          company: body.data.company,
+          notes: body.data.notes,
+        }));
+      } catch (error) {
+        next(error instanceof HttpError ? error : new HttpError(403, "forbidden", "Access is denied."));
+      }
+    });
+
   app.get("/api/v1/supervisor/branches/:branchId/team/monthly-evaluations", protectedRateLimit, authenticate,
     async (request, response, next) => {
       try {
