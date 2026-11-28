@@ -264,6 +264,7 @@ export async function runColdStorageDraftRpc<T>(call:()=>PromiseLike<{data:T;err
 
 export type ChecklistPersistence = {
   getOverview(actorUserId:string,branchId:string):Promise<unknown>;
+  getSupervisorBranchDayOffStatus?(input:{actorUserId:string;branchId:string}):Promise<unknown>;
   getManagementOverview?(actorUserId:string,organizationId:string):Promise<unknown>;
   getCurrentState(actorUserId:string,branchId:string,type:string):Promise<unknown>;
   getHygieneCurrentState?(actorUserId:string,branchId:string,operationalTeamId:string):Promise<unknown>;
@@ -1088,6 +1089,7 @@ export function createChecklistPersistence(
  }
  return {
   getOverview:(actorUserId,branchId)=>rpc("get_phase4a_supervisor_overview",{actor_user_id:actorUserId,target_branch_id:branchId}),
+  getSupervisorBranchDayOffStatus:(input)=>rpc("get_supervisor_branch_day_off_status",{p_actor_user_id:input.actorUserId,p_branch_id:input.branchId}),
   async getManagementOverview(actorUserId,organizationId){
    const result=await client.rpc("get_management_overview_with_daily_audit",{actor_user_id:actorUserId,target_organization_id:organizationId});
    if(result.error){

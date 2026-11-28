@@ -82,6 +82,8 @@ const branchSchema = z.object({
   branch_code: z.string().trim().min(1).max(120),
   timezone: z.string().trim().min(1).max(120),
   business_date: z.iso.date(),
+  is_day_off: z.boolean().optional(),
+  day_off_reason: z.string().nullable().optional(),
   status: z.enum(["ready", "no_active_team"]),
   active_team_count: z.number().int().nonnegative(),
   totals: managementPerformanceCountsSchema,
