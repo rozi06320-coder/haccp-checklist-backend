@@ -1511,7 +1511,7 @@ const coldReadingInputSchema=z.object({
     corrective_action:value.corrective_action??value.correctiveAction??"",
   };
 });
-const coldStorageBodySchema=z.object({expected_revision:z.number().int().nonnegative().default(0),equipment:z.array(coldEquipmentInputSchema).max(100),readings:z.array(coldReadingInputSchema).max(1200)}).strict();
+const coldStorageBodySchema=z.object({expected_revision:z.number().int().nonnegative().default(0),equipment:z.array(coldEquipmentInputSchema).max(100),readings:z.array(coldReadingInputSchema).max(4800)}).strict();
 const financialClosingItemKeySchema=z.enum(["sales_closing","collections","exceptions","purchases","transfers","production","waste","petty_cash","pending_documents","exception_escalation"]);
 const financialClosingStatusSchema=z.enum(["completed","not_completed","not_applicable"]);
 const financialClosingItemInputSchema=z.object({
@@ -2087,14 +2087,14 @@ const staffHygieneApplicabilityResponseSchema=z.object({branch_id:z.uuid(),busin
 const managerStaffHygieneApplicabilityResponseSchema=z.object({organization_id:z.uuid(),business_date:dateOnlySchema,teams:z.array(staffHygieneApplicabilityRowSchema).max(500)}).strict();
 const managerStaffHygieneApplicabilityRangeQuerySchema=z.object({date_from:dateOnlySchema,date_to:dateOnlySchema}).strict().superRefine((value,context)=>{const from=Date.parse(`${value.date_from}T00:00:00Z`),to=Date.parse(`${value.date_to}T00:00:00Z`);if(from>to)context.addIssue({code:"custom",message:"Invalid date range."});if(Number.isFinite(from)&&Number.isFinite(to)&&Math.floor((to-from)/86400000)+1>31)context.addIssue({code:"custom",message:"Date range exceeds 31 business dates."});});
 const managerStaffHygieneApplicabilityRangeResponseSchema=z.object({organization_id:z.uuid(),date_from:dateOnlySchema,date_to:dateOnlySchema,dates:z.array(z.object({business_date:dateOnlySchema,teams:z.array(staffHygieneApplicabilityRowSchema).max(500)}).strict()).max(31)}).strict();
-const coldStorageMissedMetadataSchema={missed_check_count:z.number().int().nonnegative().optional(),missed_slots:z.array(coldPersistedSlotSchema).max(3).optional()};
+const coldStorageMissedMetadataSchema={missed_check_count:z.number().int().nonnegative().optional(),missed_slots:z.array(coldPersistedSlotSchema).max(48).optional()};
 const recordKindSchema=z.enum(["submission","derived_missing"]);
-const phase4aListSchema=z.object({reports:z.array(z.object({id:z.uuid(),branch_id:z.uuid(),branch_name:z.string().optional(),branch_code:z.string().optional(),checklist_type:supervisorChecklistTypeSchema,business_date:z.string(),submitted_at:z.string().nullable(),submitted_by:z.string().nullable(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),completion:z.number().optional(),issue_count:z.number().int().nonnegative(),status:z.string(),review_status:z.enum(["none","needs_review","reviewed"]).optional(),review_revision:z.number().int().nonnegative().optional(),reviewed_at:z.string().nullable().optional(),reviewed_by_user_id:z.uuid().nullable().optional(),reviewed_by:z.string().nullable().optional(),record_kind:recordKindSchema.optional(),source_submission_id:z.uuid().nullable().optional(),submitted_slots:z.array(coldPersistedSlotSchema).max(3).optional(),...coldStorageMissedMetadataSchema})).max(50),page:z.number().int().positive(),page_size:z.number().int().positive().max(50),total:z.number().int().nonnegative()});
+const phase4aListSchema=z.object({reports:z.array(z.object({id:z.uuid(),branch_id:z.uuid(),branch_name:z.string().optional(),branch_code:z.string().optional(),checklist_type:supervisorChecklistTypeSchema,business_date:z.string(),submitted_at:z.string().nullable(),submitted_by:z.string().nullable(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),completion:z.number().optional(),issue_count:z.number().int().nonnegative(),status:z.string(),review_status:z.enum(["none","needs_review","reviewed"]).optional(),review_revision:z.number().int().nonnegative().optional(),reviewed_at:z.string().nullable().optional(),reviewed_by_user_id:z.uuid().nullable().optional(),reviewed_by:z.string().nullable().optional(),record_kind:recordKindSchema.optional(),source_submission_id:z.uuid().nullable().optional(),submitted_slots:z.array(coldPersistedSlotSchema).max(48).optional(),...coldStorageMissedMetadataSchema})).max(50),page:z.number().int().positive(),page_size:z.number().int().positive().max(50),total:z.number().int().nonnegative()});
 const oilReportRowSchema=z.object({fryer_id:z.string(),fryer_label:z.string(),fryer_short_label:z.string(),in_use_today:z.boolean(),oil_status:z.enum(["pending","new_oil","filtered_oil"]),opening_temperature_c:z.union([z.number(),z.string()]).nullable().optional(),opening_status:z.enum(["pending","pass","fail"]),opening_note:z.string(),closing_tpm_percent:z.union([z.number(),z.string()]).nullable().optional(),closing_note:z.string(),tpm_classification:z.enum(["good","nearing_end","filtering_required","change_discard"]).nullable().optional()}).strict();
 const oilReportIssueSchema=z.object({id:z.uuid(),section:z.enum(["opening","closing"]),fryer_id:z.string(),fryer_label:z.string(),title:z.string(),remark:z.string(),tpm_status:z.enum(["good","nearing_end","filtering_required","change_discard"]).nullable().optional()}).strict();
 const coldStorageReportRowSchema=z.object({equipment_id:z.string(),equipment_code:z.string().min(1).max(24).nullable().optional(),equipment_name:z.string(),equipment_type:z.enum(["refrigerator","freezer"]),active:z.boolean(),slot:coldPersistedSlotSchema,temperature_c:z.union([z.number(),z.string()]).nullable().optional(),status:z.enum(["pending","pass","fail"]),corrective_action:z.string(),submitted_at:z.string().nullable().optional()}).strict();
 const coldStorageReportIssueSchema=z.object({id:z.uuid(),equipment_id:z.string(),equipment_code:z.string().min(1).max(24).nullable().optional(),equipment_name:z.string(),slot:coldPersistedSlotSchema,temperature_c:z.union([z.number(),z.string()]),title:z.string(),remark:z.string()}).strict();
-const phase4aDetailSchema=z.object({id:z.uuid(),branch_id:z.uuid(),branch_name:z.string(),branch_code:z.string().optional(),business_date:z.string(),checklist_type:supervisorChecklistTypeSchema,definition_id:z.string(),submitted_at:z.string().nullable(),submitted_by:z.string().nullable(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),completion:z.number(),issue_count:z.number().int().nonnegative(),status:z.string(),review_status:z.enum(["none","needs_review","reviewed"]).optional(),review_revision:z.number().int().nonnegative().optional(),reviewed_at:z.string().nullable().optional(),reviewed_by_user_id:z.uuid().nullable().optional(),reviewed_by:z.string().nullable().optional(),record_kind:recordKindSchema.optional(),source_submission_id:z.uuid().nullable().optional(),items:z.array(z.object({item_id:z.string(),item_text:z.string(),answer:z.string(),remark:z.string(),follow_up:z.string().optional(),entry_period:salesTrackingPeriodSchema.nullable().optional(),entered_by:z.string().nullable().optional(),entered_at:z.string().nullable().optional(),evidence:phase4aEvidenceMetadataSchema.nullable().optional()})).max(300).optional(),staff:z.array(phase4aStaffSnapshotSchema).max(500).optional(),opening_submitted_at:z.string().nullable().optional(),closing_submitted_at:z.string().nullable().optional(),submitted_slots:z.array(coldPersistedSlotSchema).max(3).optional(),...coldStorageMissedMetadataSchema,rows:z.array(z.union([oilReportRowSchema,coldStorageReportRowSchema])).max(300).optional(),issues:z.array(z.union([oilReportIssueSchema,coldStorageReportIssueSchema])).max(300).optional()});
+const phase4aDetailSchema=z.object({id:z.uuid(),branch_id:z.uuid(),branch_name:z.string(),branch_code:z.string().optional(),business_date:z.string(),checklist_type:supervisorChecklistTypeSchema,definition_id:z.string(),submitted_at:z.string().nullable(),submitted_by:z.string().nullable(),auditor_kind:z.enum(["manual_access_user","organization_manager_pin"]).nullable().optional(),completion:z.number(),issue_count:z.number().int().nonnegative(),status:z.string(),review_status:z.enum(["none","needs_review","reviewed"]).optional(),review_revision:z.number().int().nonnegative().optional(),reviewed_at:z.string().nullable().optional(),reviewed_by_user_id:z.uuid().nullable().optional(),reviewed_by:z.string().nullable().optional(),record_kind:recordKindSchema.optional(),source_submission_id:z.uuid().nullable().optional(),items:z.array(z.object({item_id:z.string(),item_text:z.string(),answer:z.string(),remark:z.string(),follow_up:z.string().optional(),entry_period:salesTrackingPeriodSchema.nullable().optional(),entered_by:z.string().nullable().optional(),entered_at:z.string().nullable().optional(),evidence:phase4aEvidenceMetadataSchema.nullable().optional()})).max(300).optional(),staff:z.array(phase4aStaffSnapshotSchema).max(500).optional(),opening_submitted_at:z.string().nullable().optional(),closing_submitted_at:z.string().nullable().optional(),submitted_slots:z.array(coldPersistedSlotSchema).max(48).optional(),...coldStorageMissedMetadataSchema,rows:z.array(z.union([oilReportRowSchema,coldStorageReportRowSchema])).max(4800).optional(),issues:z.array(z.union([oilReportIssueSchema,coldStorageReportIssueSchema])).max(300).optional()});
 const phase4aIssueListSchema=z.object({issues:z.array(z.object({id:uuidLikeSchema,report_id:uuidLikeSchema.nullable(),branch_id:z.uuid(),branch_name:z.string(),business_date:z.string(),submitted_by:z.string().nullable(),checklist_type:managementIssueChecklistTypeSchema,title:z.string(),description:z.string(),status:z.string(),created_at:z.string(),item_id:z.string().nullable().optional(),item_text:z.string().nullable().optional(),affected_staff_id:z.uuid().nullable().optional(),affected_staff_name:z.string().nullable().optional(),record_kind:recordKindSchema.optional(),source_submission_id:uuidLikeSchema.nullable().optional()})).max(50),page:z.number().int().positive(),page_size:z.number().int().positive().max(50),total:z.number().int().nonnegative()});
 const managedSalesTrackingOnlineProviderAmountSchema=z.object({provider_id:z.uuid().nullable().optional(),provider_key:z.string().nullable().optional(),default_provider_key:z.string().nullable().optional(),provider_name:z.string().min(1).max(120).optional(),name:z.string().min(1).max(120).optional(),amount:z.union([z.number(),z.string()])}).strict().transform(({default_provider_key,name,...amount})=>({provider_id:amount.provider_id,provider_key:amount.provider_key??default_provider_key??null,provider_name:amount.provider_name??name??"Unknown",amount:amount.amount}));
 const managedSalesTrackingSchema=z.object({
@@ -2189,7 +2189,7 @@ const coldStorageCurrentSchema=z.object({
     corrective_action:z.string().max(2000),
     submitted_at:z.string().nullable().optional(),
     snapshot_equipment_code:z.string().min(1).max(24).nullable().optional(),snapshot_equipment_name:z.string().min(1).max(120).nullable().optional(),snapshot_equipment_type:z.enum(["refrigerator","freezer"]).nullable().optional(),
-  }).strict()).max(1200),
+  }).strict()).max(4800),
 }).strict();
 const salesTrackingCurrentSchema=z.object({
   report_id:z.uuid().nullable(),
@@ -3136,7 +3136,17 @@ export function createApp(
       .json({ status: ready ? "ready" : "unavailable" });
   });
 
-  app.use(express.json({ limit: "100kb", strict: true }));
+  const defaultJsonParser=express.json({ limit: "100kb", strict: true });
+  const coldStorageJsonParser=express.json({ limit: "1mb", strict: true });
+  app.use((request, response, next) => {
+    if (
+      (request.method === "PUT" && /^\/api\/v1\/supervisor\/branches\/[^/]+\/checklists\/cold_storage\/draft$/.test(request.path)) ||
+      (request.method === "POST" && /^\/api\/v1\/supervisor\/branches\/[^/]+\/checklists\/cold_storage\/slots\/[^/]+\/submit$/.test(request.path))
+    ) {
+      return coldStorageJsonParser(request, response, next);
+    }
+    return defaultJsonParser(request, response, next);
+  });
 
   const mutationRateLimiter = createMutationRateLimiter({
     enabled: config.supervisorMutationRateLimitEnabled === true,
@@ -6593,6 +6603,110 @@ export function createApp(
         else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Branch closure is unavailable."));
         else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
         else next(new HttpError(503, "service_unavailable", "Unable to reopen branch closure right now."));
+      }
+    },
+  );
+  const canonicalColdSlotTimeSchema = z.string().regex(/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/);
+  const setBranchCustomColdStorageScheduleBodySchema = z.object({
+    slot_times: z.array(canonicalColdSlotTimeSchema).min(1).max(48),
+    effective_from_business_date: dateOnlySchema,
+    schedule_name: z.string().trim().min(1).max(120).nullable().optional(),
+  }).strict().superRefine((value, context) => {
+    if (new Set(value.slot_times).size !== value.slot_times.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["slot_times"],
+        message: "Duplicate check times are not allowed.",
+      });
+    }
+  });
+  app.get(
+    "/api/v1/internal-admin/organizations/:organizationId/branches/:branchId/cold-storage-schedule",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        if (!organizationId.success || !branchId.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        const customColdStorageReady = config.customColdStorageScheduleEnabled === true
+          && Boolean(dependencies.managementAdmin.isCustomColdStorageScheduleDatabaseReady)
+          && await dependencies.managementAdmin.isCustomColdStorageScheduleDatabaseReady!().catch(() => false);
+        if (!customColdStorageReady) {
+          response.setHeader("Cache-Control", "private, no-store");
+          response.status(200).json({
+            enabled: false,
+            branch_id: branchId.data,
+            organization_id: organizationId.data,
+            timezone: null,
+            business_date: null,
+            next_valid_business_date: null,
+            current: null,
+            pending: null,
+            history: [],
+            available: [],
+          });
+          return;
+        }
+        if (!dependencies.managementAdmin.getBranchColdStorageScheduleForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Cold Storage schedule configuration is unavailable.");
+        }
+        const schedule = await dependencies.managementAdmin.getBranchColdStorageScheduleForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          branchId: branchId.data,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ enabled: true, ...schedule });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter valid Cold Storage schedule details."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Branch is unavailable."));
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Cold Storage schedule configuration is unavailable."));
+      }
+    },
+  );
+  app.put(
+    "/api/v1/internal-admin/organizations/:organizationId/branches/:branchId/cold-storage-schedule",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const body = setBranchCustomColdStorageScheduleBodySchema.safeParse(request.body);
+        if (!organizationId.success || !branchId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        const customColdStorageReady = config.customColdStorageScheduleEnabled === true
+          && Boolean(dependencies.managementAdmin.isCustomColdStorageScheduleDatabaseReady)
+          && await dependencies.managementAdmin.isCustomColdStorageScheduleDatabaseReady!().catch(() => false);
+        if (!customColdStorageReady) {
+          throw new HttpError(503, "service_unavailable", "Custom Cold Storage schedule configuration is disabled.");
+        }
+        if (!dependencies.managementAdmin.setBranchCustomColdStorageScheduleForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Unable to update Cold Storage schedule right now.");
+        }
+        const schedule = await dependencies.managementAdmin.setBranchCustomColdStorageScheduleForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          branchId: branchId.data,
+          slotTimes: body.data.slot_times,
+          effectiveFromBusinessDate: body.data.effective_from_business_date,
+          scheduleName: body.data.schedule_name ?? null,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ enabled: true, ...schedule });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "A pending future Cold Storage schedule already exists for this branch."));
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter valid Cold Storage check times and future business date."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Branch is unavailable."));
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Unable to update Cold Storage schedule right now."));
       }
     },
   );

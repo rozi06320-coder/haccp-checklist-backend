@@ -42,6 +42,7 @@ const environmentSchema = z
     ORGANIZATION_MANAGER_NOTIFICATION_PRODUCER_ENABLED: disabledByDefaultFlag,
     SUPERVISOR_MUTATION_RATE_LIMIT_ENABLED: disabledByDefaultFlag,
     BRANCH_DAY_OFF_ENABLED: disabledByDefaultFlag,
+    CUSTOM_COLD_STORAGE_SCHEDULE_ENABLED: disabledByDefaultFlag,
     SUPERVISOR_NOTIFICATION_SCHEDULER_SECRET: z.string().min(32).max(4_096).optional(),
     TRAINING_ORGANIZATION_SLUG: z.string().trim().toLowerCase().min(1).max(120).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).optional(),
     TRAINING_LEARNER_AUTH_ENABLED: disabledByDefaultFlag,
@@ -130,6 +131,7 @@ export type BackendConfig = {
   organizationManagerNotificationProducerEnabled?: boolean;
   supervisorMutationRateLimitEnabled?: boolean;
   branchDayOffEnabled?: boolean;
+  customColdStorageScheduleEnabled?: boolean;
   trainingOrganizationSlug?: string;
   trainingLearnerAuthEnabled?: boolean;
   trainingDbCurriculumEnabled?: boolean;
@@ -183,6 +185,7 @@ export function loadBackendConfig(
     organizationManagerNotificationProducerEnabled: result.data.ORGANIZATION_MANAGER_NOTIFICATION_PRODUCER_ENABLED,
     supervisorMutationRateLimitEnabled: result.data.SUPERVISOR_MUTATION_RATE_LIMIT_ENABLED,
     branchDayOffEnabled: result.data.BRANCH_DAY_OFF_ENABLED,
+    customColdStorageScheduleEnabled: result.data.CUSTOM_COLD_STORAGE_SCHEDULE_ENABLED,
     trainingOrganizationSlug: result.data.TRAINING_ORGANIZATION_SLUG,
     trainingLearnerAuthEnabled: result.data.TRAINING_LEARNER_AUTH_ENABLED,
     trainingDbCurriculumEnabled: result.data.TRAINING_DB_CURRICULUM_ENABLED,
