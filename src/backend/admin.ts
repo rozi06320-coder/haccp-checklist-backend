@@ -167,6 +167,44 @@ export type InternalAdminBranchClosureSummary = z.infer<typeof branchClosureSumm
 export type InternalAdminBranchClosure = z.infer<typeof branchClosureMutationSchema>;
 export type InternalAdminBranchDayOffConfig = z.infer<typeof branchDayOffConfigSchema>;
 
+const coldStorageScheduleSlotSchema = z.object({
+  slot: z.string().regex(/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/),
+  ordinal: z.number().int().min(1).max(48),
+}).strict();
+
+const coldStorageScheduleAssignmentSummarySchema = z.object({
+  assignment_id: z.uuid(),
+  schedule_version_id: z.uuid(),
+  schedule_code: z.string().min(1).max(40),
+  schedule_name: z.string().min(1).max(120),
+  effective_from_business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  effective_to_business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional(),
+  cancelled_at: z.string().nullable().optional(),
+  created_at: z.string().optional(),
+  slots: z.array(coldStorageScheduleSlotSchema).min(1).max(48),
+}).strict();
+
+const coldStorageSchedulePresetSchema = z.object({
+  schedule_version_id: z.uuid(),
+  schedule_code: z.string().min(1).max(40),
+  schedule_name: z.string().min(1).max(120),
+  slots: z.array(coldStorageScheduleSlotSchema).min(1).max(48),
+}).strict();
+
+const branchColdStorageScheduleConfigSchema = z.object({
+  branch_id: z.uuid(),
+  organization_id: z.uuid(),
+  timezone: z.string().min(1).max(120),
+  business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  next_valid_business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  current: coldStorageScheduleAssignmentSummarySchema.nullable(),
+  pending: coldStorageScheduleAssignmentSummarySchema.nullable(),
+  history: z.array(coldStorageScheduleAssignmentSummarySchema).max(200),
+  available: z.array(coldStorageSchedulePresetSchema).max(100),
+}).strict();
+
+export type InternalAdminBranchColdStorageScheduleConfig = z.infer<typeof branchColdStorageScheduleConfigSchema>;
+
 export type InternalAdminSupervisorDemotionEligibility = z.infer<typeof supervisorDemotionEligibilitySchema>;
 export type InternalAdminSupervisorDemotionResult = z.infer<typeof supervisorDemotionResultSchema>;
 export type InternalAdminSupervisorOperationalRecovery = z.infer<typeof supervisorOperationalRecoverySchema>;
@@ -625,6 +663,20 @@ export type ManagementAdmin = {
     closureId: string;
     reopenFromBusinessDate?: string | null;
   }): Promise<InternalAdminBranchClosure>;
+  isCustomColdStorageScheduleDatabaseReady?(): Promise<boolean>;
+  getBranchColdStorageScheduleForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    branchId: string;
+  }): Promise<InternalAdminBranchColdStorageScheduleConfig>;
+  setBranchCustomColdStorageScheduleForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    branchId: string;
+    slotTimes: string[];
+    effectiveFromBusinessDate: string;
+    scheduleName?: string | null;
+  }): Promise<InternalAdminBranchColdStorageScheduleConfig>;
   listOrganizationManagersForInternalAdmin?(actorUserId: string, organizationId: string): Promise<InternalAdminOrganizationManager[]>;
   deactivateOrganizationManagerForInternalAdmin?(input: {
     actorUserId: string;
@@ -1911,6 +1963,77 @@ export function createManagementAdmin(
       } catch {
         return false;
       }
+    },
+    async isCustomColdStorageScheduleDatabaseReady() {
+      try {
+        const [readCheck, writeCheck] = await Promise.all([
+          admin.rpc("get_internal_admin_branch_cold_storage_schedule_v2", {
+            actor_user_id: null,
+            target_organization_id: null,
+            target_branch_id: null,
+          }),
+          admin.rpc("set_internal_admin_branch_custom_cold_storage_schedule", {
+            actor_user_id: null,
+            organization_id: null,
+            branch_id: null,
+            slot_times: null,
+            effective_from_business_date: null,
+            schedule_name: null,
+          }),
+        ]);
+        return (
+          readCheck.data == null
+          && writeCheck.data == null
+          && readCheck.error?.code === "42501"
+          && readCheck.error?.message === "schedule access denied"
+          && writeCheck.error?.code === "42501"
+          && writeCheck.error?.message === "schedule access denied"
+        );
+      } catch {
+        return false;
+      }
+    },
+    async getBranchColdStorageScheduleForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("get_internal_admin_branch_cold_storage_schedule_v2", {
+        actor_user_id: input.actorUserId,
+        target_organization_id: input.organizationId,
+        target_branch_id: input.branchId,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "22023") throw new AdminInputError();
+        throw new AdminOperationError();
+      }
+      const parsed = branchColdStorageScheduleConfigSchema.safeParse(data);
+      if (!parsed.success) throw new AdminOperationError();
+      if (parsed.data.organization_id !== input.organizationId || parsed.data.branch_id !== input.branchId) {
+        throw new AdminOperationError();
+      }
+      return parsed.data;
+    },
+    async setBranchCustomColdStorageScheduleForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("set_internal_admin_branch_custom_cold_storage_schedule", {
+        actor_user_id: input.actorUserId,
+        organization_id: input.organizationId,
+        branch_id: input.branchId,
+        slot_times: input.slotTimes,
+        effective_from_business_date: input.effectiveFromBusinessDate,
+        schedule_name: input.scheduleName ?? null,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "23505") throw new AdminConflictError();
+        if (error.code === "22023") throw new AdminInputError();
+        throw new AdminOperationError();
+      }
+      const parsed = branchColdStorageScheduleConfigSchema.safeParse(data);
+      if (!parsed.success) throw new AdminOperationError();
+      if (parsed.data.organization_id !== input.organizationId || parsed.data.branch_id !== input.branchId) {
+        throw new AdminOperationError();
+      }
+      return parsed.data;
     },
     async getBranchDayOffConfigForInternalAdmin(input) {
       const { data, error } = await admin.rpc("get_internal_admin_branch_day_off_config", {
