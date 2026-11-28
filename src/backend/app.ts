@@ -1005,6 +1005,25 @@ const createOrganizationBodySchema = z.object({
 }).strict();
 const updateOrganizationBodySchema = createOrganizationBodySchema;
 const internalAdminLifecycleBodySchema = z.object({}).strict();
+const setBranchWeeklyDayOffBodySchema = z.object({
+  days_of_week: z.array(z.number().int().min(0).max(6)).max(7).refine(
+    (days) => new Set(days).size === days.length,
+    { message: "Duplicate weekdays are not allowed." },
+  ),
+  effective_from_business_date: dateOnlySchema.nullable().optional(),
+  reason: optionalStaffTextSchema(240),
+}).strict();
+const createBranchClosureBodySchema = z.object({
+  start_business_date: dateOnlySchema,
+  end_business_date: dateOnlySchema,
+  reason: optionalStaffTextSchema(240),
+}).strict().refine(
+  (value) => value.end_business_date >= value.start_business_date,
+  { message: "Closure end date must be on or after start date." },
+);
+const reopenBranchClosureBodySchema = z.object({
+  reopen_from_business_date: dateOnlySchema.nullable().optional(),
+}).strict();
 const operationalStaffListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).max(1000000).default(1),
   page_size: z.coerce.number().int().min(1).max(50).default(20),
@@ -2060,7 +2079,8 @@ const overviewCountsSchema=z.object({expected_checks:z.number().int().nonnegativ
 const supervisorProductionOverviewChecklistTypeSchema=z.enum(["kitchen_opening","foh_opening","staff_hygiene","oil_tracking","cold_storage"]);
 const overviewCompletionAnswered=(value:{checklist_type:z.infer<typeof supervisorProductionOverviewChecklistTypeSchema>;state:"not_started"|"draft"|"submitted";expected_checks:number;answered_checks:number})=>!["oil_tracking","cold_storage"].includes(value.checklist_type)||value.state==="submitted"||value.expected_checks===0?value.answered_checks:Math.min(value.answered_checks,Math.max(value.expected_checks-1,0));
 const phase4aOverviewChecklistSchema=overviewCountsSchema.extend({checklist_type:supervisorProductionOverviewChecklistTypeSchema,state:z.enum(["not_started","draft","submitted"])}).strict().superRefine((value,context)=>{if(value.completion_percentage!==overviewCompletionPercentage(overviewCompletionAnswered(value),value.expected_checks))context.addIssue({code:"custom",message:"Invalid completion percentage."});});
-const phase4aOverviewSchema=z.object({business_date:dateOnlySchema,totals:overviewCountsSchema,checklists:z.array(phase4aOverviewChecklistSchema).length(5)}).strict().superRefine((value,context)=>{const types=value.checklists.map(x=>x.checklist_type);if(new Set(types).size!==5||!["kitchen_opening","foh_opening","staff_hygiene","oil_tracking","cold_storage"].every(type=>types.includes(type as never)))context.addIssue({code:"custom",message:"Invalid checklist set."});for(const key of ["expected_checks","answered_checks","compliant_checks","issue_checks","pending_checks"] as const)if(value.totals[key]!==value.checklists.reduce((sum,row)=>sum+row[key],0))context.addIssue({code:"custom",message:`Invalid ${key} total.`});const completionAnswered=value.checklists.reduce((sum,row)=>sum+overviewCompletionAnswered(row),0);if(value.totals.completion_percentage!==overviewCompletionPercentage(completionAnswered,value.totals.expected_checks))context.addIssue({code:"custom",message:"Invalid completion percentage total."});});
+const phase4aOverviewSchema=z.object({business_date:dateOnlySchema,is_day_off:z.boolean().optional(),day_off_reason:z.string().nullable().optional(),totals:overviewCountsSchema,checklists:z.array(phase4aOverviewChecklistSchema).length(5)}).strict().superRefine((value,context)=>{const types=value.checklists.map(x=>x.checklist_type);if(new Set(types).size!==5||!["kitchen_opening","foh_opening","staff_hygiene","oil_tracking","cold_storage"].every(type=>types.includes(type as never)))context.addIssue({code:"custom",message:"Invalid checklist set."});for(const key of ["expected_checks","answered_checks","compliant_checks","issue_checks","pending_checks"] as const)if(value.totals[key]!==value.checklists.reduce((sum,row)=>sum+row[key],0))context.addIssue({code:"custom",message:`Invalid ${key} total.`});const completionAnswered=value.checklists.reduce((sum,row)=>sum+overviewCompletionAnswered(row),0);if(value.totals.completion_percentage!==overviewCompletionPercentage(completionAnswered,value.totals.expected_checks))context.addIssue({code:"custom",message:"Invalid completion percentage total."});});
+const supervisorBranchDayOffStatusSchema=z.object({branch_id:z.uuid(),business_date:dateOnlySchema,timezone:z.string().trim().min(1).max(120),is_day_off:z.boolean(),day_off_reason:z.string().nullable()}).strict();
 const phase4aMutationSchema=z.object({id:z.uuid(),business_date:z.string(),checklist_type:checklistTypeSchema,state:z.enum(["draft","submitted"]),created_at:z.string().optional(),updated_at:z.string().optional(),submitted_at:z.string().optional(),issue_count:z.number().int().nonnegative().optional(),revision:z.number().int().nonnegative().optional()});
 const staffHygieneApplicabilityRowSchema=z.object({branch_id:z.uuid(),business_date:dateOnlySchema,operational_team_id:z.uuid().nullable(),eligible_staff_count:z.number().int().nonnegative(),required:z.boolean(),applicability:z.enum(["required","not_applicable"])}).strict();
 const staffHygieneApplicabilityResponseSchema=z.object({branch_id:z.uuid(),business_date:dateOnlySchema,teams:z.array(staffHygieneApplicabilityRowSchema).min(1).max(200)}).strict();
@@ -6416,6 +6436,167 @@ export function createApp(
     },
   );
   app.get(
+    "/api/v1/internal-admin/organizations/:organizationId/branches/:branchId/day-off",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        if (!organizationId.success || !branchId.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        const dayOffReady = config.branchDayOffEnabled === true
+          && Boolean(dependencies.managementAdmin.isBranchDayOffDatabaseReady)
+          && await dependencies.managementAdmin.isBranchDayOffDatabaseReady!().catch(() => false);
+        if (!dayOffReady) {
+          response.setHeader("Cache-Control", "private, no-store");
+          response.status(200).json({ enabled: false, day_off: null });
+          return;
+        }
+        if (!dependencies.managementAdmin.getBranchDayOffConfigForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Branch day off configuration is unavailable.");
+        }
+        const dayOff = await dependencies.managementAdmin.getBranchDayOffConfigForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          branchId: branchId.data,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ enabled: true, day_off: dayOff });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter valid branch day off details."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Branch is unavailable."));
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Branch day off configuration is unavailable."));
+      }
+    },
+  );
+  app.put(
+    "/api/v1/internal-admin/organizations/:organizationId/branches/:branchId/day-off/weekly-schedule",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const body = setBranchWeeklyDayOffBodySchema.safeParse(request.body);
+        if (!organizationId.success || !branchId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        const dayOffReady = config.branchDayOffEnabled === true
+          && Boolean(dependencies.managementAdmin.isBranchDayOffDatabaseReady)
+          && await dependencies.managementAdmin.isBranchDayOffDatabaseReady!().catch(() => false);
+        if (!dayOffReady) {
+          throw new HttpError(503, "service_unavailable", "Branch day off configuration is disabled.");
+        }
+        if (!dependencies.managementAdmin.setBranchWeeklyDayOffForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Unable to update weekly day off right now.");
+        }
+        const schedule = await dependencies.managementAdmin.setBranchWeeklyDayOffForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          branchId: branchId.data,
+          daysOfWeek: body.data.days_of_week,
+          effectiveFromBusinessDate: body.data.effective_from_business_date ?? null,
+          reason: body.data.reason ?? null,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ schedule });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Weekly day off schedule conflicts with an existing schedule."));
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter a valid weekly day off schedule and effective date."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Branch is unavailable."));
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Unable to update weekly day off right now."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/branches/:branchId/day-off/closures",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const body = createBranchClosureBodySchema.safeParse(request.body);
+        if (!organizationId.success || !branchId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        const dayOffReady = config.branchDayOffEnabled === true
+          && Boolean(dependencies.managementAdmin.isBranchDayOffDatabaseReady)
+          && await dependencies.managementAdmin.isBranchDayOffDatabaseReady!().catch(() => false);
+        if (!dayOffReady) {
+          throw new HttpError(503, "service_unavailable", "Branch day off configuration is disabled.");
+        }
+        if (!dependencies.managementAdmin.createBranchClosureForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Unable to create branch closure right now.");
+        }
+        const closure = await dependencies.managementAdmin.createBranchClosureForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          branchId: branchId.data,
+          startBusinessDate: body.data.start_business_date,
+          endBusinessDate: body.data.end_business_date,
+          reason: body.data.reason ?? null,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(201).json({ closure });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "An active closure already overlaps these dates."));
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter a valid closure date range and reason."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Branch is unavailable."));
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Unable to create branch closure right now."));
+      }
+    },
+  );
+  app.post(
+    "/api/v1/internal-admin/organizations/:organizationId/branches/:branchId/day-off/closures/:closureId/reopen",
+    protectedRateLimit, authenticate, async (request, response, next) => {
+      try {
+        const organizationId = organizationIdSchema.safeParse(request.params.organizationId);
+        const branchId = branchIdSchema.safeParse(request.params.branchId);
+        const closureId = z.uuid().safeParse(request.params.closureId);
+        const body = reopenBranchClosureBodySchema.safeParse(request.body ?? {});
+        if (!organizationId.success || !branchId.success || !closureId.success || !body.success || !emptyQuerySchema.safeParse(request.query).success) {
+          throw new HttpError(400, "bad_request", "The request is invalid.");
+        }
+        const auth = requireAuthContext(request);
+        await requireInternalAdmin(request);
+        const dayOffReady = config.branchDayOffEnabled === true
+          && Boolean(dependencies.managementAdmin.isBranchDayOffDatabaseReady)
+          && await dependencies.managementAdmin.isBranchDayOffDatabaseReady!().catch(() => false);
+        if (!dayOffReady) {
+          throw new HttpError(503, "service_unavailable", "Branch day off configuration is disabled.");
+        }
+        if (!dependencies.managementAdmin.reopenBranchClosureForInternalAdmin) {
+          throw new HttpError(503, "service_unavailable", "Unable to reopen branch closure right now.");
+        }
+        const closure = await dependencies.managementAdmin.reopenBranchClosureForInternalAdmin({
+          actorUserId: auth.userId,
+          organizationId: organizationId.data,
+          branchId: branchId.data,
+          closureId: closureId.data,
+          reopenFromBusinessDate: body.data.reopen_from_business_date ?? null,
+        });
+        response.setHeader("Cache-Control", "private, no-store");
+        response.status(200).json({ closure });
+      } catch (error) {
+        if (error instanceof HttpError) next(error);
+        else if (error instanceof AdminConflictError) next(new HttpError(409, "conflict", "Closure conflicts with another active closure."));
+        else if (error instanceof AdminInputError) next(new HttpError(422, "unprocessable_entity", "Enter a valid reopen business date."));
+        else if (error instanceof AdminNotFoundError) next(new HttpError(404, "not_found", "Branch closure is unavailable."));
+        else if (error instanceof AdminAccessError) next(new HttpError(403, "forbidden", "Access is denied."));
+        else next(new HttpError(503, "service_unavailable", "Unable to reopen branch closure right now."));
+      }
+    },
+  );
+  app.get(
     "/api/v1/internal-admin/organizations/:organizationId/branch-teams",
     protectedRateLimit, authenticate, async (request, response, next) => {
       try {
@@ -10484,6 +10665,16 @@ export function createApp(
     const auth=requireAuthContext(request),context=await loadActiveUser(request);if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence)throw new HttpError(403,"forbidden","Access is denied.");
     const overview=phase4aOverviewSchema.parse(await dependencies.checklistPersistence.getOverview(auth.userId,branch.data));
     response.setHeader("Cache-Control","private, no-store");response.status(200).json(overview);
+  }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
+
+  app.get("/api/v1/supervisor/branches/:branchId/day-off",protectedRateLimit,authenticate,async(request,response,next)=>{try{
+    const branch=branchIdSchema.safeParse(request.params.branchId);
+    if(!branch.success||!emptyQuerySchema.safeParse(request.query).success)throw new HttpError(400,"bad_request","The request is invalid.");
+    const auth=requireAuthContext(request),context=await loadActiveUser(request);
+    if(context.must_change_password||context.managed_organizations.length>0||!dependencies.checklistPersistence?.getSupervisorBranchDayOffStatus)throw new HttpError(403,"forbidden","Access is denied.");
+    const status=supervisorBranchDayOffStatusSchema.parse(await dependencies.checklistPersistence.getSupervisorBranchDayOffStatus({actorUserId:auth.userId,branchId:branch.data}));
+    if(status.branch_id!==branch.data)throw new Error("branch day off status scope mismatch");
+    response.setHeader("Cache-Control","private, no-store");response.status(200).json(status);
   }catch(error){next(error instanceof HttpError?error:checklistError(error));}});
 
   app.get("/api/v1/supervisor/branches/:branchId/staff-hygiene/applicability",protectedRateLimit,authenticate,async(request,response,next)=>{try{

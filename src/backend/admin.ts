@@ -115,6 +115,58 @@ const trainingQuestionInputSchema = z.object({
   if (!keys.includes(value.correctOptionKey)) ctx.addIssue({ code: "custom", path: ["correctOptionKey"], message: "Correct option must exist." });
 });
 
+const isoBusinessDateStringSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const dayOfWeekNumberSchema = z.number().int().min(0).max(6);
+
+const branchWeeklyDayOffScheduleSummarySchema = z.object({
+  id: z.string().uuid(),
+  days_of_week: z.array(dayOfWeekNumberSchema).max(7),
+  effective_from_business_date: isoBusinessDateStringSchema,
+  effective_to_business_date: isoBusinessDateStringSchema.nullable(),
+  reason: z.string().nullable(),
+  updated_at: z.string(),
+}).strict();
+
+const branchWeeklyDayOffScheduleMutationSchema = branchWeeklyDayOffScheduleSummarySchema.extend({
+  organization_id: z.string().uuid(),
+  branch_id: z.string().uuid(),
+}).strict();
+
+const branchClosureSummarySchema = z.object({
+  id: z.string().uuid(),
+  start_business_date: isoBusinessDateStringSchema,
+  end_business_date: isoBusinessDateStringSchema,
+  reason: z.string().nullable(),
+  status: z.enum(["active", "cancelled"]),
+  reopened_early_at: z.string().nullable().optional(),
+  cancelled_at: z.string().nullable().optional(),
+  created_at: z.string().optional(),
+  updated_at: z.string(),
+}).strict();
+
+const branchClosureMutationSchema = branchClosureSummarySchema.extend({
+  organization_id: z.string().uuid(),
+  branch_id: z.string().uuid(),
+}).strict();
+
+const branchDayOffConfigSchema = z.object({
+  organization_id: z.string().uuid(),
+  branch_id: z.string().uuid(),
+  timezone: z.string(),
+  current_business_date: isoBusinessDateStringSchema,
+  is_day_off_today: z.boolean(),
+  day_off_reason_today: z.string().nullable(),
+  current_weekly_schedule: branchWeeklyDayOffScheduleSummarySchema.nullable(),
+  weekly_schedule_history: z.array(branchWeeklyDayOffScheduleSummarySchema).max(200),
+  closures: z.array(branchClosureSummarySchema).max(500),
+}).strict();
+
+export type InternalAdminBranchWeeklyDayOffScheduleSummary = z.infer<typeof branchWeeklyDayOffScheduleSummarySchema>;
+export type InternalAdminBranchWeeklyDayOffSchedule = z.infer<typeof branchWeeklyDayOffScheduleMutationSchema>;
+export type InternalAdminBranchClosureSummary = z.infer<typeof branchClosureSummarySchema>;
+export type InternalAdminBranchClosure = z.infer<typeof branchClosureMutationSchema>;
+export type InternalAdminBranchDayOffConfig = z.infer<typeof branchDayOffConfigSchema>;
+
 export type InternalAdminSupervisorDemotionEligibility = z.infer<typeof supervisorDemotionEligibilitySchema>;
 export type InternalAdminSupervisorDemotionResult = z.infer<typeof supervisorDemotionResultSchema>;
 export type InternalAdminSupervisorOperationalRecovery = z.infer<typeof supervisorOperationalRecoverySchema>;
@@ -544,6 +596,35 @@ export type ManagementAdmin = {
     organizationId: string;
     branchId: string;
   }): Promise<InternalAdminBranch>;
+  isBranchDayOffDatabaseReady?(): Promise<boolean>;
+  getBranchDayOffConfigForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    branchId: string;
+  }): Promise<InternalAdminBranchDayOffConfig>;
+  setBranchWeeklyDayOffForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    branchId: string;
+    daysOfWeek: number[];
+    effectiveFromBusinessDate?: string | null;
+    reason?: string | null;
+  }): Promise<InternalAdminBranchWeeklyDayOffSchedule>;
+  createBranchClosureForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    branchId: string;
+    startBusinessDate: string;
+    endBusinessDate: string;
+    reason?: string | null;
+  }): Promise<InternalAdminBranchClosure>;
+  reopenBranchClosureForInternalAdmin?(input: {
+    actorUserId: string;
+    organizationId: string;
+    branchId: string;
+    closureId: string;
+    reopenFromBusinessDate?: string | null;
+  }): Promise<InternalAdminBranchClosure>;
   listOrganizationManagersForInternalAdmin?(actorUserId: string, organizationId: string): Promise<InternalAdminOrganizationManager[]>;
   deactivateOrganizationManagerForInternalAdmin?(input: {
     actorUserId: string;
@@ -1805,6 +1886,118 @@ export function createManagementAdmin(
       }).strict()).length(1).safeParse(data);
       if (!rows.success) throw new AdminOperationError();
       return rows.data[0];
+    },
+    async isBranchDayOffDatabaseReady() {
+      try {
+        const [foundationCheck, downstreamCheck] = await Promise.all([
+          admin.rpc("get_internal_admin_branch_day_off_config", {
+            p_actor_user_id: null,
+            p_organization_id: null,
+            p_branch_id: null,
+          }),
+          admin.rpc("get_supervisor_branch_day_off_status", {
+            p_actor_user_id: null,
+            p_branch_id: null,
+          }),
+        ]);
+        return (
+          foundationCheck.data == null
+          && downstreamCheck.data == null
+          && foundationCheck.error?.code === "42501"
+          && foundationCheck.error?.message === "internal admin access denied"
+          && downstreamCheck.error?.code === "42501"
+          && downstreamCheck.error?.message === "branch day off status access denied"
+        );
+      } catch {
+        return false;
+      }
+    },
+    async getBranchDayOffConfigForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("get_internal_admin_branch_day_off_config", {
+        p_actor_user_id: input.actorUserId,
+        p_organization_id: input.organizationId,
+        p_branch_id: input.branchId,
+      });
+      if (error) {
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "22023") throw new AdminInputError();
+        throw new AdminOperationError();
+      }
+      const parsed = branchDayOffConfigSchema.safeParse(data);
+      if (!parsed.success) throw new AdminOperationError();
+      if (parsed.data.organization_id !== input.organizationId || parsed.data.branch_id !== input.branchId) {
+        throw new AdminOperationError();
+      }
+      return parsed.data;
+    },
+    async setBranchWeeklyDayOffForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("set_internal_admin_branch_weekly_day_off", {
+        p_actor_user_id: input.actorUserId,
+        p_organization_id: input.organizationId,
+        p_branch_id: input.branchId,
+        p_days_of_week: input.daysOfWeek,
+        p_effective_from_business_date: input.effectiveFromBusinessDate ?? null,
+        p_reason: input.reason ?? null,
+      });
+      if (error) {
+        if (error.code === "23505") throw new AdminConflictError();
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "22023") throw new AdminInputError();
+        throw new AdminOperationError();
+      }
+      const parsed = branchWeeklyDayOffScheduleMutationSchema.safeParse(data);
+      if (!parsed.success) throw new AdminOperationError();
+      if (parsed.data.organization_id !== input.organizationId || parsed.data.branch_id !== input.branchId) {
+        throw new AdminOperationError();
+      }
+      return parsed.data;
+    },
+    async createBranchClosureForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("create_internal_admin_branch_closure", {
+        p_actor_user_id: input.actorUserId,
+        p_organization_id: input.organizationId,
+        p_branch_id: input.branchId,
+        p_start_business_date: input.startBusinessDate,
+        p_end_business_date: input.endBusinessDate,
+        p_reason: input.reason ?? null,
+      });
+      if (error) {
+        if (error.code === "23505") throw new AdminConflictError();
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "22023") throw new AdminInputError();
+        throw new AdminOperationError();
+      }
+      const parsed = branchClosureMutationSchema.safeParse(data);
+      if (!parsed.success) throw new AdminOperationError();
+      if (parsed.data.organization_id !== input.organizationId || parsed.data.branch_id !== input.branchId) {
+        throw new AdminOperationError();
+      }
+      return parsed.data;
+    },
+    async reopenBranchClosureForInternalAdmin(input) {
+      const { data, error } = await admin.rpc("reopen_internal_admin_branch_closure", {
+        p_actor_user_id: input.actorUserId,
+        p_organization_id: input.organizationId,
+        p_branch_id: input.branchId,
+        p_closure_id: input.closureId,
+        p_reopen_from_business_date: input.reopenFromBusinessDate ?? null,
+      });
+      if (error) {
+        if (error.code === "23505") throw new AdminConflictError();
+        if (error.code === "42501") throw new AdminAccessError();
+        if (error.code === "P0002") throw new AdminNotFoundError();
+        if (error.code === "22023") throw new AdminInputError();
+        throw new AdminOperationError();
+      }
+      const parsed = branchClosureMutationSchema.safeParse(data);
+      if (!parsed.success) throw new AdminOperationError();
+      if (parsed.data.organization_id !== input.organizationId || parsed.data.branch_id !== input.branchId || parsed.data.id !== input.closureId) {
+        throw new AdminOperationError();
+      }
+      return parsed.data;
     },
     async listMaintenanceUsers(actorUserId, organizationId) {
       const { data, error } = await admin.rpc("list_managed_maintenance_users", {
